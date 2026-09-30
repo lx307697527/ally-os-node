@@ -3,6 +3,8 @@ name: CI
 # PR 上自动跑；合并到 main 后由 deploy.yml 复用本流程，通过后才部署
 on:
   pull_request:
+    # 只改文档不跑 CI，省构建时间
+    paths-ignore: ["**/*.md", "docs/**"]
   workflow_call:
   workflow_dispatch:
 
@@ -13,10 +15,14 @@ concurrency:
 permissions:
   contents: read
 
+# 在哪台机器上跑：仓库变量 CI_RUNNER 设为 self-hosted 就用你自己的机器，不设就用 GitHub 托管机器。
+# 来自 fork 的 PR 永远用 GitHub 托管机器——外部代码不能在你的机器上执行。
+# （各 job 的 runs-on 用同一个表达式；GitHub 不允许在 runs-on 里引用 env，所以只能重复写）
+
 jobs:
   verify:
     name: Lint · Typecheck · Test
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && vars.CI_RUNNER || 'ubuntu-latest' }}
     services:
       postgres:
         image: postgres:16-alpine
@@ -24,14 +30,12 @@ jobs:
           POSTGRES_USER: ally
           POSTGRES_PASSWORD: ally
           POSTGRES_DB: ally
-        ports: ["5432:5432"]
+        ports: ["5432"]
         options: >-
           --health-cmd "pg_isready -U ally"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
-    env:
-      DATABASE_URL: postgres://ally:ally@localhost:5432/ally
     steps:
       - uses: actions/checkout@v5
       - uses: pnpm/action-setup@v4
@@ -45,6 +49,8 @@ jobs:
       - run: pnpm lint
       - run: pnpm typecheck
       - name: Tests (unit + integration against Postgres)
+        env:
+          DATABASE_URL: postgres://ally:ally@localhost:${{ job.services.postgres.ports['5432'] }}/ally
         run: pnpm test
       - name: Migrations are in sync with schema
         run: |
@@ -57,7 +63,7 @@ jobs:
 
   docker:
     name: Docker images build
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && vars.CI_RUNNER || 'ubuntu-latest' }}
     strategy:
       matrix:
         target: [server, web]
@@ -74,7 +80,7 @@ jobs:
 
   terraform:
     name: Terraform validate
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && vars.CI_RUNNER || 'ubuntu-latest' }}
     defaults:
       run:
         working-directory: infra/terraform/aws

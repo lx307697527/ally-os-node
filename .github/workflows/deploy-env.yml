@@ -19,7 +19,7 @@ permissions:
 jobs:
   deploy:
     name: Deploy to ${{ inputs.environment }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     # production 环境在仓库设置里配置 Required reviewers，这里就会停下等人批准
     environment: ${{ inputs.environment }}
     timeout-minutes: 45

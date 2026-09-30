@@ -69,3 +69,4 @@ pnpm db:migrate    # 执行迁移
 
 - [架构与迁移路线](docs/architecture/overview.md)：为什么这样选、如何从 ally-nutra 分模块迁移
 - [CI/CD 与 AWS 上线指南](docs/guides/cicd-setup.md)：从零到第一次自动部署的操作步骤
+- [用自己的机器跑 CI/CD](docs/guides/self-hosted-runner.md)：自托管 Runner，节省构建费用

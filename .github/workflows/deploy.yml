@@ -5,6 +5,7 @@ name: Deploy
 on:
   push:
     branches: [main]
+    paths-ignore: ["**/*.md", "docs/**"]
   workflow_dispatch:
 
 # 部署串行执行，不取消正在进行的部署（避免迁移做到一半被打断）
