@@ -1,0 +1,9 @@
+env                         = "production"
+region                      = "us-east-1"
+vpc_cidr                    = "10.30.0.0/16"
+create_github_oidc_provider = false # staging 已创建
+certificate_arn             = "arn:aws:acm:us-east-1:<account-id>:certificate/<id>"
+db_instance_class           = "db.t4g.medium"
+api_desired_count           = 2
+web_desired_count           = 2
+cors_origins                = "https://os.allynutra.com"

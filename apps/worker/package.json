@@ -1,0 +1,15 @@
+{
+  "name": "@ally/worker",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node --env-file-if-exists=../../.env --watch src/index.ts",
+    "start": "node src/index.ts",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@ally/config": "workspace:*",
+    "pg-boss": "^12.35.0",
+    "pino": "^10.3.1"
+  }
+}
