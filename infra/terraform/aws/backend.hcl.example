@@ -1,0 +1,7 @@
+# cp backend.hcl.example backend-staging.hcl，修改后：
+#   terraform init -backend-config=backend-staging.hcl
+bucket       = "ally-terraform-state-<account-id>"
+key          = "ally-os/staging.tfstate"
+region       = "us-east-1"
+encrypt      = true
+use_lockfile = true

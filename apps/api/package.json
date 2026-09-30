@@ -1,0 +1,17 @@
+{
+  "name": "@ally/api",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node --env-file-if-exists=../../.env --watch src/index.ts",
+    "start": "node src/index.ts",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@ally/config": "workspace:*",
+    "@ally/db": "workspace:*",
+    "@hono/node-server": "^2.1.3",
+    "hono": "^4.13.11",
+    "pino": "^10.3.1"
+  }
+}

@@ -1,0 +1,88 @@
+name: Deploy environment
+
+# 被 deploy.yml 调用。所需配置都放在 GitHub 的 Environment（staging / production）变量里：
+#   AWS_REGION           例如 us-east-1
+#   AWS_DEPLOY_ROLE_ARN  terraform output github_deploy_role_arn
+#   ECS_PREFIX           例如 ally-staging
+#   APP_URL              可选，部署后做冒烟检查，例如 https://staging.os.allynutra.com
+on:
+  workflow_call:
+    inputs:
+      environment:
+        type: string
+        required: true
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  deploy:
+    name: Deploy to ${{ inputs.environment }}
+    runs-on: ubuntu-latest
+    # production 环境在仓库设置里配置 Required reviewers，这里就会停下等人批准
+    environment: ${{ inputs.environment }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - id: images
+        name: Resolve image tags
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+          PREFIX: ${{ vars.ECS_PREFIX }}
+          TAG: ${{ github.sha }}
+        run: |
+          echo "server=$REGISTRY/$PREFIX-server:$TAG" >> "$GITHUB_OUTPUT"
+          echo "web=$REGISTRY/$PREFIX-web:$TAG" >> "$GITHUB_OUTPUT"
+          # 镜像 tag 不可覆盖：重跑同一个提交时跳过构建，直接部署已有镜像
+          if aws ecr describe-images --repository-name "$PREFIX-server" --image-ids imageTag="$TAG" >/dev/null 2>&1 \
+            && aws ecr describe-images --repository-name "$PREFIX-web" --image-ids imageTag="$TAG" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - if: steps.images.outputs.exists != 'true'
+        uses: docker/setup-buildx-action@v3
+
+      - if: steps.images.outputs.exists != 'true'
+        name: Build & push server image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: server
+          push: true
+          tags: ${{ steps.images.outputs.server }}
+          cache-from: type=gha,scope=server
+
+      - if: steps.images.outputs.exists != 'true'
+        name: Build & push web image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: web
+          push: true
+          tags: ${{ steps.images.outputs.web }}
+          cache-from: type=gha,scope=web
+
+      - name: Migrate database & roll out services
+        env:
+          PREFIX: ${{ vars.ECS_PREFIX }}
+          SERVER_IMAGE: ${{ steps.images.outputs.server }}
+          WEB_IMAGE: ${{ steps.images.outputs.web }}
+        run: scripts/deploy-ecs.sh
+
+      - name: Smoke test
+        if: vars.APP_URL != ''
+        env:
+          APP_URL: ${{ vars.APP_URL }}
+        run: curl --fail --silent --show-error --retry 5 --retry-delay 5 --retry-all-errors "$APP_URL/ready"

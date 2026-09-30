@@ -1,0 +1,39 @@
+name: Deploy
+
+# 合并到 main → 跑 CI → 自动部署 staging → 人工批准 → 部署 production。
+# 在 GitHub 仓库设置 Variables 里把 DEPLOY_ENABLED 设为 true 之前，只跑 CI、不部署。
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# 部署串行执行，不取消正在进行的部署（避免迁移做到一半被打断）
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+
+  staging:
+    needs: ci
+    if: vars.DEPLOY_ENABLED == 'true'
+    uses: ./.github/workflows/deploy-env.yml
+    with:
+      environment: staging
+    permissions:
+      contents: read
+      id-token: write
+
+  production:
+    needs: staging
+    uses: ./.github/workflows/deploy-env.yml
+    with:
+      environment: production
+    permissions:
+      contents: read
+      id-token: write

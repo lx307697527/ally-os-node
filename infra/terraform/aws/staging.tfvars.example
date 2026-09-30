@@ -1,0 +1,5 @@
+env                         = "staging"
+region                      = "us-east-1"
+create_github_oidc_provider = true
+certificate_arn             = ""
+cors_origins                = ""
