@@ -13,6 +13,12 @@ export const envSchema = z.object({
   LOG_LEVEL: z.enum(["fatal", "error", "warn", "info", "debug", "trace"]).default("info"),
   DATABASE_URL: z.url(),
 
+  // Better Auth 的会话签名密钥（#22）。漏配或太弱都不许启动：会话 cookie 防篡改全靠它。
+  BETTER_AUTH_SECRET: z.string().min(32),
+  // Better Auth 的对外基准地址（生产必填，回调/重定向要基于确定域名）；
+  // 本地留空 = 从请求推导
+  BETTER_AUTH_URL: z.url().optional(),
+
   S3_BUCKET: z.string().min(1),
   S3_REGION: z.string().min(1).default("us-east-1"),
   // 留空 = AWS S3；填写 = 任意 S3 兼容存储（MinIO / 阿里云 OSS / 腾讯云 COS）

@@ -4,6 +4,7 @@ import { parseEnv } from "./index.ts";
 const base = {
   DATABASE_URL: "postgres://u:p@localhost:5432/db",
   S3_BUCKET: "bucket",
+  BETTER_AUTH_SECRET: "test-secret-0123456789abcdef0123456789abcdef",
 };
 
 describe("parseEnv", () => {
@@ -41,5 +42,10 @@ describe("parseEnv", () => {
 
   it("rejects missing required values with a readable message", () => {
     expect(() => parseEnv({})).toThrow(/DATABASE_URL/);
+  });
+
+  it("rejects a missing or too-short better-auth secret", () => {
+    expect(() => parseEnv({ ...base, BETTER_AUTH_SECRET: undefined })).toThrow(/BETTER_AUTH_SECRET/);
+    expect(() => parseEnv({ ...base, BETTER_AUTH_SECRET: "short" })).toThrow(/BETTER_AUTH_SECRET/);
   });
 });

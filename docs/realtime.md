@@ -26,7 +26,7 @@ issue #30 的迁移要点新建的基础设施，前端各领域迁移时通过 
 
 | 帧 | 说明 |
 | --- | --- |
-| `{ type: "auth", token }` | 连接后 10s 内必须完成，否则 4401 关闭；鉴权器注入（见下） |
+| `{ type: "auth", token }` | 连接后 10s 内必须完成，否则 4401 关闭；token 是会话令牌（见下） |
 | `{ type: "subscribe", channel, presence? }` | `presence` 仅在 `presence:` 前缀频道有效 |
 | `{ type: "unsubscribe", channel }` | 幂等 |
 | `{ type: "publish", channel, event, data }` | 只能发给已订阅频道；经由总线广播（含发送者自己） |
@@ -42,12 +42,17 @@ issue #30 的迁移要点新建的基础设施，前端各领域迁移时通过 
 约束：频道名 `[a-zA-Z0-9][a-zA-Z0-9:_-]{0,127}`，presence 频道必须带名字；
 NOTIFY payload 上限 6000 字节（PG 硬限 8000），超限发布回 `too_large`。
 
-## 鉴权（与 #22 的衔接）
+## 鉴权（#22 已接线）
 
 hub 只认注入的 `authenticate(token) => { userId } | null`。
-当前 `apps/api/src/realtime/auth.ts` 的接线：开发/测试接受 `dev:<userId>`
-令牌；**生产环境拒绝所有连接**并打 warn——这是没有认证体系时唯一安全的默认值。
-#22 落地后只需替换这一个函数。
+`apps/api/src/realtime/auth.ts` 的接线（#22 落地后）：
+
+- auth 帧的 `token` 是 **Better Auth 会话令牌**——cookie 里的完整值
+  （`token.signature`）或裸 token 都可以；服务端查 `auth_session` 表比对
+  （只取第一段，过期即拒绝）。见 `docs/auth.md`。
+- 开发/测试保留 `dev:<userId>` 直通令牌，本地联调不依赖登录；
+  **生产环境永不放行** `dev:` 前缀。
+- 生产环境若没有注入会话校验器（不可能的接线错误），拒绝所有连接并打 warn。
 
 ## 多实例与语义
 
@@ -71,4 +76,5 @@ hub 只认注入的 `authenticate(token) => { userId } | null`。
 - [x] 断线自动重连、重连后恢复（客户端 SDK 单测覆盖：重放 auth、重发订阅、resync）
 - [ ] "14 处订阅全部替换"：前提已过时（老系统无任何 realtime 用法），随各领域
       前端迁移逐个接入本服务后关闭该条
-- [ ] 连接鉴权换成 #22 的真实会话校验（当前生产拒绝所有连接）
+- [x] 连接鉴权换成 #22 的真实会话校验（#22 切片 1 落地：auth 帧带 Better Auth
+      会话令牌，服务端查 `auth_session` 校验；`dev:` 令牌仅限非生产）

@@ -4,15 +4,25 @@ import { parseEnv } from "@ally/config";
 import { createDb } from "@ally/db";
 import { RealtimeBus, type RealtimeBusPayload } from "@ally/realtime";
 import pino from "pino";
+import { createApp } from "./app.ts";
+import { createAuth, createSessionResolver, createSessionTokenVerifier } from "./auth/auth.ts";
 import { createRealtimeAuthenticator } from "./realtime/auth.ts";
 import { RealtimeHub } from "./realtime/hub.ts";
 import { createPresenceStore } from "./realtime/presence.ts";
 import { attachRealtimeWs } from "./realtime/ws.ts";
-import { createApp } from "./app.ts";
 
 const env = parseEnv(process.env);
 const logger = pino({ level: env.LOG_LEVEL });
 const { db, pool } = createDb(env.DATABASE_URL);
+
+// 认证（#22）：Better Auth 处理 /api/auth/*，会话经中间件注入业务路由
+const auth = createAuth({
+  db,
+  secret: env.BETTER_AUTH_SECRET,
+  trustedOrigins: env.CORS_ORIGINS,
+  baseURL: env.BETTER_AUTH_URL,
+});
+const resolveSession = createSessionResolver(auth);
 
 const app = createApp({
   logger,
@@ -20,10 +30,12 @@ const app = createApp({
   checkDatabase: async () => {
     await pool.query("select 1");
   },
+  authHandler: (request) => auth.handler(request),
+  resolveSession,
 });
 
 // 实时推送（#30）：hub ↔ bus 互相引用，用先声明再赋值的函数引用解决循环创建。
-// 完整鉴权等 #22 落地；在那之前开发环境接受 dev:<userId> 令牌，生产拒绝所有连接。
+// 连接鉴权走 #22 的会话令牌校验；开发/测试保留 dev:<userId> 直通便于本地联调。
 const instanceId = randomUUID();
 // bus 创建前 hub 若真的发布（不可能：还没开始接连接），直接失败暴露问题
 let publishToBus: (payload: RealtimeBusPayload) => Promise<void> = () =>
@@ -33,7 +45,7 @@ const hub = new RealtimeHub({
   instanceId,
   publish: (payload) => publishToBus(payload),
   presence: createPresenceStore(db),
-  authenticate: createRealtimeAuthenticator(env, logger),
+  authenticate: createRealtimeAuthenticator(env, logger, createSessionTokenVerifier(db)),
 });
 const bus = new RealtimeBus({
   databaseUrl: env.DATABASE_URL,

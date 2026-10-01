@@ -37,6 +37,8 @@ services:
     command: ["node", "packages/db/src/migrate.ts"]
     environment: &server-env
       DATABASE_URL: postgres://ally:ally@postgres:5432/ally
+      # 仅本地容器联调用；真实部署由 Terraform 生成并注入 Secrets Manager 值
+      BETTER_AUTH_SECRET: local-compose-secret-0123456789abcdef
       S3_BUCKET: ally-local
       S3_ENDPOINT: http://minio:9000
       S3_ACCESS_KEY_ID: minio

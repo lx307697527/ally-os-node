@@ -26,6 +26,7 @@ locals {
   ]
   server_secrets = [
     { name = "DATABASE_URL", valueFrom = aws_secretsmanager_secret.database_url.arn },
+    { name = "BETTER_AUTH_SECRET", valueFrom = aws_secretsmanager_secret.better_auth_secret.arn },
   ]
 
   # 名字 → 启动命令。api 对外提供 HTTP，其余不暴露端口
