@@ -11,3 +11,13 @@ coverage/
 *.tfvars
 !*.tfvars.example
 .DS_Store
+
+# --- Dev harness (ported from ally-os) ---
+# per-task git worktrees: linked checkouts, never tracked in the main tree
+.claude/worktrees/
+.worktrees/
+# live session cursor — local session recovery, not shared truth
+.claude/state/current-task.json
+.claude/state/current-task.*.json
+!.claude/state/current-task.template.json
+__pycache__/

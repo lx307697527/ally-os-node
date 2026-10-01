@@ -1,0 +1,8 @@
+{
+  "fast_mode": false,
+  "skips": [],
+  "set_by": "port (2026-10-01)",
+  "set_at": "2026-10-01",
+  "reason": "reset to false: the true copied from ally-os was its CTO temporary speedup; this repo runs the full discipline (test-first + verify gate)",
+  "restore": "set fast_mode back to false, or delete this file"
+}

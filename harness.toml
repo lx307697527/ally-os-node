@@ -1,0 +1,27 @@
+# Harness configuration — ported from ally-os.
+# The ops/backlog file from ally-os is NOT ported: GitHub issues are the tracker
+# here (see docs/guides/dev-harness-port.md). Paths below are the ones that exist.
+
+[harness]
+version = "0.1.0"
+
+[paths]
+specs = "ops/specs"
+incidents = "ops/incidents"
+session_logs = "ops/session-logs"
+transcripts = "ops/session-transcripts"
+rules = "ops/rules"
+
+[ids]
+prefixes = ["FEAT", "BUG"]
+
+[platform]
+kind = "github"
+
+[extensions]
+# guards = "guards"   # NOT ported: the ally-os guards are Supabase/RLS/migration-
+# specific. This repo's gate is `pnpm verify` (pre-push + CI) plus the checks
+# listed in docs/guides/dev-harness-port.md.
+
+[modules]
+roots = ["apps", "packages"]

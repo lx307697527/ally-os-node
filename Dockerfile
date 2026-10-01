@@ -16,6 +16,10 @@ COPY apps/web/package.json apps/web/
 COPY packages/config/package.json packages/config/
 COPY packages/db/package.json packages/db/
 COPY packages/storage/package.json packages/storage/
+# postinstall needs these at install time (root package.json wires it); the
+# script itself no-ops without .git, which never enters the build context.
+COPY .python-version ./
+COPY scripts/postinstall.mjs scripts/install_git_hooks.py scripts/
 RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
     pnpm install --frozen-lockfile --prod \
       --filter "@ally/api..." --filter "@ally/worker..." --filter "@ally/db..."

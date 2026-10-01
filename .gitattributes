@@ -1,0 +1,27 @@
+# Line endings are normalised to LF in the working tree on every platform.
+#
+# WHY: Git for Windows defaults to core.autocrlf=true, so a Windows clone gets
+# CRLF locally while the repository stores LF. That breaks exactly the things
+# this repo now ships: bash hook scripts (.claude/hooks/*, scripts/hooks/*)
+# fail on a CRLF shebang under git-bash, and any future byte-comparing guard
+# goes red on a tree nobody edited. Ported from ally-os [FEAT-480], trimmed to
+# what this repo carries.
+#
+# An existing Windows working copy may show a one-time renormalisation on the
+# next checkout (`git add --renormalize .` if so). No effect on POSIX checkouts.
+* text=auto eol=lf
+
+# Binary types, named explicitly rather than left to detection.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.webp binary
+*.pdf binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.otf binary
+*.zip binary
+*.gz binary
