@@ -42,6 +42,24 @@ resource "aws_secretsmanager_secret_version" "database_url" {
   secret_string = "postgres://ally:${random_password.db.result}@${aws_db_instance.main.endpoint}/ally?sslmode=no-verify"
 }
 
+# ---------- 认证 ----------
+# Better Auth 的会话签名密钥（#22）。Terraform 生成并托管，ECS 启动时注入，
+# 不需要人工准备任何值。
+resource "random_password" "better_auth_secret" {
+  length  = 48
+  special = false
+}
+
+resource "aws_secretsmanager_secret" "better_auth_secret" {
+  name                    = "${local.name}/better-auth-secret"
+  recovery_window_in_days = var.env == "production" ? 7 : 0
+}
+
+resource "aws_secretsmanager_secret_version" "better_auth_secret" {
+  secret_id     = aws_secretsmanager_secret.better_auth_secret.id
+  secret_string = random_password.better_auth_secret.result
+}
+
 # ---------- 对象存储 ----------
 resource "aws_s3_bucket" "files" {
   bucket_prefix = "${local.name}-files-"

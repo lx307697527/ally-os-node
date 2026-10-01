@@ -26,7 +26,10 @@ resource "aws_iam_role_policy" "task_execution_secrets" {
     Statement = [{
       Effect   = "Allow"
       Action   = ["secretsmanager:GetSecretValue"]
-      Resource = [aws_secretsmanager_secret.database_url.arn]
+      Resource = [
+        aws_secretsmanager_secret.database_url.arn,
+        aws_secretsmanager_secret.better_auth_secret.arn,
+      ]
     }]
   })
 }
