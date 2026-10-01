@@ -28,13 +28,22 @@
  *     usual names resolve to a real one.
  */
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const HOOKS_PATH = "scripts/hooks";
 const STRICT = process.env.ALLY_POSTINSTALL_STRICT === "1";
+
+// No .git → not a git checkout: a docker build layer (the Dockerfile copies
+// package.jsons + this script BEFORE the source; .git never enters the context
+// — see .dockerignore). There is nothing to install hooks for, and probing for
+// python there would only print a banner into every image build.
+if (!existsSync(join(ROOT, ".git"))) {
+  process.stdout.write("postinstall: no .git (docker build context) — skipping git hook install.\n");
+  process.exit(0);
+}
 
 /** Interpreters to try, in order. `py -3` first on Windows: the launcher is a real
  * .exe installed by python.org, and it is never the Store stub. */
