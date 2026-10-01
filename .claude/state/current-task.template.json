@@ -1,0 +1,18 @@
+{
+  "spec_id": null,
+  "title": null,
+  "kind": "feature",
+  "autonomy": "L2",
+  "worktree_path": null,
+  "state": "EXPLORE",
+  "phase": 1,
+  "build_mode": null,
+  "layer": null,
+  "layer_attempts": 0,
+  "review_bounces": 0,
+  "test_status": "unknown",
+  "status": "in_progress",
+  "blocked_reason": null,
+  "last_good_commit": null,
+  "updated": null
+}

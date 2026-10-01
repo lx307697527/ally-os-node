@@ -49,3 +49,25 @@ pnpm db:generate                     # after editing packages/db/src/schema.ts �
 
 - Branch from `main`, PR → `main`, squash merge. Conventional commits in English: `type(scope): summary`.
 - Merging to `main` auto-deploys staging; production needs manual approval in GitHub Actions.
+
+## Dev harness (ported from ally-os)
+
+The workflow discipline from the old repo lives here too — see
+`docs/guides/dev-harness-port.md` for the full port manifest and concept mapping.
+Short version:
+
+- **Skills & agents**: `.claude/skills/` (task-intake, feature-dev, orchestrator,
+  bug-fix, commit, …) and `.claude/agents/` define the intake → spec → test-first
+  build → review → docs-sync → PR loop. Where they mention the ally-os backlog or
+  spec IDs, read "GitHub issue" and "issue number" respectively.
+- **One task, one worktree**: linked checkouts under `.claude/worktrees/`
+  (gitignored), branched fresh from `origin/main`.
+- **Claim before you work**: `python scripts/claim_issue.py claim <N>` takes an
+  atomic lease (a pushed git ref) on issue #N so two sessions never build the same
+  thing; release it when the PR lands.
+- **Session logs**: `ops/session-logs/` accumulates what each session actually
+  did; keep them committed.
+- **Pre-push gate**: `git push` runs `pnpm verify` (installed via `postinstall` /
+  `core.hooksPath scripts/hooks`). Red code does not leave the machine.
+- **Rules**: `ops/rules/` — fail closed, hermetic fixtures, producers prove their
+  output, English user-visible text.

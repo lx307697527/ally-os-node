@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# Local pre-push gate — ported from ally-os (FEAT-034 / FEAT-679 lineage) and
+# slimmed for this repo.
+#
+# WHAT RUNS HERE. The ally-os original ran lint + unit + a dozen sub-second
+# repo guards; most of those guards are Supabase/RLS-specific and were not
+# ported (see docs/guides/dev-harness-port.md). What this repo has instead is
+# one done-standard: `pnpm verify` = lint → typecheck → test. This hook runs
+# exactly that, so a red change is caught in seconds on the machine instead of
+# a CI round-trip. CI still runs the same thing — this is the cheap early copy.
+#
+# THIS HOOK IS A GATE (RULE-002: a missing precondition is a refusal, never
+# exit 0 — see ops/rules/RULE-002-guards-fail-closed.md, and ally-os BUG-528
+# for what happened when "no work tree" meant "no checks"):
+#   - no work tree, no pnpm, or dependencies not installed → the push is
+#     REFUSED, not allowed through unchecked.
+#   - `git push --no-verify` still skips it (git's own escape hatch); CI
+#     remains the second gate.
+#
+# Enable:   git config core.hooksPath scripts/hooks   (postinstall does this)
+# Disable:  git config --unset core.hooksPath
+# Skip once: git push --no-verify
+set -uo pipefail
+
+cd "$(git rev-parse --show-toplevel)" 2>/dev/null || {
+  echo "pre-push: no work tree — refusing to push unchecked (RULE-002)." >&2
+  exit 1
+}
+
+command -v pnpm >/dev/null 2>&1 || {
+  echo "pre-push: pnpm not found — refusing to push unchecked (RULE-002). Install pnpm, or skip once with: git push --no-verify" >&2
+  exit 1
+}
+
+if [ ! -d node_modules ]; then
+  echo "pre-push: node_modules missing — run pnpm install first. Refusing to push unchecked (RULE-002)." >&2
+  exit 1
+fi
+
+exec pnpm verify

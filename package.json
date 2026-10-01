@@ -13,7 +13,8 @@
     "test": "vitest run",
     "db:generate": "pnpm --filter @ally/db generate",
     "db:migrate": "pnpm --filter @ally/db migrate",
-    "verify": "pnpm lint && pnpm typecheck && pnpm test"
+    "verify": "pnpm lint && pnpm typecheck && pnpm test",
+    "postinstall": "node scripts/postinstall.mjs"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

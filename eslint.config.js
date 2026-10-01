@@ -15,7 +15,7 @@ export default tseslint.config(
       globals: { ...globals.node },
       parserOptions: {
         projectService: {
-          allowDefaultProject: ["eslint.config.js", "vitest.config.ts"],
+          allowDefaultProject: ["eslint.config.js", "vitest.config.ts", "scripts/*.mjs"],
         },
         tsconfigRootDir: import.meta.dirname,
       },
@@ -41,6 +41,11 @@ export default tseslint.config(
   },
   {
     files: ["eslint.config.js"],
+    ...tseslint.configs.disableTypeChecked,
+  },
+  {
+    // 根目录 bootstrap 脚本不在任何 tsconfig project 里(postinstall 装依赖前就要能跑)
+    files: ["scripts/*.mjs"],
     ...tseslint.configs.disableTypeChecked,
   },
 );
