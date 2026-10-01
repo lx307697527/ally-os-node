@@ -3,6 +3,7 @@ import pg from "pg";
 import * as schema from "./schema.ts";
 
 export { schema };
+export { runMigrations } from "./migrations.ts";
 
 export function createDb(databaseUrl: string) {
   const pool = new pg.Pool({ connectionString: databaseUrl, max: 10 });
