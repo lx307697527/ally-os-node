@@ -30,6 +30,9 @@ export const envSchema = z.object({
         .map((s) => s.trim())
         .filter(Boolean),
     ),
+
+  // Slack incoming webhook：worker 任务最终失败时发告警；留空 = 只记日志不推送
+  SLACK_WEBHOOK_URL: z.url().optional(),
 });
 
 export type Env = z.infer<typeof envSchema>;
