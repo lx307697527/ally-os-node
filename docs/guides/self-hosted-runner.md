@@ -3,6 +3,10 @@
 GitHub Actions 的流水线不变，只是把「在哪台机器上执行」换成你自己的电脑或服务器。
 GitHub 只负责调度，构建用的是你自己的 CPU，**不消耗 GitHub 托管机器的计费分钟数**。
 
+> **Docker 一键版（推荐）**：`ops/ci-runner/` 提供容器化 runner——两个实例、
+> 高资源限额、host 网络，`start.sh` 一条命令完成注册。详见
+> `ops/ci-runner/README.md`。本文其余部分是原生（WSL2/裸机）安装的完整流程。
+
 ## 先看费用：你可能根本不需要
 
 | 仓库类型 | GitHub 托管机器 | 自托管 Runner |
