@@ -1,8 +1,16 @@
 <!doctype html>
-<html lang="zh-CN">
+<!-- `overscroll-y-none` turns off the page-level rubber-band bounce (macOS
+     trackpad, pulling down at an already-topped-out page); the background
+     matches the top bar's own navy as the fallback for a browser that does not
+     support `overscroll-behavior` (Safari < 16), so the exposed band there is
+     inconspicuous instead of a flash of the wrong colour. Ported from
+     ally-os apps/allyos/index.html (#129 slice 1). -->
+<html lang="en" class="overscroll-y-none bg-[var(--surface-navy)]">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" type="image/png" href="/favicon-32.png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/favicon-180.png" />
     <title>Ally OS</title>
   </head>
   <body>

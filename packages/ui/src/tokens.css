@@ -1,0 +1,769 @@
+/* [FEAT-179 / #1466] The cross-app token layer — the machine-readable expression of
+ * docs/design-system/design.md (v1.2 §10).
+ *
+ * PROVENANCE: the 167 custom properties below are the FINAL cascade values of every
+ * `:root` block in `apps/allyos/src/index.css` at FEAT-179 p1, extracted verbatim —
+ * index.css's `:root` is where the design system's literals have lived since FEAT-058.
+ * That file's header explains the two-token-block split; the values here are "the
+ * version that actually renders".
+ *
+ * WHY THIS FILE EXISTS (design.md §10 coexistence discipline): the shared components
+ * must render identically in an app that has no index.css (apps/portal, per ruling
+ * #1466 组件统一). During coexistence index.css keeps its own identical definitions —
+ * changing a token value must land in BOTH files in the same PR; the token-bridge
+ * test (src/token-bridge.test.ts) fails the drift on every shared name.
+ *
+ * REGENERATION when index.css's :root changes: re-extract (final value per name
+ * across its :root blocks, comments stripped) and update the count below.
+ *
+ * 167 properties, extracted from index.css @ FEAT-179 p1 (2026-09-02); 169 since
+ * [BUG-247 / #2993] minted the two control-navy names (see that note below).
+ *
+ * [FEAT-381 / #2632, ruling of 2026-09-10] The TYPE SIZES are no longer the
+ * extracted-verbatim values: every size at or below 18px was raised one step per
+ * that issue's fixed mapping (about x1.12, rounded to 0.5px), and every size at or
+ * above 20px was left alone. So body / dense-table / page title now read 16 / 14 /
+ * 24px, matching the legacy system. Re-extracting from index.css would REVERT this
+ * — index.css is down to 33 lines and carries no size literals, so the sizes here
+ * have no second source and the REGENERATION note above no longer governs them.
+ * Sizes unchanged by the ruling: --fs-display 30, --fs-h1 24, --text-display-*.
+ * The property count does not change.
+ *
+ * [#2666, ruling of 2026-09-10] `--destructive` moves from #DC474C to #E73F48
+ * (critical's status fg is that token, so it brightens with it) and a new
+ * `--radius-badge` (2px, matching Quote Builder 2's `--radius` override) is
+ * added for the status badge's own shape — see the six-tier block below for
+ * the rest of that ruling. Neither comment sits beside its declaration in this
+ * block: token-bridge.test.ts's declaration parser does not strip comments,
+ * so prose ahead of a `--name:value;` pair inside a `:root{}` block hides that
+ * name from it entirely (measured while landing this change).
+ *
+ * [FEAT-462 / #3063, ruling of 2026-09-14] `--rail-row-pad` 8px 10px -> 10px 10px,
+ * so every rail row in the staff app is 4px taller. It is the ONLY token this change
+ * touches: `--rail-pad`, `--rail-glyph-size` and the group spacing are deliberately
+ * untouched, because the ruling asks for taller ROWS and moving any of the other
+ * three would move the column or the marks inside it as well. Its one consumer is
+ * `railRow()` in `apps/allyos/src/shared/shell/InternalShell.tsx`. The note is HERE
+ * and not beside the declaration for the reason #2666's note above gives: prose ahead
+ * of a `--name:value;` pair inside a `:root{}` block hides that name from
+ * token-bridge.test.ts's parser.
+ *
+ * [FEAT-432 p2 / #2902, ruling of 2026-09-13] THE VALUES BECOME GLOBAL TOO.
+ * Phase 1 made the Quote Builder 2 button RECIPE the system's. A recipe is a set of
+ * NAMES, and those names resolved differently on either side of one `<div>`: that
+ * page's look comes from `QuoteBuilderFrame`, which re-declares design-system custom
+ * properties on its own subtree, so `bg-brand` was a different navy and
+ * `rounded-control` a different corner inside the frame than on every other staff
+ * page. The ruling closes that — the frame's values are promoted here, and the whole
+ * staff app renders them. Nine names change value, four are added:
+ *
+ *   --ally-navy       #1E3A5F -> #1D4E9C   (the top bar and side rail move with it)
+ *                                          ^ REVERSED by BUG-247 / #2993 — see below
+ *   --text-primary    #18181B -> #1B1D20
+ *   --text-secondary  #62626A -> #5B6168
+ *   --border-default  #E4E4E7 -> #E4E5E2
+ *   --surface-page    #E6E2DA -> #E6E2DB
+ *   --radius          6px     -> 2px       (theme.css's --radius-card AND
+ *                                           --radius-control both read it)
+ *   --font-sans / --font-slab / --font-mono -> the frame's SF Pro / JetBrains stacks
+ *   + --text-body / --text-meta / --text-muted / --border-hairline (own block below)
+ *
+ * QUOTE BUILDER 2 IS PIXEL-IDENTICAL ACROSS THIS CHANGE, which is the whole shape of
+ * it: every value promoted is the value that page already rendered, and the frame's
+ * now-duplicate declarations are deleted rather than re-pointed, so there is one
+ * declaration of each instead of two that agree today and drift on the next edit.
+ *
+ * THIS REVERSES PART OF §9 OF THE DESIGN SYSTEM, deliberately. R1..R6 there read the
+ * Quote Builder's five-step ink ramp and its two border greys as undocumented drift
+ * and collapsed them. They were a ruled page's vocabulary, and 2026-09-13 adopts it
+ * system-wide instead. §9's own supersession table is updated in this change and the
+ * conformance suites that pinned the §9 values are amended, not deleted, so the
+ * reversal is recorded where the ruling it reverses lives.
+ *
+ * WHAT STAYS SCOPED TO THE FRAME, and the list is short on purpose: `--ally-amber-deep`
+ * (the frame's #8A5F10 against this file's #80590F — an amber-as-TEXT ink that
+ * ink-contrast.test.ts measures against five grounds, and no part of the ruling
+ * references it); the frame's own `--font-display` / `--font-text` / `--font-num` / `--font-label`
+ * aliases; and its `--err-fg` / `--ok-ink` action pair. Everything the ruling lists is
+ * here; nothing else moved.
+ *
+ * [BUG-247 / #2993, ruling of 2026-09-13] THE NAVY LINE ABOVE IS REVERSED, AND THE
+ * REASON IT HAD TO BE IS THE POINT OF THE TWO NAMES BELOW.
+ *
+ * `--ally-navy` is the BRAND navy. The staff app's top bar, its left navigation rail
+ * (both through `--surface-navy`, which references it), the headings, and the customer
+ * portal's page header all read it. The block above re-valued it so that the BUTTON
+ * would render Quote Builder 2's brighter blue — and every one of those chrome
+ * surfaces came along, so the top bar ended up the exact fill of the "New inquiry"
+ * button beside it. That is the defect filed as #2993.
+ *
+ * The ruling that closes it: the header and the side rail keep #1E3A5F, buttons and
+ * dropdown controls use #1D4E9C, AND THE TWO ARE SEPARATE VARIABLES. The last clause
+ * is the fix — one name serving both roles is what let a button decision reach the
+ * chrome, and re-valuing that single name back would leave the next such ruling free
+ * to do it again. So `--ally-navy` returns to #1E3A5F and a control pair is minted:
+ *
+ *   --ally-navy        back to #1E3A5F   brand: chrome, headings, links, portal header
+ *   --control-navy     #1D4E9C           NEW: the filled/outlined control face
+ *   --control-navy-hover #2A63BE         NEW: that face's hover
+ *
+ * `--control-navy-hover` is the same number `--ally-navy-2` carries and is deliberately
+ * a LITERAL rather than an alias of it: the control pair must not move when the brand
+ * ramp is next edited, which is the whole separation. `--surface-navy` keeps referencing
+ * `--ally-navy` and is untouched. `--link` (which reads `--ally-navy-2`) is untouched.
+ * `--shadow-navy`'s rgba(30,58,95,…) is #1E3A5F's, so it agrees with the brand navy
+ * again without an edit — it never followed the re-valuation.
+ *
+ * NOTHING ELSE FROM THE BLOCK ABOVE IS REVERSED: the ink ramp, the border greys, the
+ * page surface, the 2px radius and the three font stacks all stay at the values that
+ * ruling promoted. Only the navy moved, and only because it had two jobs.
+ *
+ * ⚠️ NO COMMENT MAY SIT BETWEEN A `--name:value;` PAIR AND THE ONE BEFORE IT INSIDE
+ * `:root` — `token-bridge.test.ts` splits the block on `;` and does not strip comments,
+ * so prose ahead of a declaration hides that declaration from it entirely. That is why
+ * the two new names below carry no comment of their own and are explained here.
+ */
+:root {
+  --ally-navy:#1E3A5F;
+  --ally-navy-2:#2A63BE;
+  --ally-navy-line:#3F6BC2;
+  --ally-navy-deep:#172E4B;
+  --control-navy:#1D4E9C;
+  --control-navy-hover:#2A63BE;
+  --ally-amber:#F0A829;
+  --ally-amber-hover:#E09A1A;
+  --ally-amber-deep:#80590F;
+  --ally-amber-tint:#F9F1E4;
+  --ally-amber-tint-line:#E3C8A0;
+  --text-primary:#1B1D20;
+  --text-secondary:#5B6168;
+  --text-on-navy:#FFFFFF;
+  --text-on-navy-soft:#C6D4EC;
+  --surface-page:#E6E2DB;
+  --surface-paper:#F0EDE6;
+  --surface-card:#FFFFFF;
+  --surface-muted:#F4F4F5;
+  --surface-page-internal:#ECEAE6;
+  --border-default:#E4E5E2;
+  --destructive:#E73F48;
+  --ok-fg:var(--status-good-fg);
+  --ok-ink:var(--status-good-ink);
+  --ok-bg:var(--status-good-bg);
+  --ok-line:var(--status-good-line);
+  --warn-bg:var(--status-warning-bg);
+  --warn-fg:var(--status-warning-ink);
+  --warn-line:var(--status-warning-line);
+  --color-brand:var(--ally-navy);
+  --color-accent:var(--ally-amber);
+  --link:var(--ally-navy-2);
+  --link-hover:var(--ally-amber-deep);
+  --font-slab:'SF Pro Display', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
+  --font-sans:'SF Pro Text', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
+  --font-mono:'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  --text-display-xl:38px;
+  --text-display-lg:30px;
+  --text-display-md:26px;
+  --text-display-sm:21px;
+  --lh-display:1.1;
+  --ls-display:-0.015em;
+  --text-lg:18px;
+  --text-md:17px;
+  --text-base:16px;
+  --text-sm:14.5px;
+  --text-xs:13.5px;
+  --lh-body:1.6;
+  --lh-ui:1.4;
+  --fs-display:30px;
+  --fs-h1:24px;
+  --fs-h2:20px;
+  --fs-h3:18px;
+  --fs-lede:17px;
+  --fs-body:16px;
+  --fs-sm:14.5px;
+  --fs-xs:13.5px;
+  --lh-h1:1.2;
+  --lh-h2:1.3;
+  --lh-h3:1.35;
+  --fs-meta:12px;
+  --fs-eyebrow:12px;
+  --ls-meta:0.05em;
+  --ls-eyebrow:0.18em;
+  --text-mono-md:13.5px;
+  --text-mono-sm:12.5px;
+  --text-mono-xs:11px;
+  --fw-light:300;
+  --fw-regular:400;
+  --fw-medium:500;
+  --fw-semibold:600;
+  --fw-bold:700;
+  --space-1:4px;
+  --space-2:8px;
+  --space-3:12px;
+  --space-4:16px;
+  --space-6:24px;
+  --space-8:32px;
+  --space-12:48px;
+  --space-16:64px;
+  --pad-control:9px 16px;
+  --pad-card:24px;
+  --gap-stack:28px;
+  --gap-inline:10px;
+  --layout-pad:var(--space-6);
+  --radius-xs:4px;
+  --radius:2px;
+  --radius-lg:8px;
+  --radius-pill:999px;
+  --radius-badge:2px;
+  --border-width:1px;
+  --border-accent-width:3px;
+  --bp-tablet:900px;
+  --bp-desktop:1100px;
+  --shadow-sm:0 1px 2px rgba(30,58,95,0.06);
+  --shadow-card:0 1px 3px rgba(30,58,95,0.06),0 1px 2px rgba(30,58,95,0.04);
+  --shadow-md:0 2px 8px -2px rgba(30,58,95,0.08),0 1px 2px -1px rgba(30,58,95,0.04);
+  --shadow-raised:0 8px 24px -4px rgba(30,58,95,0.14),0 2px 6px -2px rgba(30,58,95,0.06);
+  --shadow-navy:0 2px 10px -3px rgba(30,58,95,0.35);
+  --ease:cubic-bezier(.4,0,.2,1);
+  --dur-fast:.12s;
+  --dur:.15s;
+  --dur-slow:.26s;
+  --surface-navy:var(--ally-navy);
+  --surface-navy-2:var(--ally-navy-2);
+  --err-bg:var(--status-serious-bg);
+  --err-fg:var(--status-serious-ink);
+  --err-line:var(--status-serious-line);
+  --scrim:rgba(23,46,75,0.42);
+  --focus-ring:0 0 0 3px rgba(42,99,190,0.28);
+  --ally-amber-55:rgba(240,168,41,0.55);
+  --rule-tab:2px;
+  --dot-size:7px;
+  --ls-tab:0.1em;
+  --app-bar-h:64px;
+  --context-band-h:62px;
+  --chrome-h:calc(var(--app-bar-h) + var(--context-band-h));
+  --rule-eyebrow:22px;
+  --ls-btn:0.01em;
+  --surface-rail:#FAF9F6;
+  --surface-rail-active:rgba(30,58,95,0.06);
+  --rail-ink:var(--text-secondary);
+  --rail-ink-strong:var(--text-primary);
+  --rail-ink-mute:var(--text-secondary);
+  --rule-on-navy:rgba(255,255,255,0.1);
+  --text-on-navy-mute:#8FAEDC;
+  --rail-pad:22px 14px 16px;
+  --rail-row-pad:10px 10px;
+  --rail-marker-w:3px;
+  --rail-divider-gap:8px 4px;
+  --pad-brand:0 4px 0 24px;
+  --pad-band:12px 32px;
+  --pad-panel-band-y:13px;
+  --pad-quote-card:18px 20px;
+  --fs-crumb:10.5px;
+  --fs-rail-caption:10px;
+  --fs-panel-title:16.5px;
+  --ls-crumb:0.14em;
+  --ls-rail-caption:0.16em;
+  --ls-status:0.07em;
+  --fs-table-dense:14px;
+  --fs-table-head:10.5px;
+  --ls-table-head:0.1em;
+  --pad-table-cell:10px 14px;
+  --surface-canvas:var(--surface-page);
+  --surface-panel:var(--surface-card);
+  --pad-card-lg:30px;
+  --pad-card-lg-y:34px;
+  --nav-width:168px;
+  --measure-public:1180px;
+  --measure-internal:900px;
+  --wq-rank-col:88px;
+  --wq-clock-col:200px;
+  --summary-width:320px;
+  --share-col-width:200px;
+  --state-id-col:78px;
+  --width-form:460px;
+  --width-form-card:720px;
+  --width-empty:520px;
+  --width-popover:460px;
+  --width-sheet:440px;
+  --width-sheet-lg:560px;
+  --width-login:380px;
+  --width-sketch-box:240px;
+  --width-sketch-arrow:104px;
+  --width-arrow-line:70px;
+  --width-sketch-label:150px;
+  --width-search-min:220px;
+  --width-filter-min:170px;
+  --qr-size:168px;
+  --rule-sketch:2px;
+  --width-tile-min:320px;
+  --avatar-size:32px;
+  --public-ally-amber:#CC9544;
+  --public-surface-paper:#FAF9F6;
+  --public-surface-rail:#F0EDE6;
+  --public-fs-body:var(--text-md);
+  --public-fs-sm:var(--text-base);
+  --public-fs-xs:var(--text-sm);
+  --public-fs-meta:var(--text-mono-sm);
+  --public-fs-eyebrow:var(--text-mono-sm);
+  --public-ls-meta:0.06em;
+  --public-ls-eyebrow:0.14em;
+  --public-lh-body:1.6;
+  --public-pad-card:var(--pad-card-lg);
+  --public-gap-stack:28px;
+  --public-app-bar-h:64px;
+  --public-brand-height:46px;
+--public-paper:#FAF9F6;
+--notification-menu-width:360px;
+--sort-caret-offset:1px;
+--internal-rail-active:rgba(240,168,41,.14);
+--internal-rail-ink:rgba(236,234,230,.82);
+--public-accent:#CC9544;
+--public-bar-height:64px;
+--internal-rail-ink-mute:rgba(236,234,230,.55);
+--session-menu-width:200px;
+--rail-glyph-size:17px;
+--internal-nav-width:clamp(256px,15vw,300px);
+--public-rail:#F0EDE6;
+--session-avatar-size:28px;
+--internal-layout-pad:44px;
+--logo-height:46px;
+--sort-caret-size:5px;
+}
+
+/* [FEAT-432 / #2902] THE CONTROL SCALE — the 2026-09-12 ruling that the Quote Builder 2
+ * button recipe becomes the system's button recipe. That recipe measures a control by its
+ * HEIGHT (30 / 34 / 38px) rather than letting padding produce one, and the three numbers
+ * already existed — as `--qb-control-sm/md/lg` inside `QuoteBuilderFrame.tsx`, reachable
+ * only on that one page's subtree. They are promoted here unchanged, and the frame now
+ * POINTS AT these names instead of restating the pixels, so there is one scale rather than
+ * two that happen to agree today.
+ *
+ * WHY A FOURTH TYPE STEP. The ruling's middle size is 14px, which the internal ramp does
+ * not carry: `--fs-xs` is 13.5 and `--fs-sm` is 14.5. Quote Builder 2 reached it through
+ * its own scoped `--qb-fs-12_5`, which does not exist outside the frame, so the global
+ * recipe needs the value under a global name. `--fs-control` is that name, and it is the
+ * ONLY new literal this change introduces — issue #2902's acceptance criterion allows a
+ * value to enter the library through this file and nowhere else.
+ *
+ * NOT A CHANGE TO THE RAMP. `--fs-control` is a control-chrome size, not a fifth rung of
+ * the internal face's reading scale, so the 2026-09-10 type-scale ruling (#2632) does not
+ * govern it and `type-scale-step-up.test.ts` deliberately does not pin it. `--pad-control`
+ * stays exactly as it is: `Textarea` and `Input` still measure from it, and only the BUTTON
+ * moved onto heights.
+ *
+ * No comment sits beside a declaration inside the block below: token-bridge.test.ts's
+ * parser does not strip comments, and prose ahead of a `--name:value;` pair hides that name
+ * from it entirely (the trap #2666 recorded and #2888 recorded again).
+ */
+:root {
+  --height-control-sm:30px;
+  --height-control-md:34px;
+  --height-control-lg:38px;
+  /* [FEAT-464 UI] A FOURTH STEP, ADDED RATHER THAN RE-VALUING THE THIRD. The support
+   * surfaces are specified at a 40px control row. `--height-control-md` is 34px and is
+   * what every control in both apps measures from, so moving it to 40 would resize the
+   * whole system to style two pages -- the BUG-247 shape, where re-valuing one shared
+   * property to suit one surface moved the chrome with it. This name is referenced by
+   * Button's `xl` size and nothing else today, so adding it changes no rendered pixel. */
+  --height-control-xl:40px;
+  --fs-control:14px;
+}
+
+/* [FEAT-432 p2 / #2902, ruling of 2026-09-13] THE FOUR NAMES THAT ONLY EXISTED INSIDE
+ * THE FRAME. Three more ink steps between `--text-primary` and `--text-secondary`, and
+ * the lighter of the two border greys. Until this change each was declared only on
+ * `QuoteBuilderFrame`'s subtree, so `text-[var(--text-body)]` painted the ruled grey on
+ * the quote builder and painted NOTHING anywhere else — a `var()` naming an undefined
+ * property makes its declaration invalid at computed-value time, and the element
+ * silently inherits instead. That is why phase 1's button used `text-ink` for its quiet
+ * face; with the name defined here, the ruled ink is reachable everywhere and the
+ * button now takes it.
+ *
+ * `--text-body` AND `--text-meta` ARE ALSO TYPE-SIZE NAMES IN theme.css, and that is
+ * survivable rather than lucky. theme.css declares them inside `@theme inline`, and
+ * `inline` is what makes the difference: Tailwind resolves those utilities to the
+ * UNDERLYING name, emitting `.text-body{font-size:var(--fs-body)}` — it never reads
+ * `var(--text-body)` for a size. Measured on the built stylesheet, not assumed. The two
+ * meanings therefore never meet: `text-body` is the 16px step, `text-[var(--text-body)]`
+ * is this ink. A reader who finds that confusing is right, and renaming either side is
+ * a bigger change than this ruling authorises — the frame has used these names since
+ * FEAT-179 p4 and 266 call sites quote them.
+ *
+ * CASCADE ORDER, since the two declarations do collide at `:root`: this file is
+ * imported UNLAYERED and `@theme` emits into `@layer theme`, so an unlayered
+ * declaration wins outright regardless of import order. `--text-body` computes to the
+ * ink below everywhere.
+ *
+ * No comment sits beside a declaration inside the block: token-bridge.test.ts's parser
+ * does not strip comments, and prose ahead of a `--name:value;` pair hides that name
+ * from it entirely (the trap #2666 recorded and #2888 recorded again).
+ */
+:root {
+  --text-body:#3A3E43;
+  --text-meta:#5E6367;
+  --text-muted:#656B6F;
+  --border-hairline:#ECEEEA;
+}
+
+/* [#2361] THE SIX-TIER STATUS PALETTE — the one set of colours anything told
+ * apart by colour uses (design.md §8.5).
+ *
+ * PROVENANCE: the in-repo admin mockup's "Reskin overrides", read against
+ * design.md §8.5's status ramp, and ruled canonical by the user on 2026-09-08.
+ *
+ * FOUR ROLES PER TIER, and they are not interchangeable:
+ *   ink   text. Every tier clears WCAG AA 4.5:1 on its own bg.
+ *   fg    solid dots, fills, icon strokes, rule lines. 3:1 on its own bg.
+ *   bg    the chip ground. OPAQUE, deliberately: a translucent tint changes
+ *         with the surface under it, so the same status read differently on a
+ *         card, on paper and on the internal page ground. These are the
+ *         mockup's tints already composited over white, so a chip carries its
+ *         colour onto any of the three.
+ *   line  the chip border.
+ * The pairs are asserted, not asserted-to-be-fine: the contrast suite under
+ * src/__tests__ recomputes all twelve ratios from these values.
+ *
+ * THE BRAND AMBER IS NOT ON THIS LIST. It is a button fill, an icon, a
+ * current-item highlight, a focus ring — 2.03:1 on white, so never text on a
+ * light surface, and never a status. Two tiers reference an existing base
+ * token rather than restating its hex, because the value already has an owner:
+ * critical's fill IS the declared destructive accent, and neutral's ink IS the
+ * secondary ink.
+ */
+/* [#2666] 2026-09-10 user ruling: the six-tier palette landed by #2361 (PR
+ * #2409) is brightened as a whole — OKLCH chroma +25% (critical +10% only),
+ * fg/dot lightness +0.02, bg tint alpha 12%→15%, line alpha x1.2 — and
+ * `good`'s hue moves off teal to 166° (the green-side midpoint between the
+ * brand navy and amber). ink is untouched (chroma only, lightness held), so
+ * its contrast against bg is essentially unchanged. `warning`'s ruled fg
+ * (`#B67E00`) regressed fg-on-bg below the tier's own 3:1 floor (2.99:1);
+ * `#AD7700` is the corrected value (3.295:1, at parity with the retired
+ * pair's 3.318:1) — see issue #2666's comment thread for the full derivation.
+ */
+:root {
+  --status-serious-ink:#952300;
+  --status-serious-fg:#9E2600;
+  --status-serious-bg:#F0DED9;
+  --status-serious-line:#DCB1A3;
+  --status-critical-ink:#A0232B;
+  --status-critical-fg:var(--destructive);
+  --status-critical-bg:#FBDDDF;
+  --status-critical-line:#F2979C;
+  --status-warning-ink:#8D6000;
+  --status-warning-fg:#AD7700;
+  --status-warning-bg:#F4ECD9;
+  --status-warning-line:#E5D1A3;
+  --status-good-ink:#007957;
+  --status-good-fg:#239771;
+  --status-good-bg:#DEEFEA;
+  --status-good-line:#B0DACC;
+  --status-info-ink:#1C5BAE;
+  --status-info-fg:#2361B4;
+  --status-info-bg:#E2E7ED;
+  --status-info-line:#C8D1DC;
+  --status-neutral-ink:var(--text-secondary);
+  --status-neutral-fg:#777782;
+  --status-neutral-bg:#EBEBEC;
+  --status-neutral-line:#CECED2;
+}
+
+/* [FEAT-428 / #2888] THE UNIFIED DROPDOWN'S VALUES — the 2026-09-12 ruling (#2887)
+ * that every dropdown in the system becomes one Select and one Menu, both built on
+ * Base UI, with the popup opening BELOW the trigger rather than sliding the selected
+ * item over it. Each literal the ruling names lands here once; `Menu.tsx` and
+ * `Select.tsx` write only the names (design.md §10 [HARD], scanned mechanically by
+ * component-contract.test.ts).
+ *
+ * THE TWO 2px VALUES THE RULING NAMES ARE NOT DECLARED HERE AT ALL. The popup's 2px
+ * corner reuses `--radius-badge` (#2666) and its 2px amber top edge reuses
+ * `--rule-tab`; both already own that number in this file. Minting `--radius-popup`
+ * was tried and reverted for a reason worth keeping: `--radius-*` is a CLOSED SET,
+ * asserted whole by `apps/allyos/src/__tests__/scale-conformance.test.ts` ("the
+ * radius scale is 4·6·8·999px"), so even an alias pointing at an existing member is
+ * a new name inside a set something else is keeping shut. The reused names read
+ * oddly on a popup — that is the cost, and it is cheaper than a second 2px or an
+ * amended conformance suite.
+ *
+ * `--anchor-width` AND `--available-height` ARE DELIBERATE, AND THEY ARE FALLBACKS.
+ * Base UI writes both (plus `--available-width` / `--anchor-height`) onto the
+ * positioner element's inline style at runtime — measured in
+ * `utils/useAnchorPositioning.js:212-214` — so the popup inherits the real values and
+ * these never apply on the normal path (an inline style outranks `:root`). They exist
+ * because `scripts/check_undefined_css_vars.py` is a TEXT scan that refuses any
+ * reference to a custom property with no definition in source, explicitly including
+ * one that carries a fallback. (This prose deliberately does not spell that
+ * reference out: token-bridge.test.ts reads this file WITHOUT stripping comments, so
+ * a mentioned-but-undefined name in a comment fails it — caught here, once.)
+ * The values are chosen so that a missing runtime write degrades to the
+ * ruling's own floor and ceiling rather than to zero: `max(0px, 160px)` is 160px and
+ * `min(100vh, 320px)` is 320px.
+ *
+ * No comment sits beside a declaration inside the block below: token-bridge.test.ts's
+ * parser does not strip comments, and prose ahead of a `--name:value;` pair hides that
+ * name from it entirely (the same trap #2666 recorded).
+ */
+:root {
+  --shadow-popup:0 14px 38px rgba(19,28,42,0.2);
+  --pad-popup:6px;
+  --pad-menu-item:7px 10px;
+  --pad-menu-item-wide:8px 13px;
+  --fs-menu-item:12.5px;
+  --fs-menu-label:9px;
+  --ls-menu-label:0.12em;
+  --width-menu-min:160px;
+  --width-menu-wide:250px;
+  --height-menu-max:320px;
+  --rise-popup:3px;
+  --anchor-width:0px;
+  --available-height:100vh;
+}
+
+/* [FEAT-485 / #3225] TWO NAMES THE 2026-09-15 STAFF-APP PAGE REVIEW ASKED FOR, AND
+ * BOTH ARE ADDITIONS RATHER THAN RE-VALUINGS.
+ *
+ * `--height-control-xs` is a fifth control height, one step below the 30px `sm`, for
+ * a text button that sits inside a dense row. It is 26px because that is already the
+ * square `Button`'s `icon-sm` size draws (`size-6.5`), so the text and icon forms of
+ * the same small action come out the same height instead of nearly the same. Only
+ * `Button`'s `xs` size reads it, so declaring it moves nothing already on screen —
+ * the shape `--height-control-xl` was added in.
+ *
+ * `--fs-stat` is the figure size for a number that IS the content of its tile: a lead
+ * score, a KPI. The top of the reading ramp is `--fs-display` at 30px, and the review
+ * asked for those figures to read larger than a page's biggest heading. Re-valuing
+ * `--fs-display` would have done it in one line and taken every display heading with
+ * it, which is the BUG-247 shape — one shared property re-valued to suit one surface,
+ * and the chrome moves too. The 2026-09-15 ruling is therefore "its own step, leave
+ * --fs-display alone", and `type-scale-step-up.test.ts` still pins 30px there.
+ *
+ * NOTHING REFERENCES `--fs-stat` YET, and that is the scope line rather than an
+ * oversight: the call sites (`RecordSummary`'s two lead-score figures) are #3228's.
+ * The reference direction is the only one anything checks — `check_undefined_css_vars.py`
+ * and token-bridge.test.ts both ask that a used name be declared, never that a declared
+ * name be used — so the token can land a phase ahead of its consumer.
+ *
+ * No comment sits beside a declaration inside the block below: token-bridge.test.ts's
+ * parser does not strip comments, and prose ahead of a `--name:value;` pair hides that
+ * name from it entirely (the trap #2666 recorded, #2888 recorded again, and
+ * `--height-control-xl` is currently sitting in).
+ */
+:root {
+  --height-control-xs:26px;
+  --fs-stat:36px;
+}
+
+/* [FEAT-524 / #3226] THE CATEGORICAL LABEL PALETTE — a SECOND colour family, for
+ * facts rather than statuses.
+ *
+ * WHY A SECOND FAMILY AT ALL. #2361 ruled that the six status tiers ARE the status
+ * palette and that a page decides which status a value is, never what colour that
+ * status is. The Inquiries list and detail carry markers that are not statuses:
+ * Booked call, Has quote, Ready to order, Has formula, first/last touch. They state
+ * a fact about the row — something we did, something the customer wants, where the
+ * formula stands — and nothing about how the row is doing. Dressing them in status
+ * tiers would make "we already quoted this" read as a status tier at a glance, which
+ * is precisely the blur #2361 closed. Until now the tokens offered no alternative:
+ * §8.5's six tiers and the brand amber were the whole colour vocabulary, so a fact
+ * marker had to borrow a tier or invent a literal. This block is the alternative.
+ *
+ * SAME ANATOMY AS A TIER, ON PURPOSE. Four roles per hue, named exactly as the tiers
+ * name theirs: `ink` is text, `fg` is a dot or fill, `bg` is the chip's own opaque
+ * ground, `line` is its border. Anything that already knows how to wear a status tier
+ * wears a hue with no new rules, and `Tag` is `Badge`'s default variant with this
+ * family swapped in for `tones`.
+ *
+ * THE BARS ARE THE TIERS' BARS, AND THEY ARE MEASURED, NOT ASSERTED IN PROSE.
+ * `ink` is text, so 4.5:1 on its own bg; `fg` is a non-text graphic, so 3:1. The
+ * grounds are opaque six-digit hex for the same reason §8.5's are — a translucent
+ * ground takes its colour from whatever sits under it, and then no ratio here means
+ * anything. `label-palette-contrast.test.ts` reads both ends out of this file and
+ * recomputes every ratio, so a hue nudged for how it looks goes red instead of
+ * quietly making this comment wrong. Measured on the values below: ink/bg is 8.10
+ * (violet), 6.82 (plum), 6.33 (cyan), 6.38 (olive), 6.89 (sepia), 6.91 (slate);
+ * fg/bg is 4.03 at its worst (olive), well clear of the graphic bar.
+ *
+ * WHY THESE SIX HUES. Each is chosen for distance from the status tiers it would
+ * otherwise be confused with: violet sits away from both info blue and critical red;
+ * plum is the purple side of critical red; cyan is lighter than info and bluer than
+ * good; olive is yellow-green and separable from warning amber; sepia is far from
+ * both warning amber and serious orange-red. Slate is the closest of the six to
+ * neutral grey and info blue, and is the one to drop first if the family is ever cut
+ * to five (#3226's own note) — it is kept here because it clears both bars and the
+ * attribution and readiness markers alone spend five hues.
+ *
+ * ABSENCE IS STILL A STATUS TIER. "No attribution recorded" is not a sixth kind of
+ * fact, it is nothing-recorded, and it keeps `Badge` with the neutral tier. A hue is
+ * for a fact that IS there.
+ *
+ * NOTHING RENDERS THESE YET, and that is the scope line rather than an oversight:
+ * the call sites are #3227 / #3228's, and the reference direction is the only one
+ * anything checks (`check_undefined_css_vars.py` and token-bridge.test.ts both ask
+ * that a USED name be declared, never that a declared name be used), so the family
+ * lands a phase ahead of its consumers — the shape `--fs-stat` landed in above.
+ *
+ * No comment sits beside a declaration inside the block below: token-bridge.test.ts's
+ * parser does not strip comments, and prose ahead of a `--name:value;` pair hides that
+ * name from it entirely.
+ */
+:root {
+  --label-violet-ink:#4A2D99;
+  --label-violet-fg:#6A4BC4;
+  --label-violet-bg:#ECE6F7;
+  --label-violet-line:#C8B9EA;
+  --label-plum-ink:#8C1F5E;
+  --label-plum-fg:#B0357C;
+  --label-plum-bg:#F5E1EC;
+  --label-plum-line:#E3AFCB;
+  --label-cyan-ink:#0E5C74;
+  --label-cyan-fg:#187C9A;
+  --label-cyan-bg:#DDEFF4;
+  --label-cyan-line:#A5D3E0;
+  --label-olive-ink:#4E5A12;
+  --label-olive-fg:#6B7A1C;
+  --label-olive-bg:#ECEEDC;
+  --label-olive-line:#C8CE9C;
+  --label-sepia-ink:#6E4318;
+  --label-sepia-fg:#8F5A2A;
+  --label-sepia-bg:#F1E6DC;
+  --label-sepia-line:#D9BFA6;
+  --label-slate-ink:#3B4F6B;
+  --label-slate-fg:#55708F;
+  --label-slate-bg:#E6EAF0;
+  --label-slate-line:#B9C4D3;
+}
+
+/*
+ * [FEAT-534 / #3572] The row-selection column's width, for the three staff list
+ * pages whose rows can be ticked (Inquiries, Customers, Opportunities).
+ *
+ * 44px = the checkbox's own 16px (`Input`'s checkbox branch renders `size-4`)
+ * plus this table's own `--pad-table-cell` horizontal padding, 14px on each
+ * side. The issue asked for "the checkbox plus minimal padding on both sides";
+ * minimal is read here as "no tighter than every other cell in the same row",
+ * because narrowing this one cell alone would make it the only cell in the table
+ * with its own padding. To retune the column, change this value — no page needs
+ * to be touched.
+ *
+ * The comment sits OUTSIDE the block on purpose: token-bridge.test.ts splits on
+ * `;` and does not strip comments, so prose ahead of a `--name:value;` pair
+ * hides that name from it entirely (the same trap `--height-control-xl` is
+ * still sitting in).
+ */
+:root {
+  --width-select-col:44px;
+}
+
+/*
+ * [FEAT-558 / #3665] THE SHARED DIALOG FRAME'S OWN NAMES — the quote builder's
+ * `ModalFrame` promoted into this package, per the owner's 2026-09-17/18 rulings.
+ *
+ * That frame read seven values that existed only inside `QuoteBuilderFrame`'s
+ * scoped layer (`--qb-scrim`, `--qb-shadow-modal`, `--qb-fs-9_5`, …), so it could
+ * not render outside the quote builder. Five of them already had a global name
+ * here (`--scrim`, `--fs-h2`, `--ally-amber-deep`, `--fs-xs`, `--border-hairline`)
+ * and the frame now reads those. The two that did not are minted below, verbatim
+ * from the frame's values:
+ *
+ *   --fs-dialog-eyebrow   10.5px                    the header's mono eyebrow
+ *   --shadow-modal        0 18px 48px rgba(19,28,42,0.28)   the dialog's drop
+ *
+ * The eyebrow size is the same number `--fs-table-head` and `--fs-crumb` carry
+ * and is deliberately NOT an alias of either: three surfaces at 10.5px today are
+ * not one ruling, and the frame's eyebrow must not move when a table head is
+ * next re-sized.
+ *
+ * `--width-dialog-<n>` is the frame's closed width vocabulary, one name per
+ * measure the mock draws (520 / 560 / 620 / 640 / 680 / 700). The frame used to
+ * write `max-w-[520px]` as a literal class; this package forbids px literals in
+ * a className (component-contract.test.ts), so each measure is a token and the
+ * class is `max-w-[var(--width-dialog-520)]`. The names carry the number rather
+ * than a size word because the TypeScript vocabulary IS the number — a caller
+ * writes `width={560}` and the type refuses `width={600}` — and a t-shirt name
+ * would be a second table to keep in step with it. Adding a seventh measure
+ * means adding a token here, a member of `MODAL_FRAME_WIDTHS` and a row in the
+ * class table, in one change.
+ *
+ * `--pad-dialog-x` (20px) is the frame's horizontal inset — header and footer
+ * both measure from it. 20px is not on the spacing scale (`--space-5` is a
+ * retired step, and scale-conformance.test.ts refuses `px-5`), which is why the
+ * quote builder wrote `px-[20px]`; here that literal is not allowed either.
+ *
+ * The comment sits OUTSIDE the block: token-bridge.test.ts splits on `;` and
+ * does not strip comments, so prose ahead of a `--name:value;` pair hides that
+ * name from it entirely.
+ */
+:root {
+  --fs-dialog-eyebrow:10.5px;
+  --shadow-modal:0 18px 48px rgba(19,28,42,0.28);
+  --pad-dialog-x:20px;
+  --width-dialog-520:520px;
+  --width-dialog-560:560px;
+  --width-dialog-620:620px;
+  --width-dialog-640:640px;
+  --width-dialog-680:680px;
+  --width-dialog-700:700px;
+}
+
+/* [FEAT-614 / #4066] SegmentedControl — the groove track and the underline rule.
+ *
+ * The owner ruled on 2026-09-20 that a two-way choice uses a standard segmented
+ * control whose look is clearly different from a button, and adopted the SQUARE
+ * GROOVE: a sunken grey track with a raised white block on the chosen segment.
+ * Six of the eight values that look needs already have names — the track's
+ * corner is `--radius`, its height is `--height-control-md`, the chosen ink is
+ * `--control-navy`, the resting ink `--text-secondary`, the raised ground
+ * `--surface-card`, the underline's accent `--accent` — and the five below are
+ * the ones that did not.
+ *
+ * WHY NOT `--radius-segment`. The segment's corner is one pixel inside the
+ * track's, so it is derived rather than chosen; and `--radius-*` is a CLOSED SET
+ * asserted whole by apps/allyos's scale-conformance.test.ts, so a sixth member —
+ * even one that only references an existing step — turns that suite red. The
+ * name therefore sits in this component's own family instead.
+ *
+ * THE TWO GROUNDS AND THE TWO SHADOWS ARE TRANSLUCENT ON PURPOSE, which is the
+ * one place this family departs from the status palette's rule that a ground
+ * must be opaque (#2361). A status badge is painted on three different surfaces
+ * and must read the same on each; this track is painted on ONE — the panel a
+ * dialog or a toolbar gives it — and its whole effect is that the surface shows
+ * through the dent. An opaque grey would have to be re-chosen per surface.
+ *
+ * The comment sits OUTSIDE the block, for the reason the block above it states.
+ */
+:root {
+  --seg-track-bg:rgba(20,24,30,.09);
+  --seg-track-shadow:inset 0 1px 2px rgba(20,24,30,.14);
+  --seg-item-radius:max(2px,calc(var(--radius) - 1px));
+  --seg-selected-shadow:0 1px 3px rgba(20,24,30,.22),0 0 0 .5px rgba(20,24,30,.10);
+  --seg-count-bg:rgba(20,24,30,.10);
+  --seg-underline-rule:inset 0 -1px 0 var(--border-default);
+  --fs-seg-count:10.5px;
+}
+
+/*
+ * [FEAT-638 / #4167] The staff app's slide-in notification notice.
+ *
+ * WHY THESE ARE THEIR OWN FAMILY AND NOT `--dur-*`. `--dur-slow` is already `.26s`,
+ * the enter duration wen-hq chose, so the enter step could have reused it. The LEAVE
+ * step could not — `.22s` is not on that scale — and a pair whose two halves come from
+ * different places is a pair that drifts the next time somebody retunes "slow". Both
+ * numbers were picked by the owner against an interactive preview, so they belong to
+ * this notice rather than to a general motion scale. `--dur-*` is also a small closed
+ * scale that other components read; adding a fourth step to it to style one component
+ * is the shape BUG-247 paid for.
+ *
+ * `--width-toast` is minted rather than reusing `--notification-menu-width`, which is
+ * also 360px today: that one is the width of the BELL'S PANEL, and the two being equal
+ * is a coincidence of taste, not a constraint. Tying them together means the next
+ * person who re-widths the dropdown silently re-widths the notice.
+ *
+ * The comment sits OUTSIDE the block: token-bridge.test.ts splits on `;` and does not
+ * strip comments, so prose ahead of a declaration hides that name from it entirely.
+ */
+:root {
+  --toast-enter-dur:.26s;
+  --toast-leave-dur:.22s;
+  --toast-enter-ease:cubic-bezier(.2,.8,.2,1);
+  --toast-leave-ease:cubic-bezier(.5,0,.9,.4);
+  --width-toast:360px;
+}

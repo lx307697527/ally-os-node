@@ -1,0 +1,225 @@
+/* [FEAT-179 / #1466] The Tailwind 4 theme bridge — named utilities that resolve
+ * through the token layer, never around it (design-system design.md v1.2 §10
+ * [HARD]: a value may appear only via this bridge).
+ *
+ * Every entry below is a var() reference to a custom property defined in
+ * ./tokens.css (the cross-app token layer, itself the verbatim :root of
+ * apps/allyos's index.css). A literal here would be a second, drifting copy of
+ * the design system — the token-bridge test (src/token-bridge.test.ts) checks
+ * both halves: that every referenced name exists in tokens.css, and that
+ * tokens.css agrees with index.css on every shared name during coexistence.
+ *
+ * SPACING is deliberately NOT redefined: Tailwind v4's default --spacing
+ * (0.25rem = 4px) already puts p-1/2/3/4/6/8/12/16 exactly on the design
+ * system's declared scale 4·8·12·16·24·32·48·64 (§4.2). Adding a parallel
+ * --spacing-* ramp would be a second scale for the same numbers.
+ *
+ * Consumed by the app's utility entry (apps/allyos/src/tailwind.css):
+ *   @import "tailwindcss/theme.css" layer(theme);
+ *   @import "@ally-os/ui/tokens.css";
+ *   @import "@ally-os/ui/theme.css";
+ *   @import "tailwindcss/utilities.css";        ← unlayered, no preflight (§10)
+ */
+@theme inline {
+  /* Ink — the two-step ramp (design.md §9 ink ruling) */
+  --color-ink: var(--text-primary);
+  --color-ink-soft: var(--text-secondary);
+  --color-on-brand: var(--text-on-navy);
+  --color-on-brand-soft: var(--text-on-navy-soft);
+
+  /* Brand + accents */
+  --color-brand: var(--ally-navy);
+  /* [BUG-247 / #2993, ruling of 2026-09-13] THE CONTROL'S BLUE, under its own name.
+   *
+   * `--color-brand` above is the CHROME's navy: the top bar, the side rail, the
+   * headings and the portal header render it. Until this change the filled button
+   * rendered it too, so when [FEAT-432 p2 / #2902] re-valued `--ally-navy` to make the
+   * button match Quote Builder 2, all of that chrome changed with it. Buttons and
+   * dropdown controls now read this pair instead, and the two are separate all the way
+   * down to separate literals in tokens.css.
+   *
+   * NAMED `--color-control-navy`, NOT `--color-control`, and the difference is not
+   * taste: `--text-control` already exists below (the button's 14px step), and a
+   * `--color-control` beside it would put a font size and an ink on the one utility
+   * name `text-control` — the silent-wrong-value shape §7 records, in the very
+   * component this pair exists for. `Button`'s default size writes `text-control`. */
+  --color-control-navy: var(--control-navy);
+  --color-control-navy-hover: var(--control-navy-hover);
+  --color-brand-2: var(--ally-navy-2);
+  --color-brand-deep: var(--ally-navy-deep);
+  --color-accent: var(--ally-amber);
+  --color-accent-hover: var(--ally-amber-hover);
+  --color-accent-ink: var(--ally-amber-deep);
+  --color-accent-soft: var(--ally-amber-55);
+  --color-link: var(--link);
+  --color-link-hover: var(--link-hover);
+
+  /* Surfaces (§2) */
+  --color-page: var(--surface-page);
+  --color-paper: var(--surface-paper);
+  --color-card: var(--surface-card);
+  --color-muted: var(--surface-muted);
+  --color-panel: var(--surface-panel);
+  --color-rail: var(--surface-rail);
+
+  /* Lines + status (§2, §8.5) */
+  --color-line: var(--border-default);
+  --color-destructive: var(--destructive);
+  --color-ok: var(--ok-fg);
+  --color-ok-ink: var(--ok-ink);
+  --color-err: var(--err-fg);
+  --color-warn: var(--warn-fg);
+
+  /* [#2361] The six-tier status palette (§8.5), one Tailwind colour name per
+   * role, so a chip writes `bg-status-good-bg text-status-good-ink
+   * border-status-good-line` and its dot writes `bg-status-good-fg` — never a
+   * bracketed var(), which Tailwind cannot tell a colour from a font size. */
+  --color-status-serious-ink: var(--status-serious-ink);
+  --color-status-serious-fg: var(--status-serious-fg);
+  --color-status-serious-bg: var(--status-serious-bg);
+  --color-status-serious-line: var(--status-serious-line);
+  --color-status-critical-ink: var(--status-critical-ink);
+  --color-status-critical-fg: var(--status-critical-fg);
+  --color-status-critical-bg: var(--status-critical-bg);
+  --color-status-critical-line: var(--status-critical-line);
+  --color-status-warning-ink: var(--status-warning-ink);
+  --color-status-warning-fg: var(--status-warning-fg);
+  --color-status-warning-bg: var(--status-warning-bg);
+  --color-status-warning-line: var(--status-warning-line);
+  --color-status-good-ink: var(--status-good-ink);
+  --color-status-good-fg: var(--status-good-fg);
+  --color-status-good-bg: var(--status-good-bg);
+  --color-status-good-line: var(--status-good-line);
+  --color-status-info-ink: var(--status-info-ink);
+  --color-status-info-fg: var(--status-info-fg);
+  --color-status-info-bg: var(--status-info-bg);
+  --color-status-info-line: var(--status-info-line);
+  --color-status-neutral-ink: var(--status-neutral-ink);
+  --color-status-neutral-fg: var(--status-neutral-fg);
+  --color-status-neutral-bg: var(--status-neutral-bg);
+  --color-status-neutral-line: var(--status-neutral-line);
+
+  /* [FEAT-524 / #3226] The categorical label palette (tokens.css), one Tailwind
+   * colour name per role, exactly as the status tiers above are bridged: a fact
+   * marker writes `bg-label-cyan-bg text-label-cyan-ink border-label-cyan-line`
+   * and its dot writes `bg-label-cyan-fg`. These are FACTS, not statuses — the
+   * six tiers above stay the only way to say how a row is doing. */
+  --color-label-violet-ink: var(--label-violet-ink);
+  --color-label-violet-fg: var(--label-violet-fg);
+  --color-label-violet-bg: var(--label-violet-bg);
+  --color-label-violet-line: var(--label-violet-line);
+  --color-label-plum-ink: var(--label-plum-ink);
+  --color-label-plum-fg: var(--label-plum-fg);
+  --color-label-plum-bg: var(--label-plum-bg);
+  --color-label-plum-line: var(--label-plum-line);
+  --color-label-cyan-ink: var(--label-cyan-ink);
+  --color-label-cyan-fg: var(--label-cyan-fg);
+  --color-label-cyan-bg: var(--label-cyan-bg);
+  --color-label-cyan-line: var(--label-cyan-line);
+  --color-label-olive-ink: var(--label-olive-ink);
+  --color-label-olive-fg: var(--label-olive-fg);
+  --color-label-olive-bg: var(--label-olive-bg);
+  --color-label-olive-line: var(--label-olive-line);
+  --color-label-sepia-ink: var(--label-sepia-ink);
+  --color-label-sepia-fg: var(--label-sepia-fg);
+  --color-label-sepia-bg: var(--label-sepia-bg);
+  --color-label-sepia-line: var(--label-sepia-line);
+  --color-label-slate-ink: var(--label-slate-ink);
+  --color-label-slate-fg: var(--label-slate-fg);
+  --color-label-slate-bg: var(--label-slate-bg);
+  --color-label-slate-line: var(--label-slate-line);
+
+  /* Radius — [FEAT-432 p2 / #2902, ruling of 2026-09-13] 2px base, 4px small.
+   * `--radius` was FEAT-098's measured 6px until that ruling promoted Quote Builder 2's
+   * own 2px corner to the system's, so `rounded-card` and `rounded-control` are 2px on
+   * every staff surface now — the two names still read one token, which is why one edit
+   * in tokens.css moved both. `--radius-xs` is untouched and is now the LARGER of the
+   * two, which reads oddly and is recorded rather than tidied: renaming it would reach
+   * every caller for no rendered change. */
+  --radius-card: var(--radius);
+  --radius-control: var(--radius);
+  --radius-small: var(--radius-xs);
+  --radius-pill: var(--radius-pill);
+  /* [#2666] The status badge's own radius. Minted when the base was 6px and the badge
+   * needed Quote Builder 2's 2px; since #2902 the base IS 2px, so this name and
+   * `--radius-card` now carry the same number. Kept, not collapsed: it is a separate
+   * ruling with its own pin, and merging it would put the badge's shape at the mercy of
+   * the next edit to the base. */
+  --radius-badge: var(--radius-badge);
+
+  /* Shadows — the 5-step canonical scale (§9 shadow ruling) */
+  --shadow-card: var(--shadow-card);
+  --shadow-raised: var(--shadow-raised);
+  --shadow-overlay: var(--shadow-md);
+  --shadow-navy: var(--shadow-navy);
+  /* [FEAT-428 / #2888] The anchored dropdown's own drop — deeper and further than
+   * `shadow-raised`, because a popup floating over a dense table has to read as a
+   * separate plane. Ruled 2026-09-12 (#2887); the literal lives in tokens.css. */
+  --shadow-popup: var(--shadow-popup);
+  /* [FEAT-558 / #3665] The shared dialog frame's drop — the quote builder's
+   * `--qb-shadow-modal`, deeper again than `shadow-popup` because the panel sits
+   * over a scrim rather than over a table. The literal lives in tokens.css. */
+  --shadow-modal: var(--shadow-modal);
+
+  /* Breakpoints — Tailwind media queries cannot consume var() values. Keep
+   * this bridge value equal to the canonical --bp-tablet token (900px), so
+   * max-tablet follows the existing N-1 (899px) media-query convention. */
+  --breakpoint-tablet: 900px;
+
+  /* Type families (§3.1) */
+  --font-sans: var(--font-sans);
+  --font-mono: var(--font-mono);
+  --font-slab: var(--font-slab);
+
+  /* Type sizes — the internal face's steps (§9 "internal face" ruling), so a
+   * component writes text-ui, never a px.
+   *
+   * [FEAT-432 p2 / #2902] `--text-body` and `--text-meta` NOW ALSO NAME INKS in
+   * tokens.css (#3A3E43 / #5E6367, promoted out of QuoteBuilderFrame). The collision is
+   * harmless because this block is `@theme inline`: Tailwind resolves these utilities to
+   * the underlying name, emitting `.text-body{font-size:var(--fs-body)}`, so nothing
+   * ever reads `var(--text-body)` as a size. `text-body` is the 16px step;
+   * `text-[var(--text-body)]` is the ink. Both spellings are live in the repo. */
+  --text-ui: var(--fs-sm);
+  --text-ui-sm: var(--fs-xs);
+  --text-body: var(--fs-body);
+  --text-meta: var(--fs-meta);
+  --text-table: var(--fs-table-dense);
+  /* [FEAT-428 / #2888] The dropdown's own two steps: the option row (12.5px) and the
+   * group heading (9px monospace, the QUOTE VERSIONS voice). Both are ruled values
+   * from #2887, not steps of the internal face's ramp, so they get their own names
+   * rather than bending `--text-ui` to a second meaning. */
+  --text-menu-item: var(--fs-menu-item);
+  --text-menu-label: var(--fs-menu-label);
+  --tracking-menu-label: var(--ls-menu-label);
+  /* [FEAT-432 / #2902] The button's middle step (14px), which the reading ramp does not
+   * carry — `--text-ui-sm` is 13.5 and `--text-ui` is 14.5. Its own name rather than a
+   * second meaning for one of those two, and the literal lives in tokens.css. */
+  --text-control: var(--fs-control);
+  /* [FEAT-558 / #3665] The shared dialog frame's header eyebrow (10.5px mono), the
+   * quote builder's `--qb-fs-9_5` under a global name. Its own step rather than a
+   * reuse of `--text-menu-label` or the table head's 10.5px: same number today,
+   * separate rulings. The literal lives in tokens.css. */
+  --text-dialog-eyebrow: var(--fs-dialog-eyebrow);
+
+  /* Public-shell values retained from the legacy scoped recipe during migration. */
+  --color-public-amber: var(--public-ally-amber);
+  --color-public-paper: var(--public-surface-paper);
+  --color-public-rail: var(--public-surface-rail);
+  --text-public-body: var(--public-fs-body);
+  --text-public-sm: var(--public-fs-sm);
+  --text-public-xs: var(--public-fs-xs);
+  --text-public-meta: var(--public-fs-meta);
+  --text-public-eyebrow: var(--public-fs-eyebrow);
+  --spacing-public-bar: var(--public-app-bar-h);
+  --spacing-public-brand: var(--public-brand-height);
+  --spacing-public-card: var(--public-pad-card);
+  --spacing-public-stack: var(--public-gap-stack);
+  --leading-public-body: var(--public-lh-body);
+  --tracking-public-meta: var(--public-ls-meta);
+  --tracking-public-eyebrow: var(--public-ls-eyebrow);
+
+  /* Overlay / focus — §8.2 modal + the focus ring the control recipe draws */
+  --color-scrim: var(--scrim);
+  --shadow-focus: var(--focus-ring);
+}

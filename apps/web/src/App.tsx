@@ -1,25 +1,59 @@
-import { useQuery } from "@tanstack/react-query";
+// The composition root: routes, and the one place that reads the session to
+// feed the shell its identity. Slice 1 of issue #129 — sign-in plus the
+// internal shell. The health probe the old bootstrap page read moved to the
+// Dashboard, where a signed-in operator can actually see it.
+import type { ReactElement } from "react";
+import { BrowserRouter, Navigate, Outlet, Route, Routes, useNavigate } from "react-router-dom";
 
-interface Health {
-  status: string;
-}
+import { Dashboard } from "./pages/Dashboard.tsx";
+import { Region } from "./pages/Region.tsx";
+import { Login } from "./shared/pages/Login.tsx";
+import { RequireAuth } from "./shared/components/RequireAuth.tsx";
+import { InternalShell } from "./shared/shell/InternalShell.tsx";
+import { sessionIdentityFromUser } from "./shared/lib/session-identity.ts";
+import { signOut, useSession } from "./shared/lib/session.ts";
 
-async function fetchHealth(): Promise<Health> {
-  const res = await fetch("/health");
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return (await res.json()) as Health;
-}
-
-export function App() {
-  const health = useQuery({ queryKey: ["health"], queryFn: fetchHealth, refetchInterval: 10_000 });
+function ShellHost(): ReactElement {
+  const { user } = useSession();
+  const navigate = useNavigate();
+  const identity = sessionIdentityFromUser(user);
 
   return (
-    <main style={{ fontFamily: "system-ui, sans-serif", padding: 32 }}>
-      <h1>Ally OS</h1>
-      <p>
-        API 状态：
-        {health.isPending ? "检查中…" : health.isError ? `不可用（${health.error.message}）` : health.data.status}
-      </p>
-    </main>
+    <InternalShell
+      identity={identity ?? undefined}
+      onSignOut={() => {
+        void (async () => {
+          await signOut();
+          navigate("/login", { replace: true });
+        })();
+      }}
+    >
+      <Outlet />
+    </InternalShell>
+  );
+}
+
+export function App(): ReactElement {
+  return (
+    <BrowserRouter>
+      <Routes>
+        <Route path="/login" element={<Login />} />
+        <Route
+          element={
+            <RequireAuth>
+              <ShellHost />
+            </RequireAuth>
+          }
+        >
+          <Route path="/" element={<Navigate to="/overview" replace />} />
+          <Route path="/overview" element={<Dashboard />} />
+          <Route path="/regions/:region" element={<Region />} />
+          {/* An address the router cannot reach is answered by the place a
+              signed-in operator belongs — the same destination the index
+              route picks. */}
+          <Route path="*" element={<Navigate to="/overview" replace />} />
+        </Route>
+      </Routes>
+    </BrowserRouter>
   );
 }
