@@ -8,6 +8,7 @@ import { BrowserRouter, Navigate, Outlet, Route, Routes, useNavigate } from "rea
 import { Dashboard } from "./pages/Dashboard.tsx";
 import { Region } from "./pages/Region.tsx";
 import { Login } from "./shared/pages/Login.tsx";
+import { VerifyEmail } from "./shared/pages/VerifyEmail.tsx";
 import { NewVersionBanner } from "./shared/components/NewVersionBanner.tsx";
 import { RequireAuth } from "./shared/components/RequireAuth.tsx";
 import { SessionTimeoutWarning } from "./shared/components/SessionTimeoutWarning.tsx";
@@ -62,6 +63,10 @@ export function App(): ReactElement {
     <BrowserRouter>
       <Routes>
         <Route path="/login" element={<Login />} />
+        {/* Where the confirmation mail's link lands (#22 email-verification
+            slice) — public: the operator confirming a mailbox is by
+            definition not signed in yet. */}
+        <Route path="/verify-email" element={<VerifyEmail />} />
         <Route
           element={
             <RequireAuth>
