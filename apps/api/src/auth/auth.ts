@@ -6,7 +6,7 @@ import type { Db } from "@ally/db";
 import { schema } from "@ally/db";
 import type { Logger } from "pino";
 import type { Mailer } from "../mailer/mailer.ts";
-import { renderVerificationEmail } from "../mailer/mailer.ts";
+import { renderPasswordResetEmail, renderVerificationEmail } from "../mailer/mailer.ts";
 import type { ResolveSession } from "./session.ts";
 
 /**
@@ -46,6 +46,10 @@ const SESSION_UPDATE_AGE_SECONDS = 60 * 60;
 // 邀请的 set-password 链接定的值，注册确认链接同款）
 const VERIFICATION_EXPIRES_IN_SECONDS = 60 * 60 * 24;
 const VERIFICATION_EXPIRY_LABEL = "24 hours";
+// 重置链接同样 24h：老系统 recovery 的 otp_expiry=86400（auth-send-email 里
+// RESET_LINK_EXPIRY = "24 hours"，注释援引 2026-09-08 设定的 hosted 值）
+const RESET_PASSWORD_EXPIRES_IN_SECONDS = 60 * 60 * 24;
+const RESET_PASSWORD_EXPIRY_LABEL = "24 hours";
 
 export function createAuth(deps: AuthDeps) {
   return betterAuth({
@@ -56,6 +60,39 @@ export function createAuth(deps: AuthDeps) {
       enabled: true,
       // FEAT-634：填注册表单不等于注册完成，邮箱确认了才算
       requireEmailVerification: true,
+      // 密码重置(#22 切片 3;老系统 resetPasswordForEmail + recovery 模板):
+      // 请求端点 POST /request-password-reset 对存在与不存在的地址同答 200
+      // (better-auth 内置时序仿真,反枚举,对应老系统 GoTrue 的同款性质),
+      // 邮件由 sendResetPassword 发出;令牌一次性,重放 400。
+      resetPasswordTokenExpiresIn: RESET_PASSWORD_EXPIRES_IN_SECONDS,
+      // 改密码即吊销该用户全部会话:旧设备拿着的 cookie 不能越过重置继续用
+      revokeSessionsOnPasswordReset: true,
+      sendResetPassword: async ({ user, url, token }) => {
+        // 链接指向控制台的设新密码页(用户点击填表后才提交,邮件扫描器预取
+        // 消耗不了令牌——与验证邮件同款);webAppUrl 未配置时退回 better-auth
+        // 的 API 链接(能重置,但 GET 回调会被扫描器预取,生产必须配 WEB_APP_URL)。
+        const base = deps.webAppUrl?.replace(/\/+$/, "") ?? "";
+        const link =
+          base !== ""
+            ? `${base}/reset-password?token=${encodeURIComponent(token)}`
+            : url;
+        const content = renderPasswordResetEmail({
+          to: user.email,
+          name: user.name,
+          link,
+          expiry: RESET_PASSWORD_EXPIRY_LABEL,
+        });
+        // 发送失败绝不阻塞重置请求(老系统 auth-send-email「永远 200」的同款
+        // 裁定):响应已反枚举,请求方拿不到「发了/没发」的差别;没收到就再要一封。
+        try {
+          await deps.mailer.send({ to: user.email, ...content });
+        } catch (err) {
+          deps.logger.error(
+            { err, userId: user.id, to: user.email },
+            "password reset email send failed — request still answers 200",
+          );
+        }
+      },
     },
     emailVerification: {
       expiresIn: VERIFICATION_EXPIRES_IN_SECONDS,

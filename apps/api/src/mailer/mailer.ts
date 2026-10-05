@@ -180,3 +180,31 @@ export function renderVerificationEmail(content: AuthEmailContent): {
     text: htmlToPlainText(html),
   };
 }
+
+/**
+ * 密码重置邮件的正文(#22 密码重置切片;老系统 recovery 模板的对应物)。
+ * 与验证邮件同款纪律:姓名转义(BUG-285),链接原样,text 从 html 推导。
+ * 措辞不预设请求者身份——任何人都能对任意地址发起重置(响应反枚举),
+ * 正文要同时覆盖「是你本人」与「不是你」两种情形。
+ */
+export function renderPasswordResetEmail(content: AuthEmailContent): {
+  subject: string;
+  html: string;
+  text: string;
+} {
+  const name = content.name.trim() !== "" ? escapeHtml(content.name) : escapeHtml(content.to);
+  const html =
+    `<p>Hi ${name},</p>` +
+    `<p>A password reset was requested for your Ally OS account. ` +
+    `Open the link below to choose a new password:</p>` +
+    `<p><a href="${content.link}">Choose a new password</a></p>` +
+    `<p>Or paste this link into your browser:<br>${content.link}</p>` +
+    `<p>This link expires in ${content.expiry} and can be used once. ` +
+    `If you didn't request a password reset, you can ignore this email — ` +
+    `your current password keeps working.</p>`;
+  return {
+    subject: "Reset your Ally OS password",
+    html,
+    text: htmlToPlainText(html),
+  };
+}

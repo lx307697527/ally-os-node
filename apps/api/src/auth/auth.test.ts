@@ -319,4 +319,97 @@ describe.skipIf(!databaseUrl)("auth: credential login (#22, integration)", () =>
     const verify = createSessionTokenVerifier(db);
     expect(await verify(expiredToken)).toBeNull();
   });
+
+  // ---- 密码重置(#22 切片 3;老系统 resetPasswordForEmail + recovery 模板)----
+
+  /** 请求重置链接,返回响应;链接令牌可从最后一封邮件取回 */
+  async function requestReset(email: string): Promise<Response> {
+    return app.request("/api/auth/request-password-reset", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ email }),
+    });
+  }
+
+  async function resetPassword(token: string, newPassword: string): Promise<Response> {
+    return app.request("/api/auth/reset-password", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ token, newPassword }),
+    });
+  }
+
+  it("request-password-reset mails a console set-password link and the answer never discloses existence", async () => {
+    const { email } = await signUpVerified();
+    const sendsBefore = mailer.sent.length;
+
+    const res = await requestReset(email);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { status?: boolean; message?: string };
+    expect(body.status).toBe(true);
+
+    // 邮件链接落控制台 /reset-password 页(由用户点击后再提交新密码,
+    // 邮件扫描器预取消耗不了令牌——与验证邮件同款裁定),24h 有效期文案
+    const message = must(mailer.sent[mailer.sent.length - 1]);
+    expect(mailer.sent.length).toBe(sendsBefore + 1);
+    expect(message.to).toBe(email);
+    expect(message.html).toContain(`${WEB_APP_URL}/reset-password?token=`);
+    expect(message.html).toContain("24 hours");
+
+    // 未知地址得到逐字相同的响应(反枚举,better-auth 内置时序仿真)
+    const unknown = await requestReset(`${randomUUID()}@example.com`);
+    expect(unknown.status).toBe(200);
+    expect(await unknown.json()).toEqual(body);
+    expect(mailer.sent.length).toBe(sendsBefore + 1);
+  });
+
+  it("the reset link sets a new password: old one dies, new one signs in, token cannot be reused", async () => {
+    const { email } = await signUpVerified();
+    await requestReset(email);
+    const token = tokenFromLastMail();
+
+    const reset = await resetPassword(token, "brand-new-pass-phrase");
+    expect(reset.status).toBe(200);
+
+    // 旧密码失效
+    expect((await signIn(email, PASSWORD)).status).toBe(401);
+    // 新密码可登录,且 /api/me 走会话中间件拿到用户
+    const fresh = await signIn(email, "brand-new-pass-phrase");
+    expect(fresh.status).toBe(200);
+    const me = await app.request("/api/me", { headers: { cookie: sessionCookie(fresh) } });
+    expect(me.status).toBe(200);
+
+    // 令牌一次性:重放被拒
+    const replay = await resetPassword(token, "another-pass-phrase");
+    expect(replay.status).toBe(400);
+  });
+
+  it("resetting the password revokes the sessions the operator already holds", async () => {
+    const { email } = await signUpVerified();
+    const cookie = sessionCookie(await signIn(email, PASSWORD));
+    expect((await app.request("/api/me", { headers: { cookie } })).status).toBe(200);
+
+    await requestReset(email);
+    const reset = await resetPassword(tokenFromLastMail(), "rotated-pass-phrase");
+    expect(reset.status).toBe(200);
+
+    // 旧会话 cookie 随之作废(改密码必须踢掉既有会话)
+    const me = await app.request("/api/me", { headers: { cookie } });
+    expect(me.status).toBe(401);
+  });
+
+  it("an unknown token is rejected with 400", async () => {
+    const res = await resetPassword(`not-a-real-token-${randomUUID()}`, "whatever-pass-phrase");
+    expect(res.status).toBe(400);
+  });
+
+  it("a mailer failure never blocks the reset request (old system: the hook always answers 200)", async () => {
+    const { email } = await signUpVerified();
+    mailer.failNext();
+
+    const res = await requestReset(email);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { status?: boolean };
+    expect(body.status).toBe(true);
+  });
 });

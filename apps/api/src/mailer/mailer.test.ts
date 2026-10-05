@@ -5,6 +5,7 @@ import {
   escapeHtml,
   htmlToPlainText,
   LoggingMailer,
+  renderPasswordResetEmail,
   renderVerificationEmail,
   ResendMailer,
 } from "./mailer.ts";
@@ -120,6 +121,37 @@ describe("renderVerificationEmail", () => {
     expect(text).not.toContain("<p>");
     expect(text).toContain("expires in 24 hours");
     expect(html).toContain("expires in 24 hours");
+  });
+});
+
+describe("renderPasswordResetEmail", () => {
+  const link = "https://web.example/reset-password?token=abc123";
+
+  it("escapes user input in the HTML body (same BUG-285 rule as the verification mail)", () => {
+    const { html } = renderPasswordResetEmail({
+      to: "victim@example.com",
+      name: '<a href="http://evil.example">Free</a>',
+      link,
+      expiry: "24 hours",
+    });
+    expect(html).toContain("&lt;a href=");
+    expect(html).not.toContain('<a href="http://evil.example">Free</a>');
+  });
+
+  it("keeps the reset link raw and carries the expiry wording", () => {
+    const { subject, html, text } = renderPasswordResetEmail({
+      to: "u@example.com",
+      name: "Ann",
+      link,
+      expiry: "24 hours",
+    });
+    expect(subject).toContain("password");
+    expect(html).toContain(`href="${link}"`);
+    expect(text).toContain(link);
+    expect(text).toContain("expires in 24 hours");
+    // 措辞不预设「有人为你发起」——按老系统 FEAT-566 AC-3,这封邮件可能在
+    // 收件人毫不知情时被请求;正文要同时覆盖两种情形。
+    expect(html).toContain("didn't request");
   });
 });
 

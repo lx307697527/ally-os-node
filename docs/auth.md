@@ -3,6 +3,29 @@
 替代 Supabase Auth（GoTrue）的自建认证：**Better Auth** + Drizzle(PG)，
 邮箱密码登录，HttpOnly Cookie 会话。本页记录已落地的部分与后续切片的边界。
 
+## 已落地：密码重置（#22 切片 3）
+
+老系统依据：`resetPasswordForEmail` + GoTrue recovery 模板（`auth-send-email` 里
+`RESET_LINK_EXPIRY = "24 hours"`，即 `otp_expiry=86400`）+ FEAT-566 的两条纪律
+（链接必须落回发起方应用；成功态不得泄露账号存在性）。
+
+| 部分 | 位置 | 说明 |
+| --- | --- | --- |
+| 请求重置 | `apps/api/src/auth/auth.ts` `sendResetPassword` | `POST /api/auth/request-password-reset`：存在/不存在地址同答 200 同形响应（better-auth 内置时序仿真，反枚举）；重置令牌 24h（`resetPasswordTokenExpiresIn`，对齐老系统 86400） |
+| 重置邮件 | `apps/api/src/mailer/mailer.ts` `renderPasswordResetEmail` | 与验证邮件同款纪律：姓名转义（BUG-285）、链接原样、text 从 html 推导；正文同时覆盖「是你本人」与「不是你」两种情形（不预设请求者） |
+| 设新密码 | `POST /api/auth/reset-password` | `{ token, newPassword }`；令牌一次性（重放 400）；**改密码即吊销该用户全部会话**（`revokeSessionsOnPasswordReset`） |
+| 重置链接 | 控制台 `/reset-password?token=…` | `WEB_APP_URL` 拼接。用户点击填表后才提交——邮件扫描器预取只拿到静态页，消耗不了一次性令牌（与确认邮件同款裁定）；`WEB_APP_URL` 未配置时退回 better-auth 的 GET 回调链接（能重置，但生产必须配置） |
+| 前端 | `apps/web` `/forgot-password` + `/reset-password` | 请求页成功态措辞不承诺「邮件已发出」（FEAT-566 AC-3）；设新密码页四态，失败态给回 `/forgot-password` 的路；登录页挂「Forgot your password?」入口 |
+
+关键行为（Better Auth 1.7.7 实测）：
+
+- `POST /api/auth/request-password-reset` 对未知地址也答 200
+  `{ status: true, message: "If this email exists…" }`，不发信（反枚举）。
+- 邮件发送失败只记日志、请求照常答 200（老 hook「永远 200」裁定；
+  没收到就再要一封）。
+- `POST /api/auth/reset-password` 对没有 credential account 的用户会**创建**
+  account 行（portal 式 set-password 语义），有则更新哈希。
+
 ## 已落地：邮件基建 + 注册强制邮箱验证（#22 切片 2）
 
 老系统依据：FEAT-634（2026-09-21 owner 裁定注册强制确认邮箱）+
@@ -71,13 +94,13 @@
 | `POST /api/auth/sign-in/email` | 邮箱密码登录（未验证 403）；`Set-Cookie: better-auth.session_token=…` |
 | `GET /api/auth/verify-email?token=…` | 邮箱确认（前端确认页在用户点击后调用；直接 GET 亦有效） |
 | `POST /api/auth/send-verification-email` | 重发确认邮件；对存在/不存在地址同答 200（防枚举） |
+| `POST /api/auth/request-password-reset` | 请求重置邮件；对存在/不存在地址同答 200 同形响应（反枚举）；发信失败不阻塞 |
+| `POST /api/auth/reset-password` | `{ token, newPassword }` 设新密码；令牌一次性、24h；吊销该用户全部会话 |
 | `POST /api/auth/sign-out` | 登出，服务端吊销会话 |
 | `GET /api/me` | 当前登录用户（业务路由，经会话中间件） |
 
 ## #22 后续切片（本切片不含）
 
-- 密码重置流程（老系统：recovery 令牌 + set-password 页，24h 有效；邮件基建
-  本切片已就位，直接可用）
 - Google OAuth 登录（老系统经 Supabase OAuth，hd 只是 courtesy、真正校验靠
   员工域检查；新系统直接用 Better Auth 的 Google provider）
 - 存量密码哈希导入：老库是 bcrypt（`$2a$`/`$2b$`，pgcrypto cost 10），
