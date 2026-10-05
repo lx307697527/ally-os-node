@@ -1,0 +1,78 @@
+# 本地 Docker CI Runner（两个实例，吃满机器的多核）
+#
+# 用法（见 start.sh）：
+#   ./start.sh        # 铸新注册 token、清掉旧实例、拉起两个 runner
+#   docker compose down
+#
+# 资源：limits 是单个 runner 容器（也就是单个 job）能吃到的上限；
+# 真正的天花板是 Docker Desktop 虚拟机本身（Settings → Resources）。
+# 本机（32GB / 24 核）当前 VM 分配 24 CPU / 16GB，两个 10c/10g 的 runner 放得下。
+name: ally-ci-runners
+
+x-common: &common
+  build: .
+  image: ally-ci-runner:latest
+  restart: unless-stopped
+  init: true
+  # host 网络：workflow 里服务容器映射到的是 Docker VM 的 localhost，
+  # runner 只有在 host 网络里才能用 127.0.0.1 够到它（bridge 下 ECONNREFUSED）。
+  # 代价是两个 runner 共用宿主网络——runner 本身不对外监听，无冲突面。
+  network_mode: host
+  group_add:
+    # Docker Desktop 挂进来的 socket 属 root 组，补一个组才能读写
+    - "0"
+
+services:
+  runner-1:
+    <<: *common
+    container_name: ally-ci-runner-1
+    # 每个 runner 必须有独立的 work 卷：两个 runner 共用一个 _work 会互相清掉
+    # 对方正在用的 _temp（真实踩过：buildx 收尾写 image id 文件时目录被删）。
+    # socket 兄弟容器模式：runner 经宿主 docker daemon 起服务容器和构建。
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - work1:/home/runner/_work
+    environment:
+      RUNNER_SCOPE: repo
+      REPO_NAME: ${REPO_NAME:-lx307697527/ally-os-node}
+      # 注册 token 1 小时过期；由 start.sh 现铸现用，不要写死。
+      # 这里留空默认值（必填校验在 entrypoint.sh），否则 compose down 都要 token。
+      ACCESS_TOKEN: ${ACCESS_TOKEN:-}
+      RUNNER_NAME: local-docker-1
+      # runs-on 只认 self-hosted 这个标签，其余是备注
+      RUNNER_LABELS: self-hosted,linux,x64,docker
+      RUNNER_EPHEMERAL: "false"
+    deploy:
+      resources:
+        limits:
+          cpus: "10"
+          memory: 10g
+        reservations:
+          cpus: "2"
+          memory: 2g
+
+  runner-2:
+    <<: *common
+    container_name: ally-ci-runner-2
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - work2:/home/runner/_work
+    environment:
+      RUNNER_SCOPE: repo
+      REPO_NAME: ${REPO_NAME:-lx307697527/ally-os-node}
+      ACCESS_TOKEN: ${ACCESS_TOKEN:-}
+      RUNNER_NAME: local-docker-2
+      RUNNER_LABELS: self-hosted,linux,x64,docker
+      RUNNER_EPHEMERAL: "false"
+    deploy:
+      resources:
+        limits:
+          cpus: "10"
+          memory: 10g
+        reservations:
+          cpus: "2"
+          memory: 2g
+
+volumes:
+  work1:
+  work2:
