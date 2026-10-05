@@ -10,5 +10,11 @@
 // coming back to the tab counts as showing up, so the server re-checks the
 // cookie — and kills the session — at that moment.
 import { createAuthClient } from "better-auth/react";
+import { twoFactorClient } from "better-auth/client/plugins";
 
-export const authClient = createAuthClient();
+// two-factor 客户端插件（#24）：登录响应里的 twoFactorRedirect、挑战期的
+// verify-totp / verify-backup-code、设置页的 enable/disable/generate-backup-codes
+// 都经它走（服务端是 #24 的 apps/api two-factor 插件，两端成对）。
+export const authClient = createAuthClient({
+  plugins: [twoFactorClient()],
+});

@@ -14,6 +14,9 @@ export interface SessionUser {
   id: string;
   name: string;
   email: string;
+  /** #24：是否已启用双因素。服务端强制门（管理员未绑定 → 业务路由 403）的
+   *  客户侧读数——设置页与提示条据此渲染，访问控制本身始终在服务端。 */
+  twoFactorEnabled: boolean;
 }
 
 export interface SessionState {
@@ -34,7 +37,17 @@ export interface SessionState {
 export function useSession(): SessionState {
   const { data, isPending, refetch } = authClient.useSession();
   return {
-    user: data?.user ?? null,
+    user:
+      data?.user === undefined
+        ? null
+        : {
+            id: data.user.id,
+            name: data.user.name,
+            email: data.user.email,
+            // 插件把字段声明为可选，线上载荷早期可能缺位——收敛成确定的布尔，
+            // 不让 better-auth 的可空性渗进业务组件。
+            twoFactorEnabled: data.user.twoFactorEnabled === true,
+          },
     loading: isPending,
     expiresAtMs: parseSessionExpiry(data?.session),
     refreshSession: () => refetch(),

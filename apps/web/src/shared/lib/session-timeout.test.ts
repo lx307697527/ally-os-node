@@ -62,7 +62,10 @@ describe("session timeout watch (#129 slice 2)", () => {
   });
 
   it("the client does not poll — a polling tab would never idle out", () => {
-    expect(authClient).toContain("createAuthClient()");
+    // #24 added the two-factor client plugin to createAuthClient's options;
+    // what this test pins is that no session refetch interval joined it.
+    expect(authClient).toContain("createAuthClient({");
+    expect(authClient).toContain("twoFactorClient()");
     expect(authClient).not.toContain("refetchInterval");
   });
 
