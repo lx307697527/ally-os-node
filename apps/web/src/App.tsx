@@ -9,27 +9,38 @@ import { Dashboard } from "./pages/Dashboard.tsx";
 import { Region } from "./pages/Region.tsx";
 import { Login } from "./shared/pages/Login.tsx";
 import { RequireAuth } from "./shared/components/RequireAuth.tsx";
+import { SessionTimeoutWarning } from "./shared/components/SessionTimeoutWarning.tsx";
 import { InternalShell } from "./shared/shell/InternalShell.tsx";
 import { sessionIdentityFromUser } from "./shared/lib/session-identity.ts";
 import { signOut, useSession } from "./shared/lib/session.ts";
+import { useSessionTimeout } from "./shared/lib/use-session-timeout.ts";
 
 function ShellHost(): ReactElement {
   const { user } = useSession();
   const navigate = useNavigate();
+  // The idle-logout watch (#129 slice 2): the server's deadline, counted
+  // down locally; the overlay renders OVER the shell, unmounting nothing —
+  // taking the page away IS the data loss the warning exists to prevent.
+  const { phase, secondsRemaining, stayLoggedIn } = useSessionTimeout();
   const identity = sessionIdentityFromUser(user);
 
   return (
-    <InternalShell
-      identity={identity ?? undefined}
-      onSignOut={() => {
-        void (async () => {
-          await signOut();
-          navigate("/login", { replace: true });
-        })();
-      }}
-    >
-      <Outlet />
-    </InternalShell>
+    <>
+      <InternalShell
+        identity={identity ?? undefined}
+        onSignOut={() => {
+          void (async () => {
+            await signOut();
+            navigate("/login", { replace: true });
+          })();
+        }}
+      >
+        <Outlet />
+      </InternalShell>
+      {phase === "warning" && secondsRemaining !== null ? (
+        <SessionTimeoutWarning secondsRemaining={secondsRemaining} onStayLoggedIn={stayLoggedIn} />
+      ) : null}
+    </>
   );
 }
 

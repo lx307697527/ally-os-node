@@ -2,7 +2,13 @@
 // transport (cookie credentials against /api/auth/*) and revalidates on focus;
 // this module is the one place that maps its shape onto ours, so RequireAuth,
 // the shell host and Login all read one vocabulary. #129 slice 1.
+//
+// Slice 2 (#129) adds the deadline the server published and the one round
+// trip that can extend it. The parse rides session-expiry.ts because
+// better-auth's types claim `Date` for `expiresAt` while the wire delivers a
+// string — the mapping layer is where that gap gets absorbed, once.
 import { authClient } from "./auth-client.ts";
+import { parseSessionExpiry } from "./session-expiry.ts";
 
 export interface SessionUser {
   id: string;
@@ -15,13 +21,23 @@ export interface SessionState {
   user: SessionUser | null;
   /** True until the first session read has answered. */
   loading: boolean;
+  /** The server's deadline as epoch ms; `null` while loading, signed out, or
+   *  when the payload defied parsing — in which case the local watch stays
+   *  quiet and the server keeps being the only authority. */
+  expiresAtMs: number | null;
+  /** Revalidate the cookie against the server. The ONLY way the session gets
+   *  extended — a new deadline comes back through the store when the server
+   *  agrees the session is alive, and the user disappears when it does not. */
+  refreshSession: () => Promise<void>;
 }
 
 export function useSession(): SessionState {
-  const { data, isPending } = authClient.useSession();
+  const { data, isPending, refetch } = authClient.useSession();
   return {
     user: data?.user ?? null,
     loading: isPending,
+    expiresAtMs: parseSessionExpiry(data?.session),
+    refreshSession: () => refetch(),
   };
 }
 

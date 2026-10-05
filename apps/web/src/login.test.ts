@@ -37,6 +37,14 @@ describe("login page", () => {
     expect(signIn).not.toContain("authClient");
     expect(signIn).not.toContain("fetch(");
   });
+
+  it("says why when the timeout watch walked the operator here (#129 slice 2)", () => {
+    expect(login).toContain("sessionExpired");
+    expect(signIn).toContain('data-testid="session-expired-notice"');
+    // The notice is the watch's one message, not a second error channel: the
+    // server's refusal keeps its own line.
+    expect(login).toMatch(/sessionExpired \? "Your session expired/);
+  });
 });
 
 describe("require-auth guard", () => {

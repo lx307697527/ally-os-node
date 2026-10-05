@@ -7,10 +7,11 @@
 // same screen whatever their role. Where a signed-in operator belongs is the
 // index route's decision. The server's refusal is shown verbatim — never a
 // message this app invented about a decision it did not make.
-import { useState, type ReactElement } from "react";
+import { useEffect, useState, type ReactElement } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 
 import { authClient } from "../lib/auth-client.ts";
+import { clearSessionExpiredNotice, peekSessionExpiredNotice } from "../lib/session-expiry.ts";
 import { returnPathFrom, type ReturnToState } from "../lib/return-to.ts";
 import { SignIn } from "./auth/SignIn.tsx";
 
@@ -19,6 +20,22 @@ export function Login(): ReactElement {
   const location = useLocation();
   // Where RequireAuth said the operator was heading, or "/".
   const returnPath = returnPathFrom(location.state as ReturnToState | null);
+  // When the timeout watch walked the operator here (#129 slice 2), say why —
+  // a login page with no explanation reads as the app having eaten their
+  // place. Two channels, both untrusted: the one-shot sessionStorage note the
+  // watch leaves at the expiry moment (survives RequireAuth winning the
+  // redirect race), and the state flag the watch's own navigation carries.
+  // The latch is a PURE read on purpose — dev StrictMode double-invokes state
+  // initializers, and a side-effecting consume there would eat the note
+  // before the latch holds; the clear happens once, after mount.
+  const [sessionExpired] = useState(
+    () =>
+      peekSessionExpiredNotice() ||
+      (location.state as ReturnToState | null)?.sessionExpired === true,
+  );
+  useEffect(() => {
+    clearSessionExpiredNotice();
+  }, []);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -38,5 +55,12 @@ export function Login(): ReactElement {
     })();
   }
 
-  return <SignIn busy={busy} error={error} onSubmit={submit} />;
+  return (
+    <SignIn
+      busy={busy}
+      error={error}
+      notice={sessionExpired ? "Your session expired. Sign in again to continue." : null}
+      onSubmit={submit}
+    />
+  );
 }

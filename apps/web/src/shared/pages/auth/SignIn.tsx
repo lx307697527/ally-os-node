@@ -14,11 +14,15 @@ import { Button, Card, Input } from "@ally/ui";
 export function SignIn({
   busy,
   error,
+  notice,
   onSubmit,
 }: {
   busy: boolean;
   /** The server's message, verbatim. */
   error: string | null;
+  /** Why the operator is here when they did not choose to be — e.g. the
+   *  session-timeout watch walked them out (#129 slice 2). */
+  notice: string | null;
   onSubmit: (credentials: { email: string; password: string }) => void;
 }): ReactElement {
   const [email, setEmail] = useState("");
@@ -35,6 +39,11 @@ export function SignIn({
         {/* INSIDE the card, as its first row: as the card's previous sibling the
             title floated on the page ground with nothing tying it to the form
             below. */}
+        {notice && (
+          <div className="mb-3 text-ui font-medium text-err" data-testid="session-expired-notice">
+            {notice}
+          </div>
+        )}
         <h1 className="mb-4 font-slab text-[length:var(--text-display-sm)] leading-[var(--lh-display)] font-semibold text-ink">Sign in</h1>
         <form onSubmit={submit}>
           <AuthLabel>
