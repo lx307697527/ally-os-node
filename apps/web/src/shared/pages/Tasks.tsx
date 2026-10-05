@@ -10,6 +10,7 @@
 // checkbox state.
 import type { ReactElement } from "react";
 import { useState } from "react";
+import { Link } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button, Card, Heading, Input, Paragraph } from "@ally/ui";
 
@@ -193,17 +194,22 @@ export function Tasks(): ReactElement {
                     data-testid="tasks-row-check"
                   />
                   <span className="min-w-0 flex-1">
-                    <span
+                    {/* The title is the way in (#110 slice 1): the detail page
+                        carries the comments panel and is where a notification
+                        deep link lands. Cancelled keeps the strikethrough. */}
+                    <Link
+                      to={`/tasks/${row.id}`}
+                      data-testid="tasks-row-title"
                       className={
                         row.status === "cancelled"
-                          ? "text-ui text-ink-soft line-through"
+                          ? "text-ui text-ink-soft line-through hover:text-link"
                           : row.status === "done"
-                            ? "text-ui text-ink-soft"
-                            : "text-ui text-ink"
+                            ? "text-ui text-ink-soft hover:text-link"
+                            : "text-ui text-ink hover:text-link"
                       }
                     >
                       {row.title}
-                    </span>
+                    </Link>
                     {row.description !== null && row.description !== "" ? (
                       <span className="block text-ui-sm text-ink-soft">{row.description}</span>
                     ) : null}

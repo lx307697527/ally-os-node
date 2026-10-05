@@ -11,6 +11,7 @@ import { Region } from "./pages/Region.tsx";
 import { FeedbackDialog } from "./shared/components/FeedbackDialog.tsx";
 import { NotificationBell } from "./shared/components/NotificationBell.tsx";
 import { AuditLog } from "./shared/pages/AuditLog.tsx";
+import { TaskDetail } from "./shared/pages/TaskDetail.tsx";
 import { Tasks } from "./shared/pages/Tasks.tsx";
 import { TwoFactorSettings } from "./shared/pages/TwoFactorSettings.tsx";
 import { ForgotPassword } from "./shared/pages/ForgotPassword.tsx";
@@ -105,6 +106,10 @@ export function App(): ReactElement {
           <Route path="/regions/:region" element={<Region />} />
           {/* 任务（#113 切片 1）：登录者的自己的待办；行属读写都在服务端。 */}
           <Route path="/tasks" element={<Tasks />} />
+          {/* 任务详情（#110 切片 1）：本仓库第一个记录路由，也是任务通知的
+              深链落点（?comment= 落到那条评论）；行属门在服务端，无关人
+              得到明确的「不可用」，不猜测是删了还是无权。 */}
+          <Route path="/tasks/:taskId" element={<TaskDetail />} />
           {/* 审计日志（#29）：System 区第一个页面；服务端 audit.read 门，
               无权限的账号在页面里得到明确的答复，不预设谁能进来。 */}
           <Route path="/system/audit" element={<AuditLog />} />

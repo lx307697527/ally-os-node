@@ -4,6 +4,7 @@ import {
   BELL_RECENT_LIMIT,
   describeAge,
   describeNotification,
+  NOTIFIED_EVENT_TYPES,
   unreadBadge,
   UNREAD_BADGE_CAP,
   type NotificationRow,
@@ -55,6 +56,56 @@ describe("describeNotification (生产者白名单落地前的兜底面)", () =>
     const face = describeNotification(row({ payload: { title: 42, detail: "" } }));
     expect(face.title).toBe("test.event");
     expect(face.detail).toBe("");
+  });
+});
+
+describe("describeNotification (白名单类型：文案与深链在 TS 不在库)", () => {
+  const taskId = "1f0e9c2a-3b4d-4e5f-8a9b-0c1d2e3f4a5b";
+  const commentId = "9a8b7c6d-5e4f-4a3b-2c1d-0e9f8a7b6c5d";
+
+  it("task.assigned：谁派的、派了什么、去处是任务详情页", () => {
+    const face = describeNotification(
+      row({
+        eventType: "task.assigned",
+        aggregateType: "task",
+        aggregateId: taskId,
+        payload: { taskTitle: "Review label copy", actorName: "Alice" },
+      }),
+    );
+    expect(face.title).toBe("Alice assigned you a task");
+    expect(face.detail).toBe("Review label copy");
+    expect(face.href).toBe(`/tasks/${taskId}`);
+  });
+
+  it("comment.mentioned：去处带着 comment 参数，落到那条评论", () => {
+    const face = describeNotification(
+      row({
+        eventType: "comment.mentioned",
+        aggregateType: "task",
+        aggregateId: taskId,
+        payload: { taskTitle: "Review label copy", commentId, actorName: "Bob", excerpt: "@Alice check this" },
+      }),
+    );
+    expect(face.title).toBe("Bob mentioned you on a task");
+    expect(face.detail).toBe("@Alice check this");
+    expect(face.href).toBe(`/tasks/${taskId}?comment=${commentId}`);
+  });
+
+  it("事实缺位不撒谎：没有聚合 id 无处可去，没有摘录用任务名，没有名字用 Someone", () => {
+    const noAggregate = describeNotification(row({ eventType: "task.assigned", payload: { taskTitle: "t" } }));
+    expect(noAggregate.href).toBeNull();
+    const noExcerpt = describeNotification(
+      row({ eventType: "comment.mentioned", aggregateId: taskId, payload: { taskTitle: "fallback title" } }),
+    );
+    expect(noExcerpt.detail).toBe("fallback title");
+    expect(noExcerpt.href).toBe(`/tasks/${taskId}`);
+    const noActor = describeNotification(row({ eventType: "task.assigned", aggregateId: taskId }));
+    expect(noActor.title).toBe("Someone assigned you a task");
+    expect(noActor.detail).toBe("");
+  });
+
+  it("白名单就是铃铛认得的全部：新生产者必须先进这张表", () => {
+    expect(NOTIFIED_EVENT_TYPES).toEqual(["task.assigned", "comment.mentioned"]);
   });
 });
 
