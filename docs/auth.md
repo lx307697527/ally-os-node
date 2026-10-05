@@ -34,6 +34,26 @@ Better Auth 默认是自家 scrypt,不兼容则导入即等于强制全员重置
 - 密码重置后该用户变 scrypt、旧 bcrypt 失效——两种格式共存一张表,迁移随
   改密自然完成。
 
+## 已落地：影子账号——CRM 联系人预建用户（#25，身份侧切片）
+
+老系统依据:`ensure-shadow-account` / `security.provision_shadow_account`
+(service-role RPC)——CRM 录入的每个邮箱预建一个无密码账号,报价、订单、
+发票先挂在它上面,客户来注册时认领同一个 user id。CRM 业务模块(#227/#235)
+落地前,先把身份侧能力立住:所有「新增潜在客户」的代码路径以后都调
+**同一个服务函数**,不各写各的 insert。
+
+| 部分 | 位置 | 说明 |
+| --- | --- | --- |
+| 预建服务 | `apps/api/src/auth/shadow-account.ts` | `ensureShadowAccount(db, { email, name? }, { logger })`:同邮箱已存在(含大小写/空格变体)→ 返回既有行、一行不动(first-write-wins);不存在 → 建 `auth_user`(emailVerified=true,展示名缺省用邮箱本地部分)+ 一行密码为 null 的 credential account(与存量导入的 Google-only 用户同形状) |
+| 邮箱归一化 | 服务内 trim+lowercase,`auth_user` 唯一索引改在 `lower(email)` 上(migration 0003) | 老系统只在匹配处 lower、边缘处 trim,存储保留原样,大小写变体是它反复踩的坑;新系统把「同一邮箱不产生重复账号」升级为 DB 结构不变式,不依赖写侧自觉。注册侧 better-auth 自带 toLowerCase,写入全部小写,索引重建无风险 |
+| 认领 | 不另设流程/标记 | 老系统接管 = recovery 链接 + set-password(`mark_portal_identity_claimed` 的 `claimed_at` 只是凭据存在性的缓存);新系统 `claimed` = credential 密码非 null 或存在非 credential account,现成可查。认领动作 = `POST /api/auth/request-password-reset` → `POST /api/auth/reset-password`:better-auth 对无凭据用户当场建/覆盖 credential(resetPassword 源码两分支确认,切片 3 已为此预留「开号语义」) |
+| 认领前行为 | 同上 | 登录 401(null 密码短路);注册表单对影子邮箱 422 `USER_ALREADY_EXISTS`——与老系统一致(接管不走重新注册,反枚举同源);建号永远静默不发信,邀请/重发才发 |
+| emailVerified=true | 服务内 | CRM 邮箱来自真实往来,认领邮件本身就发往该地址,地址在认领一刻自证(老系统 `email_confirm: true`);不置 true,认领后登录会被 403 EMAIL_NOT_VERIFIED 挡死 |
+
+本切片不含(CRM 模块落地后接线):调用方接线(#227/#235 新建联系人时调用
+服务)、同公司品牌/报价/订单的门户可见范围(R-02-6,等业务表)、
+`portal_binding_requests` 排队语义(等账户绑定模型)。
+
 ## 已落地：Google OAuth 登录（#22 切片 4）
 
 老系统依据：FEAT-167 社交登录（提供商登记表是纯决策层 + 「本部署开了哪几家」
