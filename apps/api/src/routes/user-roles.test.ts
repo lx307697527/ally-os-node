@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { eq, inArray } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import pino from "pino";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { createDb, runMigrations, schema } from "@ally/db";
@@ -74,12 +74,9 @@ describe.skipIf(!databaseUrl)("user roles routes (#23, integration)", () => {
   });
 
   afterEach(async () => {
-    // 审计行没有外键，指向已删用户也只是历史记录；测试自清理，不留跨运行垃圾
-    if (createdUserIds.length > 0) {
-      await db
-        .delete(schema.auditEvents)
-        .where(inArray(schema.auditEvents.target, [...createdUserIds]));
-    }
+    // 审计行不清理：#29 起 audit_events append-only（行级 DELETE 被触发器拒绝，
+    // TRUNCATE 又会抹掉并行测试文件正在断言的共享库行）——本文件的断言都按
+    // target 过滤，别处的残行不进来；指向已删用户的审计残行是历史记录，无害。
     for (const id of createdUserIds.splice(0)) {
       await db.delete(schema.authUser).where(eq(schema.authUser.id, id));
     }

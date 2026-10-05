@@ -54,7 +54,9 @@ describe("permission registry (#23)", () => {
   });
 
   it("effectivePermissions unions role defaults with direct grants", () => {
-    expect(effectivePermissions(["admin"], [])).toEqual(new Set<Permission>(["roles.assign"]));
+    expect(effectivePermissions(["admin"], [])).toEqual(
+      new Set<Permission>(["roles.assign", "audit.read"]),
+    );
     expect(effectivePermissions([], ["label_design"])).toEqual(
       new Set<Permission>(["label_design"]),
     );

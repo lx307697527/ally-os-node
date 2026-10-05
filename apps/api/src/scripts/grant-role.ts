@@ -16,6 +16,7 @@ import { eq } from "drizzle-orm";
 import { envSchema } from "@ally/config";
 import { createDb, schema } from "@ally/db";
 import pino from "pino";
+import { recordAudit } from "../audit/audit-log.ts";
 import { OWNER_APPROVAL_ROLES, roleSchema } from "../authz/permissions.ts";
 
 const cliEnv = envSchema
@@ -65,7 +66,7 @@ try {
   }
   if (apply) {
     await db.insert(schema.userRole).values({ userId: user.id, role }).onConflictDoNothing();
-    await db.insert(schema.auditEvents).values({
+    await recordAudit(db, {
       actor: "cli:grant-role",
       action: "role.granted",
       target: user.id,

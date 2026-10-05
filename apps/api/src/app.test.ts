@@ -123,7 +123,7 @@ describe("session middleware (#22)", () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({
       user: { id: "u-1", email: "user@example.com", name: "User", emailVerified: true, twoFactorEnabled: true },
-      authz: { roles: ["admin"], permissions: ["roles.assign"] },
+      authz: { roles: ["admin"], permissions: ["roles.assign", "audit.read"] },
     });
   });
 
