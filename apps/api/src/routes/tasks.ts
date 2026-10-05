@@ -1,0 +1,331 @@
+import { and, asc, eq, or, sql, type SQL } from "drizzle-orm";
+import { alias } from "drizzle-orm/pg-core";
+import { Hono } from "hono";
+import { z } from "zod";
+import type { Db } from "@ally/db";
+import { schema } from "@ally/db";
+import { recordAudit } from "../audit/audit-log.ts";
+import type { AppEnv } from "../auth/session.ts";
+
+/**
+ * 任务端点（#113 切片 1：任务内核）。
+ *
+ * 老系统三套任务表收敛为一套（裁决记录在 packages/db schema 的 tasks 注释与
+ * PR 正文）；业务对象附着列随第一个业务域切片 expand-only 进场，本切片的任务
+ * 都是独立任务。授权沿用「本人数据、登录即可」的既有先例（通知 #129、反馈
+ * #129）：创建人或经办人可见可改，团队全局视图（老系统按成员开标签页的看板）
+ * 需要权限点裁决，随 RBAC 模块切片再议。
+ *
+ * 可分配面 = 至少持有一个非 customer 角色的用户（老系统「每个可分配成员」；
+ * 零角色账号与纯门户账号不可被派任务）。分配动作写站内通知（task.assigned，
+ * 通知表的第一个真实生产者；统一通知服务与邮件渠道随 #116 落地）。每次真实
+ * 变更在同一事务里写审计（#29 约定：状态变更带 from/to，审计失败则业务失败）。
+ */
+
+/** 列表单页上限；分页语义与 audit-events 一致（limit/offset + 精确 total） */
+export const TASKS_PAGE_MAX = 100;
+const TASKS_PAGE_DEFAULT = 50;
+
+const taskStatusSchema = z.enum(["open", "done", "cancelled"]);
+
+/** 字段上限与反馈上报同一档：title 200、description 5000 */
+const createBody = z.object({
+  title: z.string().trim().min(1).max(200),
+  description: z.string().trim().min(1).max(5000).optional(),
+  dueAt: z.iso.datetime().optional(),
+  assigneeId: z.uuid().optional(),
+});
+
+const patchBody = z.object({
+  title: z.string().trim().min(1).max(200).optional(),
+  description: z.string().trim().min(1).max(5000).nullable().optional(),
+  dueAt: z.iso.datetime().nullable().optional(),
+  status: taskStatusSchema.optional(),
+  assigneeId: z.uuid().nullable().optional(),
+});
+
+const listQuery = z.object({
+  scope: z.enum(["assigned", "created"]).default("assigned"),
+  status: taskStatusSchema.optional(),
+  limit: z.coerce.number().int().min(1).max(TASKS_PAGE_MAX).default(TASKS_PAGE_DEFAULT),
+  offset: z.coerce.number().int().min(0).default(0),
+});
+
+type Tx = Parameters<Db["transaction"]>[0] extends (tx: infer T) => unknown ? T : never;
+
+export function tasksRoutes(deps: { db: Db }) {
+  const app = new Hono<AppEnv>();
+
+  // 字面路由先于 /:id 注册（Hono 按注册顺序匹配，"assignee-options" 不能落进 uuid 校验）
+  app.get("/api/tasks/assignee-options", async (c) => {
+    // 可分配面：至少一个非 customer 角色。存在多角色的行用 distinct 收敛
+    const rows = await deps.db
+      .selectDistinct({
+        id: schema.authUser.id,
+        name: schema.authUser.name,
+        email: schema.authUser.email,
+      })
+      .from(schema.authUser)
+      .innerJoin(schema.userRole, eq(schema.userRole.userId, schema.authUser.id))
+      .where(sql`${schema.userRole.role} <> 'customer'`)
+      .orderBy(asc(schema.authUser.name), asc(schema.authUser.id));
+    return c.json({ assignees: rows });
+  });
+
+  app.get("/api/tasks", async (c) => {
+    const parsed = listQuery.safeParse(c.req.query());
+    if (!parsed.success) {
+      return c.json({ error: "invalid_request" }, 400);
+    }
+    const { scope, status, limit, offset } = parsed.data;
+    const me = c.get("user").id;
+    // 本人数据只按行属读：经办人是我的 / 是我建的两类，越权行不进结果集
+    const ownership =
+      scope === "assigned"
+        ? eq(schema.tasks.assigneeId, me)
+        : eq(schema.tasks.createdById, me);
+    const where = status === undefined ? ownership : and(ownership, eq(schema.tasks.status, status));
+    const [rows, totalRows] = await Promise.all([
+      selectTaskRows(deps.db, where)
+        .limit(limit)
+        .offset(offset),
+      deps.db.select({ n: sql<number>`count(*)::int` }).from(schema.tasks).where(where),
+    ]);
+    return c.json({ tasks: rows, total: totalRows[0]?.n ?? 0 });
+  });
+
+  app.post("/api/tasks", async (c) => {
+    const parsed = createBody.safeParse(await c.req.json().catch(() => undefined));
+    if (!parsed.success) {
+      return c.json({ error: "invalid_request" }, 400);
+    }
+    const me = c.get("user");
+    let assignee: AssigneeRef | null = null;
+    if (parsed.data.assigneeId !== undefined) {
+      const found = await findAssignableUser(deps.db, parsed.data.assigneeId);
+      if (found === null) {
+        return c.json({ error: "invalid_assignee" }, 400);
+      }
+      assignee = found;
+    }
+    const created = await deps.db.transaction(async (tx) => {
+      const inserted = await tx
+        .insert(schema.tasks)
+        .values({
+          title: parsed.data.title,
+          description: parsed.data.description,
+          dueAt: parsed.data.dueAt === undefined ? undefined : new Date(parsed.data.dueAt),
+          assigneeId: assignee?.id ?? null,
+          createdById: me.id,
+        })
+        .returning({ id: schema.tasks.id });
+      const task = inserted[0];
+      if (task === undefined) throw new Error("task insert returned no row");
+      await recordAudit(tx, {
+        actor: me.id,
+        action: "task.created",
+        target: task.id,
+        detail: { title: parsed.data.title, assignee: assignee?.id ?? null },
+      });
+      // 派给自己不通知自己（与 PATCH 同一裁定）
+      if (assignee !== null && assignee.id !== me.id) {
+        await notifyAssignee(tx, task.id, parsed.data.title, assignee.id, me.name);
+      }
+      return task.id;
+    });
+    const rows = await selectTaskRows(deps.db, eq(schema.tasks.id, created)).limit(1);
+    const row = rows[0];
+    if (row === undefined) throw new Error("task row missing right after insert");
+    return c.json({ task: row }, 201);
+  });
+
+  app.get("/api/tasks/:id", async (c) => {
+    const parsed = z.uuid().safeParse(c.req.param("id"));
+    if (!parsed.success) {
+      return c.json({ error: "invalid_request" }, 400);
+    }
+    const me = c.get("user").id;
+    // 不存在与不属于同回答：404，调用方拿不到探测结论
+    const rows = await selectTaskRows(
+      deps.db,
+      and(eq(schema.tasks.id, parsed.data), taskVisibleTo(me)),
+    ).limit(1);
+    const task = rows[0];
+    if (task === undefined) {
+      return c.json({ error: "not_found" }, 404);
+    }
+    return c.json({ task });
+  });
+
+  app.patch("/api/tasks/:id", async (c) => {
+    const idParse = z.uuid().safeParse(c.req.param("id"));
+    if (!idParse.success) {
+      return c.json({ error: "invalid_request" }, 400);
+    }
+    const body = patchBody.safeParse(await c.req.json().catch(() => undefined));
+    if (!body.success) {
+      return c.json({ error: "invalid_request" }, 400);
+    }
+    const me = c.get("user");
+    const current = await selectTaskRows(
+      deps.db,
+      and(eq(schema.tasks.id, idParse.data), taskVisibleTo(me.id)),
+    ).limit(1);
+    const task = current[0];
+    if (task === undefined) {
+      return c.json({ error: "not_found" }, 404);
+    }
+    // 派给谁只有创建人能改；经办人改自己的任务内容与状态
+    if (body.data.assigneeId !== undefined && task.createdBy?.id !== me.id) {
+      return c.json({ error: "forbidden", code: "assignee_creator_only" }, 403);
+    }
+    let nextAssignee: AssigneeRef | null = task.assignee;
+    if (body.data.assigneeId !== undefined) {
+      if (body.data.assigneeId === null) {
+        nextAssignee = null;
+      } else {
+        const found = await findAssignableUser(deps.db, body.data.assigneeId);
+        if (found === null) {
+          return c.json({ error: "invalid_assignee" }, 400);
+        }
+        nextAssignee = found;
+      }
+    }
+
+    // 先算差异：真变化才写审计、才动行；no-op 的 PATCH 不碰 updatedAt
+    const set: Partial<typeof schema.tasks.$inferInsert> = {};
+    const changedFields: string[] = [];
+    if (body.data.title !== undefined && body.data.title !== task.title) {
+      set.title = body.data.title;
+      changedFields.push("title");
+    }
+    if (body.data.description !== undefined && body.data.description !== task.description) {
+      set.description = body.data.description;
+      changedFields.push("description");
+    }
+    if (body.data.dueAt !== undefined) {
+      const nextDue = body.data.dueAt === null ? null : new Date(body.data.dueAt);
+      if (nextDue?.getTime() !== task.dueAt?.getTime()) {
+        set.dueAt = nextDue;
+        changedFields.push("dueAt");
+      }
+    }
+    const statusChanged = body.data.status !== undefined && body.data.status !== task.status;
+    const assigneeChanged = nextAssignee?.id !== task.assignee?.id;
+    if (!statusChanged && !assigneeChanged && changedFields.length === 0) {
+      return c.json({ task });
+    }
+
+    await deps.db.transaction(async (tx) => {
+      if (statusChanged) {
+        set.status = body.data.status;
+        // 状态变更按 docs/audit.md 词表带 from/to
+        await recordAudit(tx, {
+          actor: me.id,
+          action: "task.status_changed",
+          target: task.id,
+          detail: { from: task.status, to: body.data.status },
+        });
+      }
+      if (assigneeChanged) {
+        set.assigneeId = nextAssignee?.id ?? null;
+        await recordAudit(tx, {
+          actor: me.id,
+          action: "task.assigned",
+          target: task.id,
+          detail: { assignee: nextAssignee?.id ?? null, assigneeName: nextAssignee?.name ?? null },
+        });
+      }
+      if (changedFields.length > 0) {
+        await recordAudit(tx, {
+          actor: me.id,
+          action: "task.updated",
+          target: task.id,
+          detail: { fields: changedFields },
+        });
+      }
+      set.updatedAt = new Date();
+      await tx.update(schema.tasks).set(set).where(eq(schema.tasks.id, task.id));
+      // 分配通知只在真的换了人时发；派给自己不通知自己
+      if (assigneeChanged && nextAssignee !== null && nextAssignee.id !== me.id) {
+        const title = body.data.title ?? task.title;
+        await notifyAssignee(tx, task.id, title, nextAssignee.id, me.name);
+      }
+    });
+    const rows = await selectTaskRows(deps.db, eq(schema.tasks.id, task.id)).limit(1);
+    return c.json({ task: rows[0] ?? null });
+  });
+
+  return app;
+}
+
+/** 行属判据：创建人或经办人可见（GET/PATCH 共用） */
+function taskVisibleTo(userId: string) {
+  return or(
+    eq(schema.tasks.assigneeId, userId),
+    eq(schema.tasks.createdById, userId),
+  );
+}
+
+interface AssigneeRef {
+  id: string;
+  name: string;
+}
+
+/** 可分配面校验：用户存在且至少持有一个非 customer 角色 */
+async function findAssignableUser(db: Db, userId: string): Promise<AssigneeRef | null> {
+  const rows = await db
+    .select({ id: schema.authUser.id, name: schema.authUser.name })
+    .from(schema.authUser)
+    .innerJoin(schema.userRole, eq(schema.userRole.userId, schema.authUser.id))
+    .where(and(eq(schema.authUser.id, userId), sql`${schema.userRole.role} <> 'customer'`))
+    .limit(1);
+  return rows[0] ?? null;
+}
+
+/** task.assigned 站内通知：通知表第一个真实生产者（#116 服务化时并入统一通道） */
+async function notifyAssignee(
+  tx: Tx,
+  taskId: string,
+  taskTitle: string,
+  assigneeId: string,
+  actorName: string,
+): Promise<void> {
+  await tx.insert(schema.notifications).values({
+    userId: assigneeId,
+    eventType: "task.assigned",
+    aggregateType: "task",
+    aggregateId: taskId,
+    payload: { taskTitle, actorName },
+  });
+}
+
+/** 行读法：经办人/创建人姓名随行带出（列表与详情共用同一投影） */
+function selectTaskRows(db: Db, where: SQL | undefined) {
+  const assignee = alias(schema.authUser, "assignee");
+  const creator = alias(schema.authUser, "creator");
+  return db
+    .select({
+      id: schema.tasks.id,
+      title: schema.tasks.title,
+      description: schema.tasks.description,
+      status: schema.tasks.status,
+      dueAt: schema.tasks.dueAt,
+      assignee: {
+        id: assignee.id,
+        name: assignee.name,
+      },
+      createdBy: {
+        id: creator.id,
+        name: creator.name,
+      },
+      createdAt: schema.tasks.createdAt,
+      updatedAt: schema.tasks.updatedAt,
+    })
+    .from(schema.tasks)
+    .leftJoin(assignee, eq(schema.tasks.assigneeId, assignee.id))
+    .leftJoin(creator, eq(schema.tasks.createdById, creator.id))
+    .where(where)
+    // 待办主读法：到期的在前（没填到期的不挤占），同批按新在前稳定排序
+    .orderBy(sql`${schema.tasks.dueAt} asc nulls last`, sql`${schema.tasks.createdAt} desc`, sql`${schema.tasks.id} desc`);
+}

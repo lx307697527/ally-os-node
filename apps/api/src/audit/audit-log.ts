@@ -29,7 +29,9 @@ export interface AuditEntry {
   detail?: Record<string, unknown> | null;
 }
 
-export async function recordAudit(db: Db, entry: AuditEntry): Promise<void> {
+// 参数是「能 insert 的最小面」而不是完整 Db：调用方常在事务回调里写审计
+// （任务 #113 等），PgTransaction 满足同一条 insert 接口
+export async function recordAudit(db: Pick<Db, "insert">, entry: AuditEntry): Promise<void> {
   await db.insert(schema.auditEvents).values({
     actor: entry.actor,
     action: entry.action,
