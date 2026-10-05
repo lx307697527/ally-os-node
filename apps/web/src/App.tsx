@@ -10,6 +10,7 @@ import { Dashboard } from "./pages/Dashboard.tsx";
 import { Region } from "./pages/Region.tsx";
 import { FeedbackDialog } from "./shared/components/FeedbackDialog.tsx";
 import { NotificationBell } from "./shared/components/NotificationBell.tsx";
+import { AuditLog } from "./shared/pages/AuditLog.tsx";
 import { TwoFactorSettings } from "./shared/pages/TwoFactorSettings.tsx";
 import { ForgotPassword } from "./shared/pages/ForgotPassword.tsx";
 import { Login } from "./shared/pages/Login.tsx";
@@ -101,6 +102,9 @@ export function App(): ReactElement {
           <Route path="/" element={<Navigate to="/overview" replace />} />
           <Route path="/overview" element={<Dashboard />} />
           <Route path="/regions/:region" element={<Region />} />
+          {/* 审计日志（#29）：System 区第一个页面；服务端 audit.read 门，
+              无权限的账号在页面里得到明确的答复，不预设谁能进来。 */}
+          <Route path="/system/audit" element={<AuditLog />} />
           {/* 2FA 自助（#24）：强制门把未绑定的管理员引到这里的合同,绑定流程
               本身不需要新的 API 面——走的都是 /api/auth/two-factor/*。 */}
           <Route path="/settings/two-factor" element={<TwoFactorSettings />} />

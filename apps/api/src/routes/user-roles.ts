@@ -4,6 +4,7 @@ import { z } from "zod";
 import type { Db } from "@ally/db";
 import { schema } from "@ally/db";
 import type { Logger } from "pino";
+import { recordAudit } from "../audit/audit-log.ts";
 import type { AppEnv } from "../auth/session.ts";
 import { requirePermission } from "../authz/middleware.ts";
 import { OWNER_APPROVAL_ROLES, roleSchema } from "../authz/permissions.ts";
@@ -52,7 +53,12 @@ export function userRolesRoutes(deps: { db: Db; authzStore: AuthzStore; logger: 
     }
     const granted = await deps.authzStore.grantRole(userId, role);
     if (granted) {
-      await audit(deps.db, c.get("user").id, "role.granted", userId, { role });
+      await recordAudit(deps.db, {
+        actor: c.get("user").id,
+        action: "role.granted",
+        target: userId,
+        detail: { role },
+      });
     }
     deps.logger.info({ actor: c.get("user").id, userId, role, granted }, "role grant processed");
     return c.json({ role, granted }, granted ? 201 : 200);
@@ -74,7 +80,12 @@ export function userRolesRoutes(deps: { db: Db; authzStore: AuthzStore; logger: 
     }
     const revoked = await deps.authzStore.revokeRole(userId, role);
     if (revoked) {
-      await audit(deps.db, c.get("user").id, "role.revoked", userId, { role });
+      await recordAudit(deps.db, {
+        actor: c.get("user").id,
+        action: "role.revoked",
+        target: userId,
+        detail: { role },
+      });
     }
     deps.logger.info({ actor: c.get("user").id, userId, role, revoked }, "role revoke processed");
     return c.json({ role, revoked });
@@ -94,14 +105,4 @@ async function userExists(db: Db, userId: string): Promise<boolean> {
     .where(eq(schema.authUser.id, userId))
     .limit(1);
   return rows.length > 0;
-}
-
-async function audit(
-  db: Db,
-  actor: string,
-  action: string,
-  target: string,
-  detail: Record<string, unknown>,
-): Promise<void> {
-  await db.insert(schema.auditEvents).values({ actor, action, target, detail });
 }

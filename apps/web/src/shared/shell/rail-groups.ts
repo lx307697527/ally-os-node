@@ -99,8 +99,10 @@ export const RAIL_GROUPS: readonly RailGroup[] = [
   {
     key: "system",
     label: "System",
-    note: "Arrives with system administration — users, roles and the configuration studio.",
-    items: [],
+    note: "System administration — the audit log is here; users, roles and the configuration studio follow.",
+    items: [
+      { to: "/system/audit", label: "Audit log", nav: "audit-log", icon: "ledger" },
+    ],
   },
 ];
 

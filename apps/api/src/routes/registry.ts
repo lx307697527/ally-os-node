@@ -41,4 +41,6 @@ export const API_ROUTES: readonly RouteDecl[] = [
   { method: "POST", path: "/api/notifications/read-all", auth: { kind: "session" } },
   // 反馈上报（#129）：任何登录者可提交
   { method: "POST", path: "/api/feedback-reports", auth: { kind: "session" } },
+  // 审计日志查询（#29）：owner / admin（audit.read 权限点）
+  { method: "GET", path: "/api/audit-events", auth: { kind: "permission", permission: "audit.read" } },
 ];

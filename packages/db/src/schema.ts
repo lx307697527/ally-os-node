@@ -13,17 +13,28 @@ import {
   uuid,
 } from "drizzle-orm/pg-core";
 
-// 审计事件（#23：权限变更必须留审计，对应老系统 R-16-6）。actor/target 是发起方 /
-// 被操作方的用户 id（text 存 uuid，避免本表反过来依赖 auth 表的存在性）；detail 放
-// 变更细节（授予/撤销了哪个角色）。
-export const auditEvents = pgTable("audit_events", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  actor: text("actor"),
-  action: text("action").notNull(),
-  target: text("target"),
-  detail: jsonb("detail").$type<Record<string, unknown>>(),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-});
+// 审计事件（#23：权限变更必须留审计，对应老系统 R-16-6；查询端点与 append-only
+// 底线在 #29）。actor/target 是发起方 / 被操作方的用户 id（text 存 uuid，避免本表
+// 反过来依赖 auth 表的存在性）；detail 放变更细节（授予/撤销了哪个角色；状态变更
+// 类动作按 docs/audit.md 的词表约定带 from/to）。
+//
+// 本表 append-only：UPDATE/DELETE 被 0007 migration 的触发器拒绝（#232 数据底线
+// 「审计日志不可删除」，老系统 audit_log_is_immutable() 的直译）；测试清库走
+// TRUNCATE（行触发器不拦 DDL），生产代码没有这条路。
+export const auditEvents = pgTable(
+  "audit_events",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    actor: text("actor"),
+    action: text("action").notNull(),
+    target: text("target"),
+    detail: jsonb("detail").$type<Record<string, unknown>>(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  // 日志页唯一的读法是「最新在前翻页」；过滤列不单独建索引——审计是追加上涨的
+  // 表，等真实过滤查询慢了再加（老系统 core.audit_log 除主键外同样不建索引）
+  (t) => [index("audit_events_created_at_idx").on(desc(t.createdAt))],
+);
 
 // ── 认证（#22）───────────────────────────────────────────────────────────────
 // Better Auth 的四张核心表。表名带 auth_ 前缀、列名 snake_case；字段与 Better Auth

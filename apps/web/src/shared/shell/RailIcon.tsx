@@ -20,7 +20,7 @@
 // the labels beside it.
 import type { ReactElement, ReactNode } from "react";
 
-export type RailIconName = "overview";
+export type RailIconName = "overview" | "ledger";
 
 const GLYPHS: Record<RailIconName, ReactNode> = {
   // A gauge: the arc, its baseline and one needle — where things stand.
@@ -29,6 +29,15 @@ const GLYPHS: Record<RailIconName, ReactNode> = {
       <path d="M4 17.5a8 8 0 1 1 16 0" />
       <path d="M4 17.5h16" />
       <path d="M12 17.5 16 11.5" />
+    </>
+  ),
+  // A ledger page: the sheet and its ruled lines — the record that only grows.
+  ledger: (
+    <>
+      <rect x="4.75" y="3.5" width="14.5" height="17" rx="1.5" />
+      <path d="M8.25 8.25h7.5" />
+      <path d="M8.25 12h7.5" />
+      <path d="M8.25 15.75h4.5" />
     </>
   ),
 };

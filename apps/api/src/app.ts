@@ -8,6 +8,7 @@ import { sessionMiddleware } from "./auth/session.ts";
 import { authzMiddleware, requireTwoFactorGate } from "./authz/middleware.ts";
 import type { AuthzStore } from "./authz/service.ts";
 import { authProvidersRoutes } from "./routes/auth-providers.ts";
+import { auditEventsRoutes } from "./routes/audit-events.ts";
 import { feedbackRoutes } from "./routes/feedback.ts";
 import { healthRoutes } from "./routes/health.ts";
 import { meRoutes } from "./routes/me.ts";
@@ -70,6 +71,8 @@ export function createApp(deps: AppDeps) {
   // 通知与反馈（#129）：本人数据、登录即可，无需权限点
   app.route("/", notificationsRoutes(deps));
   app.route("/", feedbackRoutes(deps));
+  // 审计日志查询（#29）：audit.read 权限点门（owner/admin 默认）
+  app.route("/", auditEventsRoutes(deps));
 
   return app;
 }

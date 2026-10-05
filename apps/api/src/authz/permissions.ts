@@ -43,7 +43,7 @@ export interface AuthzContext {
 }
 
 /** #23 切片内的两个权限点；随业务模块切片增加，新增必须先进这个注册表 */
-export const PERMISSIONS = ["roles.assign", "label_design"] as const;
+export const PERMISSIONS = ["roles.assign", "label_design", "audit.read"] as const;
 
 export type Permission = (typeof PERMISSIONS)[number];
 
@@ -58,10 +58,12 @@ export const permissionSchema = z.enum(PERMISSIONS);
  *   授予直接只允许 owner 本人执行（fail closed，见 routes/user-roles.ts）。
  * - label_design：无角色默认携带——裁决原文「标签设计是独立权限点，不新增角色，
  *   管理员可授予任意角色的人」，只能单独授人。
+ * - audit.read：老板与管理员（#29；#232 §12 老板「全部查看」+ 管理员是系统
+ *   操作者）。审计日志含全公司人员操作记录，不给其余角色默认开。
  */
 export const ROLE_PERMISSIONS: Readonly<Record<Role, readonly Permission[]>> = {
-  owner: ["roles.assign"],
-  admin: ["roles.assign"],
+  owner: ["roles.assign", "audit.read"],
+  admin: ["roles.assign", "audit.read"],
   sales_lead: [],
   sales: [],
   customer_service: [],
