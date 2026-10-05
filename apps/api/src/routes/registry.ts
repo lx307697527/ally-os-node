@@ -48,6 +48,11 @@ export const API_ROUTES: readonly RouteDecl[] = [
   { method: "GET", path: "/api/tasks/assignee-options", auth: { kind: "session" } },
   { method: "GET", path: "/api/tasks/:id", auth: { kind: "session" } },
   { method: "PATCH", path: "/api/tasks/:id", auth: { kind: "session" } },
+  // 评论（#110 切片 1）：多态 subject 的行属门在路由内逐域裁决（task =
+  // 创建人/经办人），登录即可——可评即可见，无新权限点
+  { method: "GET", path: "/api/comments", auth: { kind: "session" } },
+  { method: "POST", path: "/api/comments", auth: { kind: "session" } },
+  { method: "DELETE", path: "/api/comments/:id", auth: { kind: "session" } },
   // 审计日志查询（#29）：owner / admin（audit.read 权限点）
   { method: "GET", path: "/api/audit-events", auth: { kind: "permission", permission: "audit.read" } },
 ];

@@ -64,6 +64,13 @@
       "when": 1791231326748,
       "tag": "0008_old_old_lace",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1791234919327,
+      "tag": "0009_lame_jackpot",
+      "breakpoints": true
     }
   ]
 }
