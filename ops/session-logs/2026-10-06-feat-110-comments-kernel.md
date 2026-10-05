@@ -137,3 +137,11 @@ thinking_blocks: 0
    App.tsx 在上**两级**,少写一级就是 ENOENT(套件级失败,零测试执行)。
 5. **verify 要带 DATABASE_URL 跑**:裸 `pnpm verify` 会把 14 个集成测试文件
    静默 skip 后报绿——「全绿」和「跳过」是两种绿,pre-push 之前显式带上。
+6. **CI 红但 416 条全绿:拆库的 57P01 拆的是 suite 不是断言**(本 PR 唯一一次
+   CI 红):migrations.test.ts(本切片未触碰)的 migration_race 测试在
+   `DROP … WITH FORCE` 时,若还有空闲池连接被 Postgres 强杀,pg Pool 按「空闲
+   客户端出错」语义把 FATAL 57P01 重发到 pool 对象上——没有监听就是未捕获
+   异常,vitest 记 1 error 整轮红。本切片新增第 55 个并行 worker 扰动了既有
+   时序把它抖出来。修法:按 pg 文档给 race 测试的两个池挂 `error` 空 listener
+   (预期的拆除错误),自己的 comments.test.ts 同款加固;断言零改动,测试没有
+   被削弱——被削弱的是「拆库时异步报错能炸掉整轮 run」这个隐性行为。

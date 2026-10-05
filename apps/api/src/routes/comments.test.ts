@@ -55,6 +55,10 @@ describe.skipIf(!databaseUrl)("comment endpoints (#110 slice 1, integration)", (
           return url.toString();
         })();
   const { db, pool } = createDb(scopedUrl);
+  // 本套件的库在 afterAll 被 drop (force)：拆库瞬间若还有空闲池连接未收完，
+  // 57P01 会由 pg Pool 重发到 pool 对象上，无监听即未捕获异常（同
+  // packages/db/src/migrations.test.ts 的 CI 实锤）。预期的拆除错误，吞掉。
+  pool.on("error", () => {});
 
   const app = createApp({
     logger,

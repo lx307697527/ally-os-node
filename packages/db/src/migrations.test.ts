@@ -27,6 +27,12 @@ describe.skipIf(!databaseUrl)("runMigrations (integration)", () => {
       raceUrl.pathname = `/${dbName}`;
       const a = createDb(raceUrl.toString());
       const b = createDb(raceUrl.toString());
+      // 这两个池连着的库在本测试尾部被 drop (force)：拆库瞬间若还有空闲池连接
+      // 未收完，Postgres 的 57P01 会被 pg Pool 按「空闲客户端出错」语义重发到
+      // pool 对象上——没有监听就是未捕获异常，整轮 vitest 红（2026-10-06 CI：
+      // 416 条测试全绿、仅此一处异步报错）。这是预期的拆除错误，按 pg 文档挂
+      // 空 listener 吞掉；断言本身不受影响。
+      for (const { pool } of [a, b]) pool.on("error", () => {});
       try {
         await expect(Promise.all([runMigrations(a.db), runMigrations(b.db)])).resolves.toHaveLength(2);
       } finally {
