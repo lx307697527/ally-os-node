@@ -1,4 +1,4 @@
-import { sql } from "drizzle-orm";
+import { desc, sql } from "drizzle-orm";
 import {
   boolean,
   index,
@@ -220,4 +220,83 @@ export const userPermission = pgTable(
     primaryKey({ columns: [t.userId, t.permission] }),
     index("user_permission_permission_idx").on(t.permission),
   ],
+);
+
+// ── 站内通知（#129）──────────────────────────────────────────────────────────
+// 一行 = 一起业务事件对一个用户的投递（老系统 platform.notifications 的直译）。
+// 老系统的写入方是 core.outbox 的 AFTER INSERT 触发器按 event_type 白名单扇出；
+// 本系统还没有 outbox/事件总线，扇出生产者随各业务域迁移时落地（同 #30 realtime
+// 的按域采纳策略）——届时事件携带的幂等键（老 (user_id, outbox_id) 唯一约束）
+// 一并补列，expand-only。读路径只有本人；已读/全读走 API 且只允许操作自己的行。
+export const notifications = pgTable(
+  "notifications",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => authUser.id, { onDelete: "cascade" }),
+    // 事件类型是开集（quote.viewed、support.ticket.*…随业务域增长），text 收口：
+    // 白名单的裁决在消费侧（前端展示层）做，与老系统「文案与深链在 TS 不在库」一致。
+    eventType: text("event_type").notNull(),
+    aggregateType: text("aggregate_type"),
+    aggregateId: text("aggregate_id"),
+    payload: jsonb("payload").$type<Record<string, unknown>>().notNull().default({}),
+    isRead: boolean("is_read").notNull().default(false),
+    readAt: timestamp("read_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("notifications_user_recent_idx").on(t.userId, desc(t.createdAt)),
+    // 铃铛的未读计数不 count(*)：部分索引让「有没有未读、封顶几条」只扫未读行
+    index("notifications_user_unread_idx").on(t.userId).where(sql`${t.isRead} = false`),
+  ],
+);
+
+// ── 反馈上报（#129）──────────────────────────────────────────────────────────
+// 后台内提交问题（老系统 FEAT-198 platform.feedback_reports 的直译）。提交人是
+// 服务端从会话解析的（不是请求参数，防冒名）；姓名/邮箱是提交时的快照，人后来
+// 改资料不改历史单据。附件（老 ≤3 张图片、私有桶）随 @ally/storage 基建补列，
+// expand-only。type/priority/status 是闭集，枚举与老 CHECK 词表逐值对齐。
+export const feedbackReportType = pgEnum("feedback_report_type", [
+  "bug_report",
+  "feature_request",
+  "process_gap",
+]);
+
+export const feedbackReportPriority = pgEnum("feedback_report_priority", [
+  "low",
+  "medium",
+  "high",
+  "critical",
+]);
+
+export const feedbackReportStatus = pgEnum("feedback_report_status", [
+  "pending",
+  "in_review",
+  "resolved",
+  "closed",
+]);
+
+export const feedbackReports = pgTable(
+  "feedback_reports",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    // 对外编号 BR-xxxxxxxx（提交成功回执），与自增无关、撞号重掷
+    reportNumber: text("report_number").notNull(),
+    type: feedbackReportType("type").notNull(),
+    title: text("title").notNull(),
+    description: text("description").notNull(),
+    stepsToReproduce: text("steps_to_reproduce"),
+    priority: feedbackReportPriority("priority").notNull(),
+    status: feedbackReportStatus("status").notNull().default("pending"),
+    submittedByUserId: uuid("submitted_by_user_id")
+      .notNull()
+      .references(() => authUser.id),
+    submitterName: text("submitter_name").notNull(),
+    submitterEmail: text("submitter_email").notNull(),
+    adminNotes: text("admin_notes"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex("feedback_reports_number_idx").on(t.reportNumber)],
 );

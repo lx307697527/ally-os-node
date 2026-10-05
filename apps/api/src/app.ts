@@ -8,8 +8,10 @@ import { sessionMiddleware } from "./auth/session.ts";
 import { authzMiddleware, requireTwoFactorGate } from "./authz/middleware.ts";
 import type { AuthzStore } from "./authz/service.ts";
 import { authProvidersRoutes } from "./routes/auth-providers.ts";
+import { feedbackRoutes } from "./routes/feedback.ts";
 import { healthRoutes } from "./routes/health.ts";
 import { meRoutes } from "./routes/me.ts";
+import { notificationsRoutes } from "./routes/notifications.ts";
 import { userRolesRoutes } from "./routes/user-roles.ts";
 
 // 依赖通过参数注入，测试时可以传假的实现，不需要真数据库。
@@ -65,6 +67,9 @@ export function createApp(deps: AppDeps) {
   // 不被自己拦住。此后注册的业务路由默认都在门后——新模块忘了接门也不开口子。
   app.use("/api/*", requireTwoFactorGate());
   app.route("/", userRolesRoutes(deps));
+  // 通知与反馈（#129）：本人数据、登录即可，无需权限点
+  app.route("/", notificationsRoutes(deps));
+  app.route("/", feedbackRoutes(deps));
 
   return app;
 }

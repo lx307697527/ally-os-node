@@ -2,11 +2,14 @@
 // feed the shell its identity. Slice 1 of issue #129 — sign-in plus the
 // internal shell. The health probe the old bootstrap page read moved to the
 // Dashboard, where a signed-in operator can actually see it.
+import { useState } from "react";
 import type { ReactElement } from "react";
 import { BrowserRouter, Navigate, Outlet, Route, Routes, useNavigate } from "react-router-dom";
 
 import { Dashboard } from "./pages/Dashboard.tsx";
 import { Region } from "./pages/Region.tsx";
+import { FeedbackDialog } from "./shared/components/FeedbackDialog.tsx";
+import { NotificationBell } from "./shared/components/NotificationBell.tsx";
 import { TwoFactorSettings } from "./shared/pages/TwoFactorSettings.tsx";
 import { ForgotPassword } from "./shared/pages/ForgotPassword.tsx";
 import { Login } from "./shared/pages/Login.tsx";
@@ -17,9 +20,14 @@ import { RequireAuth } from "./shared/components/RequireAuth.tsx";
 import { SessionTimeoutWarning } from "./shared/components/SessionTimeoutWarning.tsx";
 import { InternalShell } from "./shared/shell/InternalShell.tsx";
 import { sessionIdentityFromUser } from "./shared/lib/session-identity.ts";
+import { createNotificationAdapters } from "./shared/lib/notifications-client.ts";
 import { signOut, useSession } from "./shared/lib/session.ts";
 import { useSessionTimeout } from "./shared/lib/use-session-timeout.ts";
 import { useVersionCheck } from "./shared/lib/use-version-check.ts";
+
+// Module scope, like the old live-notifications adapters: ONE adapters object,
+// so the bell's refresh identity is stable for the poll hook.
+const notificationAdapters = createNotificationAdapters();
 
 function ShellHost(): ReactElement {
   const { user } = useSession();
@@ -32,12 +40,19 @@ function ShellHost(): ReactElement {
   // this tab loaded?" — announced as a prompt, never acted on behind the
   // operator's back; the banner's Refresh click is the only reload.
   const newBuildId = useVersionCheck();
+  // The bell + the feedback dialog (#129 slice 4): the shell gets a finished
+  // bell element and a callback; the data and the dialog live HERE.
+  const [feedbackOpen, setFeedbackOpen] = useState(false);
   const identity = sessionIdentityFromUser(user);
 
   return (
     <>
       <InternalShell
         identity={identity ?? undefined}
+        bell={<NotificationBell adapters={notificationAdapters} />}
+        onSubmitFeedback={() => {
+          setFeedbackOpen(true);
+        }}
         onSignOut={() => {
           void (async () => {
             await signOut();
@@ -47,6 +62,7 @@ function ShellHost(): ReactElement {
       >
         <Outlet />
       </InternalShell>
+      {feedbackOpen ? <FeedbackDialog onClose={() => { setFeedbackOpen(false); }} /> : null}
       {newBuildId !== null ? (
         <NewVersionBanner
           onRefresh={() => {

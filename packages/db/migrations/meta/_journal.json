@@ -43,6 +43,13 @@
       "when": 1791216922023,
       "tag": "0005_chemical_virginia_dare",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1791220921488,
+      "tag": "0006_conscious_vulture",
+      "breakpoints": true
     }
   ]
 }
