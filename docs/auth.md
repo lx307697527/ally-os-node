@@ -3,6 +3,39 @@
 替代 Supabase Auth（GoTrue）的自建认证：**Better Auth** + Drizzle(PG)，
 邮箱密码登录，HttpOnly Cookie 会话。本页记录已落地的部分与后续切片的边界。
 
+## 已落地：Google OAuth 登录（#22 切片 4）
+
+老系统依据：FEAT-167 社交登录（提供商登记表是纯决策层 + 「本部署开了哪几家」
+是部署配置 + 未配置的提供商渲染空——给必然失败的动作一个按钮，和死链接同罪）
++ FEAT-442（社交按钮用 `default` 面，不与密码表单的主按钮争主次）+ FEAT-068
+（登录页不指定落点，回落到根路径由索引路由决定）。按 #22 依赖序只渡 Google
+一家；azure/apple 有人要了再进（登记表思路在新系统等价于「往
+`socialProviders`/按钮渲染门里各加一项」）。
+
+| 部分 | 位置 | 说明 |
+| --- | --- | --- |
+| 提供商注册 | `apps/api/src/auth/auth.ts` | `socialProviders.google`，由 `googleOAuth` 依赖门控：env 成对配置才注册；未注册时 `POST /sign-in/social` 答 404 `PROVIDER_NOT_FOUND`（Better Auth 1.7.7 实测，认识的/不认识的提供商名同一个 404，无单独校验分支） |
+| 环境变量 | `@ally/config` | `GOOGLE_CLIENT_ID` + `GOOGLE_CLIENT_SECRET`：both-or-none（对象 superRefine，缺一边指向缺的那个变量名）——半配置在启动即失败（fail closed），不拖到 OAuth 回调才炸 |
+| 提供商列表端点 | `apps/api/src/routes/auth-providers.ts` | `GET /api/auth-providers`（公开，先于会话中间件）：`{ providers: ["google"] }`。老系统把这件事放前端构建期 env；新系统改为运行时问服务器——提供商真相源是 API（它 owns better-auth），前端不再带第二份部署配置 |
+| 登录页 | `apps/web` `shared/lib/login-providers.ts` + `Login.tsx` | 挂载时问一次；zod 校验响应体（外部输入）；API 不可达/响应坏 → 空列表 = 不渲染按钮（降级即沉默，不猜） |
+| Google 按钮 | `apps/web` `auth/SignIn.tsx` | `default` 面 + 四色 G 标（老 portal 同款），在密码表单之下；仅当服务器报告 google 时渲染；成功路径不清 busy——浏览器已经在去 Google 的路上 |
+| 回调与落点 | Better Auth 托管 | 授权 URL 由 `POST /api/auth/sign-in/social` 本地构造（不联网）；回调交换在 `{baseURL}/api/auth/callback/google`（需要真实凭据，属库路径）；成功回落 `callbackURL`（= RequireAuth 记住的路径，FEAT-068）；provider 侧失败回落 `errorCallbackURL` `/login?error=…`，登录页把错误码原文显示，不翻译 |
+| Terraform | `infra/terraform/aws/` | `google_client_id`（平铺 env）+ `google_client_secret`（tfvars → Secrets Manager `${name}/google-client-secret` → ECS 注入）；两者留空 = 不启用。上线清单：Google Cloud Console 回调地址填 `<控制台域名>/api/auth/callback/google` |
+
+关键行为（Better Auth 1.7.7 实测 / 集成测试钉住）：
+
+- 配置了凭据时，`POST /api/auth/sign-in/social { provider: "google", callbackURL: "/" }`
+  返回 200 `{ url, redirect: true }`，url 为 accounts.google.com 授权页，
+  带我们的 `client_id`、`redirect_uri=…/api/auth/callback/google`、`response_type=code`
+  与 `state`；客户端内置 redirect 插件据此跳转浏览器。
+- 未配置（或密码-only 部署）时同一请求 404 `PROVIDER_NOT_FOUND`——按钮不会
+  渲染，直接打端点也拿不到授权 URL。
+- Google 回传的邮箱视为已验证（`emailVerified` 取 provider 声明）；
+  `requireEmailVerification` 只约束密码路径。
+- 账号关联（同一邮箱先注册密码、后用 Google 登录）走 Better Auth 默认的
+  account linking 行为，本切片不改默认、不做定制；待 staging 用真实凭据
+  冒烟后再决定是否收紧。
+
 ## 已落地：密码重置（#22 切片 3）
 
 老系统依据：`resetPasswordForEmail` + GoTrue recovery 模板（`auth-send-email` 里
@@ -97,12 +130,12 @@
 | `POST /api/auth/request-password-reset` | 请求重置邮件；对存在/不存在地址同答 200 同形响应（反枚举）；发信失败不阻塞 |
 | `POST /api/auth/reset-password` | `{ token, newPassword }` 设新密码；令牌一次性、24h；吊销该用户全部会话 |
 | `POST /api/auth/sign-out` | 登出，服务端吊销会话 |
+| `POST /api/auth/sign-in/social` | 社交登录入口（切片 4 起）：`{ provider: "google", callbackURL, errorCallbackURL }` → `{ url, redirect: true }`；未配置的提供商 404 |
+| `GET /api/auth-providers` | 本部署启用的社交提供商列表（公开；登录页据此渲染按钮） |
 | `GET /api/me` | 当前登录用户（业务路由，经会话中间件） |
 
 ## #22 后续切片（本切片不含）
 
-- Google OAuth 登录（老系统经 Supabase OAuth，hd 只是 courtesy、真正校验靠
-  员工域检查；新系统直接用 Better Auth 的 Google provider）
 - 存量密码哈希导入：老库是 bcrypt（`$2a$`/`$2b$`，pgcrypto cost 10），
   Better Auth 默认 scrypt——导入切片需配置 `emailAndPassword.password.verify`
   兼容 bcrypt，用户无需重置密码
