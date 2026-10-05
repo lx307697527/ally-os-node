@@ -311,3 +311,35 @@ export const feedbackReports = pgTable(
   },
   (t) => [uniqueIndex("feedback_reports_number_idx").on(t.reportNumber)],
 );
+
+// ── 任务（#113 切片 1：任务内核）────────────────────────────────────────────
+// 老系统有三套任务表（tasks+task_projects 看板、workspace_tasks 工作区、crm_tasks
+// 回拨），迁移要点要求评估合并：裁决是收敛为一套（#232 §11「一套任务系统，可挂
+// 在任何记录上」）。业务对象的附着列（subject_type/subject_id，老 crm.tasks 的
+// 多态形态）随第一个有附着对象的业务域切片 expand-only 进场——不在没有生产者时
+// 预置空列（与 #29 切片 1「先建机制不留产线」同一裁决）。
+// 状态词表与老 crm.tasks 的 CHECK 逐值对齐（open|done|cancelled，勾选式翻转）；
+// ops 任务的六态（#156）进场时 ALTER TYPE ADD VALUE，向后兼容。
+export const taskStatus = pgEnum("task_status", ["open", "done", "cancelled"]);
+
+export const tasks = pgTable(
+  "tasks",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    title: text("title").notNull(),
+    description: text("description"),
+    status: taskStatus("status").notNull().default("open"),
+    dueAt: timestamp("due_at", { withTimezone: true }),
+    // 经办人/创建人都不与用户行共生灭：人被删任务还在（SET NULL）；「可分配面 =
+    // 至少一个非 customer 角色」的裁决在 API 层，表不重复表达
+    assigneeId: uuid("assignee_id").references(() => authUser.id, { onDelete: "set null" }),
+    createdById: uuid("created_by_id").references(() => authUser.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    // 「我的待办」主读法：按人 + 状态过滤；到期排序在查询侧表达（nulls last）
+    index("tasks_assignee_status_idx").on(t.assigneeId, t.status),
+    index("tasks_created_by_idx").on(t.createdById),
+  ],
+);
