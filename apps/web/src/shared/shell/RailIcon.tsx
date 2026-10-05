@@ -20,7 +20,7 @@
 // the labels beside it.
 import type { ReactElement, ReactNode } from "react";
 
-export type RailIconName = "overview" | "ledger";
+export type RailIconName = "overview" | "ledger" | "tasks";
 
 const GLYPHS: Record<RailIconName, ReactNode> = {
   // A gauge: the arc, its baseline and one needle — where things stand.
@@ -38,6 +38,13 @@ const GLYPHS: Record<RailIconName, ReactNode> = {
       <path d="M8.25 8.25h7.5" />
       <path d="M8.25 12h7.5" />
       <path d="M8.25 15.75h4.5" />
+    </>
+  ),
+  // A ticked box: the to-do and its check — a task, done or not yet.
+  tasks: (
+    <>
+      <rect x="4.75" y="4.75" width="14.5" height="14.5" rx="1.5" />
+      <path d="m8.5 12.25 2.5 2.5 4.75-5.5" />
     </>
   ),
 };

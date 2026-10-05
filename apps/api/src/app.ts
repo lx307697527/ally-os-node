@@ -13,6 +13,7 @@ import { feedbackRoutes } from "./routes/feedback.ts";
 import { healthRoutes } from "./routes/health.ts";
 import { meRoutes } from "./routes/me.ts";
 import { notificationsRoutes } from "./routes/notifications.ts";
+import { tasksRoutes } from "./routes/tasks.ts";
 import { userRolesRoutes } from "./routes/user-roles.ts";
 
 // 依赖通过参数注入，测试时可以传假的实现，不需要真数据库。
@@ -71,6 +72,8 @@ export function createApp(deps: AppDeps) {
   // 通知与反馈（#129）：本人数据、登录即可，无需权限点
   app.route("/", notificationsRoutes(deps));
   app.route("/", feedbackRoutes(deps));
+  // 任务（#113 切片 1）：创建人/经办人本人数据，登录即可
+  app.route("/", tasksRoutes(deps));
   // 审计日志查询（#29）：audit.read 权限点门（owner/admin 默认）
   app.route("/", auditEventsRoutes(deps));
 

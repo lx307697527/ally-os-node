@@ -41,6 +41,13 @@ export const API_ROUTES: readonly RouteDecl[] = [
   { method: "POST", path: "/api/notifications/read-all", auth: { kind: "session" } },
   // 反馈上报（#129）：任何登录者可提交
   { method: "POST", path: "/api/feedback-reports", auth: { kind: "session" } },
+  // 任务（#113 切片 1）：创建人/经办人本人数据，登录即可；团队全局视图的
+  // 权限点随 RBAC 模块切片裁决
+  { method: "GET", path: "/api/tasks", auth: { kind: "session" } },
+  { method: "POST", path: "/api/tasks", auth: { kind: "session" } },
+  { method: "GET", path: "/api/tasks/assignee-options", auth: { kind: "session" } },
+  { method: "GET", path: "/api/tasks/:id", auth: { kind: "session" } },
+  { method: "PATCH", path: "/api/tasks/:id", auth: { kind: "session" } },
   // 审计日志查询（#29）：owner / admin（audit.read 权限点）
   { method: "GET", path: "/api/audit-events", auth: { kind: "permission", permission: "audit.read" } },
 ];

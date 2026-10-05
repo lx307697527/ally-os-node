@@ -11,6 +11,7 @@ import { Region } from "./pages/Region.tsx";
 import { FeedbackDialog } from "./shared/components/FeedbackDialog.tsx";
 import { NotificationBell } from "./shared/components/NotificationBell.tsx";
 import { AuditLog } from "./shared/pages/AuditLog.tsx";
+import { Tasks } from "./shared/pages/Tasks.tsx";
 import { TwoFactorSettings } from "./shared/pages/TwoFactorSettings.tsx";
 import { ForgotPassword } from "./shared/pages/ForgotPassword.tsx";
 import { Login } from "./shared/pages/Login.tsx";
@@ -102,6 +103,8 @@ export function App(): ReactElement {
           <Route path="/" element={<Navigate to="/overview" replace />} />
           <Route path="/overview" element={<Dashboard />} />
           <Route path="/regions/:region" element={<Region />} />
+          {/* 任务（#113 切片 1）：登录者的自己的待办；行属读写都在服务端。 */}
+          <Route path="/tasks" element={<Tasks />} />
           {/* 审计日志（#29）：System 区第一个页面；服务端 audit.read 门，
               无权限的账号在页面里得到明确的答复，不预设谁能进来。 */}
           <Route path="/system/audit" element={<AuditLog />} />

@@ -55,9 +55,10 @@ export const RAIL_GROUPS: readonly RailGroup[] = [
   {
     key: "home",
     label: "Home",
-    note: "Where a signed-in operator lands — the company-wide rollup.",
+    note: "Where a signed-in operator lands — the company-wide rollup and their own to-dos.",
     items: [
       { to: "/overview", label: "Dashboard", nav: "overview", icon: "overview" },
+      { to: "/tasks", label: "Tasks", nav: "tasks", icon: "tasks" },
     ],
   },
   {
