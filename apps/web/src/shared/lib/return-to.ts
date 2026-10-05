@@ -9,6 +9,9 @@
 
 export interface ReturnToState {
   from?: { pathname?: unknown } | null;
+  /** Set by the session-timeout watch (#129 slice 2) when it walked the
+   *  operator out on a dead session — Login prints a line about it. */
+  sessionExpired?: unknown;
 }
 
 export function returnPathFrom(state: ReturnToState | null | undefined): string {
