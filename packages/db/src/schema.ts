@@ -1,3 +1,4 @@
+import { sql } from "drizzle-orm";
 import {
   boolean,
   index,
@@ -40,7 +41,11 @@ export const authUser = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [uniqueIndex("auth_user_email_idx").on(t.email)],
+  // 邮箱唯一约束在 lower(email) 上（#25 影子账号）：写入侧全部归一化为小写
+  // （better-auth 注册自带 toLowerCase，导入与影子账号服务显式 trim+lower），
+  // 索引把「同一邮箱不产生重复账号」从写侧约定升级为结构不变式——未来任何
+  // 忘了归一化的写入路径也撞不进第二行，CRM 联系人预建账号的幂等性靠它兜底。
+  (t) => [uniqueIndex("auth_user_email_idx").on(sql`lower(${t.email})`)],
 );
 
 export const authSession = pgTable(

@@ -1,6 +1,6 @@
 {
-  "id": "5e0bcf14-fe3a-44d5-ba9a-7f7dbf48a138",
-  "prevId": "6d61aab9-b5e3-4904-9231-9d6e33d92909",
+  "id": "7b1d3460-7dbf-4d98-854d-e2c61199dc83",
+  "prevId": "5e0bcf14-fe3a-44d5-ba9a-7f7dbf48a138",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -26,6 +26,18 @@
           "type": "text",
           "primaryKey": false,
           "notNull": true
+        },
+        "target": {
+          "name": "target",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "detail": {
+          "name": "detail",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
         },
         "created_at": {
           "name": "created_at",
@@ -520,9 +532,172 @@
       "policies": {},
       "checkConstraints": {},
       "isRLSEnabled": false
+    },
+    "public.user_permission": {
+      "name": "user_permission",
+      "schema": "",
+      "columns": {
+        "user_id": {
+          "name": "user_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "permission": {
+          "name": "permission",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "user_permission_permission_idx": {
+          "name": "user_permission_permission_idx",
+          "columns": [
+            {
+              "expression": "permission",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "user_permission_user_id_auth_user_id_fk": {
+          "name": "user_permission_user_id_auth_user_id_fk",
+          "tableFrom": "user_permission",
+          "tableTo": "auth_user",
+          "columnsFrom": [
+            "user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "user_permission_user_id_permission_pk": {
+          "name": "user_permission_user_id_permission_pk",
+          "columns": [
+            "user_id",
+            "permission"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.user_role": {
+      "name": "user_role",
+      "schema": "",
+      "columns": {
+        "user_id": {
+          "name": "user_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "role": {
+          "name": "role",
+          "type": "app_role",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "user_role_role_idx": {
+          "name": "user_role_role_idx",
+          "columns": [
+            {
+              "expression": "role",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "user_role_user_id_auth_user_id_fk": {
+          "name": "user_role_user_id_auth_user_id_fk",
+          "tableFrom": "user_role",
+          "tableTo": "auth_user",
+          "columnsFrom": [
+            "user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "user_role_user_id_role_pk": {
+          "name": "user_role_user_id_role_pk",
+          "columns": [
+            "user_id",
+            "role"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
     }
   },
-  "enums": {},
+  "enums": {
+    "public.app_role": {
+      "name": "app_role",
+      "schema": "public",
+      "values": [
+        "owner",
+        "admin",
+        "sales_lead",
+        "sales",
+        "customer_service",
+        "sales_assistant",
+        "ops_assistant",
+        "formulator",
+        "purchaser",
+        "warehouse",
+        "production_lead",
+        "qa",
+        "lab_technician",
+        "finance",
+        "customer"
+      ]
+    }
+  },
   "schemas": {},
   "sequences": {},
   "roles": {},
