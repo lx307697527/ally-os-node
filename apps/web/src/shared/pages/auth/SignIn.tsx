@@ -1,7 +1,8 @@
 // The sign-in screen. Ported from ally-os apps/allyos SignIn.tsx (#129 slice
-// 1); the social slot and the forgot-password link are NOT ported — Google
-// OAuth and password reset return with the later slices of issue #22, and a
-// link to a route that does not exist is a dead link.
+// 1); the social slot is still NOT ported — Google OAuth returns with a later
+// slice of issue #22, and a link to a route that does not exist is a dead
+// link. The forgot-password link landed with the password-reset slice (#22
+// slice 3): the route it points at exists now.
 //
 // The unverified-email block (#22 email-verification slice): the server
 // refused with "not verified", so the screen offers the one action that
@@ -12,6 +13,7 @@
 // and reports a submission; whether the credentials are good is the caller's
 // business.
 import { useState, type ReactElement, type SyntheticEvent } from "react";
+import { Link } from "react-router-dom";
 
 import { AuthFrame, AuthLabel } from "../../components/AuthFrame.tsx";
 import { Button, Card, Input } from "@ally/ui";
@@ -118,6 +120,15 @@ export function SignIn({
           </div>
           {error && <div className="text-err text-ui font-medium">{error}</div>}
         </form>
+        <div className="mt-4">
+          <Link
+            to="/forgot-password"
+            data-testid="forgot-password-link"
+            className="text-brand font-medium underline-offset-4 hover:underline"
+          >
+            Forgot your password?
+          </Link>
+        </div>
       </Card>
     </AuthFrame>
   );

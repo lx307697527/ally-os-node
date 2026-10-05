@@ -7,7 +7,9 @@ import { BrowserRouter, Navigate, Outlet, Route, Routes, useNavigate } from "rea
 
 import { Dashboard } from "./pages/Dashboard.tsx";
 import { Region } from "./pages/Region.tsx";
+import { ForgotPassword } from "./shared/pages/ForgotPassword.tsx";
 import { Login } from "./shared/pages/Login.tsx";
+import { ResetPassword } from "./shared/pages/ResetPassword.tsx";
 import { VerifyEmail } from "./shared/pages/VerifyEmail.tsx";
 import { NewVersionBanner } from "./shared/components/NewVersionBanner.tsx";
 import { RequireAuth } from "./shared/components/RequireAuth.tsx";
@@ -67,6 +69,11 @@ export function App(): ReactElement {
             slice) — public: the operator confirming a mailbox is by
             definition not signed in yet. */}
         <Route path="/verify-email" element={<VerifyEmail />} />
+        {/* The password-reset pair (#22 password-reset slice) — public for
+            the same reason: whoever asks for a reset link or spends one has
+            forgotten the password that would have signed them in. */}
+        <Route path="/forgot-password" element={<ForgotPassword />} />
+        <Route path="/reset-password" element={<ResetPassword />} />
         <Route
           element={
             <RequireAuth>
