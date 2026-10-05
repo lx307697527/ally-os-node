@@ -7,6 +7,7 @@ import { BrowserRouter, Navigate, Outlet, Route, Routes, useNavigate } from "rea
 
 import { Dashboard } from "./pages/Dashboard.tsx";
 import { Region } from "./pages/Region.tsx";
+import { TwoFactorSettings } from "./shared/pages/TwoFactorSettings.tsx";
 import { ForgotPassword } from "./shared/pages/ForgotPassword.tsx";
 import { Login } from "./shared/pages/Login.tsx";
 import { ResetPassword } from "./shared/pages/ResetPassword.tsx";
@@ -84,6 +85,9 @@ export function App(): ReactElement {
           <Route path="/" element={<Navigate to="/overview" replace />} />
           <Route path="/overview" element={<Dashboard />} />
           <Route path="/regions/:region" element={<Region />} />
+          {/* 2FA 自助（#24）：强制门把未绑定的管理员引到这里的合同,绑定流程
+              本身不需要新的 API 面——走的都是 /api/auth/two-factor/*。 */}
+          <Route path="/settings/two-factor" element={<TwoFactorSettings />} />
           {/* An address the router cannot reach is answered by the place a
               signed-in operator belongs — the same destination the index
               route picks. */}

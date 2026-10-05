@@ -3,6 +3,42 @@
 替代 Supabase Auth（GoTrue）的自建认证：**Better Auth** + Drizzle(PG)，
 邮箱密码登录，HttpOnly Cookie 会话。本页记录已落地的部分与后续切片的边界。
 
+## 已落地：双因素认证——TOTP + 备份码，管理员强制（#24）
+
+老系统是 Supabase GoTrue 原生 MFA（`auth.mfa_factors`，aal2 会话）+ 自定义
+备份码表（`security.mfa_backup_codes`，FEAT-019 p6）；更早的手搓
+`admin-2fa` edge function（TOTP 密钥明文入库）是审计点名缺陷，未渡河。
+新系统用 Better Auth 自带 two-factor 插件（1.7.7），凭证加密复用
+`BETTER_AUTH_SECRET`——零新 env，不引入第二套加密域。
+
+| 部分 | 位置 | 说明 |
+| --- | --- | --- |
+| 因子存储 | `packages/db` `auth_two_factor` + `auth_user.two_factor_enabled` | secret 与 backupCodes 都是密文（XChaCha20-Poly1305，密钥派生自 BETTER_AUTH_SECRET；迁移 0005）。`verified` = 完成过一次真实码校验；`failed_verification_count`/`locked_until` 是挑战的账号级尝试预算与锁定（NIST SP 800-63B §5.2.2，better-auth 内置） |
+| 端点族 | `apps/api/src/auth/auth.ts` 挂 `twoFactor({ issuer: "Ally OS" })` | `/api/auth/two-factor/{enable, verify-totp, verify-backup-code, generate-backup-codes, disable}`。启用必须带账号密码；必须完成一次真实码校验才置 `twoFactorEnabled`（扫码不证明会输码）；备份码 10 枚、5-5 大小写字母数字、整批密文存储、用一枚烧一枚 |
+| 登录挑战 | better-auth 登录钩子 | 已启用用户密码登录 → 无会话 cookie，响应 `{ twoFactorRedirect: true, twoFactorMethods }` + 10 分钟挑战 cookie → `verify-totp` / `verify-backup-code` 换正式会话。5 次错码挑战作废 |
+| 强制门 | `apps/api/src/authz/middleware.ts` `requireTwoFactorGate` | #232 §12「管理员强制启用双因素」：持有 admin 角色而未启用 → 业务路由一律 `403 {error:"forbidden", code:"two_factor_required"}`。挂载在 authz 之后（`app.ts`），此后注册的业务路由默认在门后——新模块忘接门也不开口子。`/api/me` 刻意豁免：未绑定的人靠它得知自己的角色与状态。owner（老板）设计未列入强制名单，不擅自扩大；电子签名权限点（#219）落地时加入 `TWO_FACTOR_ENFORCED_ROLES` 即可。关闭 2FA 的 admin 立即回到门后——强制是自愈的 |
+| 前端 | `apps/web` | 登录页处理 `twoFactorRedirect`（响应类型未建模该形状，zod 收窄）→ `TwoFactorChallenge` 面板收码（TOTP/备份码切换，服务端拒绝逐字显示）；`/settings/two-factor` 自助页：绑定（密码 → QR(`uqr`)+手动密钥+备份码 → 真码校验）、重生成备份码、关闭 |
+| 备份码语义 | 刻意换掉 | better-auth 通行语义：备份码 = **第二因子**（丢设备顶替 TOTP 完成登录，用一次少一个）。老系统 FEAT-019 p6 的「恢复码消费即删因子、强制重绑」依赖 GoTrue 的 aal 概念，better-auth 无对应物，不渡河 |
+
+### 老系统 2FA 凭证迁移评估（#24 验收第 1 条的裁定）
+
+结论：**TOTP 密钥与备份码都无法原样迁入，已绑定的管理员需要重新绑定一次。**
+这不是没做，是做不成，证据如下：
+
+1. **TOTP 密钥不可导入。** better-auth 的 TOTP 校验（`@better-auth/utils`
+   `hmac.mjs` → `importKey("raw", TextEncoder(key))`）直接用**存储字符串的
+   UTF-8 字节**做 HMAC 密钥；`createOTP(secret)` 全程不解释 base32。老系统
+   GoTrue（pquerna/otp）的密钥是 **20 随机字节的 base32 编码**，真身是任意
+   二进制——不存在一个字符串既能存进 better-auth、其 UTF-8 字节又等于
+   base32 解码后的那些字节（TextEncoder 对非 ASCII 必损）。把 base32 串原样
+   写入会得到「密钥能存、老认证器永远对不上码」的死行：管理员密码过了、
+   挑战卡死，比重新绑定更糟。因此**没有**做导入脚本。
+2. **备份码哈希同样不可导入。** 老系统是 bcrypt 单向哈希（逐枚比对），better-auth
+   存的是整批明文 JSON 的加密体——单向哈希无法变成明文列表；且语义不同（见上表）。
+3. **迁移路径 = 重绑一次。** 老系统停用后，管理员用密码登录 → 强制门/登录挑战
+   引导 → `/settings/two-factor` 重新扫码。新绑定流程完全自助，配好强制门后
+   受影响的人不会漏。备份码在绑定响应里即时发放一次。
+
 ## 已落地：存量 bcrypt 哈希导入（#22 切片 5）
 
 老用户从老系统(Supabase GoTrue)带原密码迁入,无需重置——对应 #22 验收

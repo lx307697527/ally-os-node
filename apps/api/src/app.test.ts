@@ -19,7 +19,7 @@ const unusedDb = {
 const logger = pino({ level: "silent" });
 
 const fakeSession: SessionData = {
-  user: { id: "u-1", email: "user@example.com", name: "User", emailVerified: true },
+  user: { id: "u-1", email: "user@example.com", name: "User", emailVerified: true, twoFactorEnabled: true },
   session: { id: "s-1", userId: "u-1", expiresAt: new Date(Date.now() + 60_000) },
 };
 
@@ -122,7 +122,7 @@ describe("session middleware (#22)", () => {
     }).request("/api/me");
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({
-      user: { id: "u-1", email: "user@example.com", name: "User", emailVerified: true },
+      user: { id: "u-1", email: "user@example.com", name: "User", emailVerified: true, twoFactorEnabled: true },
       authz: { roles: ["admin"], permissions: ["roles.assign"] },
     });
   });

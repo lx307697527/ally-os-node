@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
+import { twoFactor } from "better-auth/plugins";
 import { and, eq, gt } from "drizzle-orm";
 import type { Db } from "@ally/db";
 import { schema } from "@ally/db";
@@ -168,8 +169,31 @@ export function createAuth(deps: AuthDeps) {
         session: schema.authSession,
         account: schema.authAccount,
         verification: schema.authVerification,
+        twoFactor: schema.authTwoFactor,
       },
     }),
+    // 双因素认证（#24）：TOTP + 备份码，插件挂载即获得 /api/auth/two-factor/*
+    // 端点族（enable / verify-totp / verify-backup-code / disable /
+    // generate-backup-codes）。与老系统的对应与差异：
+    // - 老系统是 Supabase GoTrue 原生 MFA（aal2 会话）+ 自定义备份码表；新系统
+    //   会话模型在 better-auth，2FA 用其自带插件，凭证（加密密钥）同一把
+    //   BETTER_AUTH_SECRET——不新增 env，不引入第二套加密域。
+    // - 备份码语义刻意换成通行语义：better-auth 的备份码是「第二因子」
+    //   （丢设备时顶替 TOTP 完成登录，用一次少一个）；老系统 FEAT-019 p6 的
+    //   「备份码 = 恢复（消费即删因子强制重绑）」不渡河——那套依赖 GoTrue 的
+    //   aal 概念，在 better-auth 里没有对应物，且删因子迫使重绑对用户更狠。
+    // - issuer 取 "Ally OS"：认证器应用里的条目名（enable/get-totp-uri 的
+    //   otpauth URI 都用它），不落 better-auth 的默认 appName。
+    // - 启用必须完成一次真实码校验（不设 skipVerificationOnEnable）：扫码
+    //   不等于会输码，没校验过就置 twoFactorEnabled 会把人锁在门外。
+    // - 备份码默认 10 枚、5-5 大小写字母数字、整批密文存储（加密明文 JSON），
+    //   用一枚烧一枚；与老系统的 8 枚十六进制、bcrypt 哈希逐枚比对不同——
+    //   旧哈希因此无法迁移，见 auth/legacy-2fa-import.ts 的评估。
+    plugins: [
+      twoFactor({
+        issuer: "Ally OS",
+      }),
+    ],
   });
 }
 
@@ -177,10 +201,25 @@ export type Auth = ReturnType<typeof createAuth>;
 
 /**
  * 生产环境的会话解析：Better Auth 读请求头里的会话 cookie,查库校验。
- * 返回形状按 session.ts 的业务接口收敛,业务代码不依赖 better-auth 类型。
+ * 返回形状按 session.ts 的业务接口逐字段收敛（不整包透传）——插件把
+ * twoFactorEnabled 声明为可选字段（required: false），而列是 notNull default
+ * false，这里把它归一成确定的布尔，better-auth 的可空性不出映射层。
  */
 export function createSessionResolver(auth: Auth): ResolveSession {
-  return (headers) => auth.api.getSession({ headers });
+  return async (headers) => {
+    const data = await auth.api.getSession({ headers });
+    if (!data) return null;
+    return {
+      session: data.session,
+      user: {
+        id: data.user.id,
+        email: data.user.email,
+        name: data.user.name,
+        emailVerified: data.user.emailVerified,
+        twoFactorEnabled: data.user.twoFactorEnabled === true,
+      },
+    };
+  };
 }
 
 /**

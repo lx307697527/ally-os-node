@@ -55,3 +55,31 @@ export function requirePermission(permission: Permission): MiddlewareHandler<App
     return undefined;
   };
 }
+
+/**
+ * #232 §12：「管理员和有电子签名权限的人强制启用双因素认证」。电子签名权限点
+ * 尚不存在（#219 落地时把它的 Permission 加进这个集合即可）；今天的强制集合
+ * 就是 admin。owner（老板）设计未列入强制名单，不擅自扩大——要改是一行的事，
+ * 但那是设计裁决的修订，不是实现顺手做的决定。
+ *
+ * 拦截形状：403 { error: "forbidden", code: "two_factor_required" }。前端拿
+ * code 路由去 /settings/two-factor；/api/me 刻意豁免（见 app.ts 挂载顺序），
+ * 未绑定的人靠它查到自己的角色与 twoFactorEnabled，才知道该去绑定。
+ */
+export const TWO_FACTOR_REQUIRED_CODE = "two_factor_required";
+
+export const TWO_FACTOR_ENFORCED_ROLES: readonly Role[] = ["admin"];
+
+export function requireTwoFactorGate(): MiddlewareHandler<AppEnv> {
+  return async (c, next) => {
+    const user = c.get("user");
+    const enforced = c.get("authz").roles.some((role) =>
+      TWO_FACTOR_ENFORCED_ROLES.includes(role),
+    );
+    if (enforced && !user.twoFactorEnabled) {
+      return c.json({ error: "forbidden", code: TWO_FACTOR_REQUIRED_CODE }, 403);
+    }
+    await next();
+    return undefined;
+  };
+}

@@ -106,7 +106,7 @@ describe.skipIf(!databaseUrl)("user roles routes (#23, integration)", () => {
     return { userId, email };
   }
 
-  async function cookieFor(actor: Actor): Promise<string> {
+  async function signInCookie(actor: Actor): Promise<string> {
     const res = await app.request("/api/auth/sign-in/email", {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -121,6 +121,15 @@ describe.skipIf(!databaseUrl)("user roles routes (#23, integration)", () => {
 
   async function seedRole(userId: string, role: Role): Promise<void> {
     await db.insert(schema.userRole).values({ userId, role }).onConflictDoNothing();
+  }
+
+  /** #24 起管理员过不了 2FA 强制门：本文件的测试对象是 RBAC 不是绑定仪式，
+   *  夹具直接把标志置位（绑定/校验的完整闭环在 auth/two-factor.test.ts）。 */
+  async function enableTwoFactor(userId: string): Promise<void> {
+    await db
+      .update(schema.authUser)
+      .set({ twoFactorEnabled: true })
+      .where(eq(schema.authUser.id, userId));
   }
 
   /** 固定阵容：老板 / 管理员 / 销售 / 无角色，外加一个被管理的目标用户 */
@@ -142,6 +151,19 @@ describe.skipIf(!databaseUrl)("user roles routes (#23, integration)", () => {
     await seedRole(owner.userId, "owner");
     await seedRole(admin.userId, "admin");
     await seedRole(sales.userId, "sales");
+    // #24 起带 twoFactorEnabled 的账号登录响应是 2FA 挑战,不再发会话 cookie。
+    // 本文件测的是 RBAC,不走绑定仪式:置位前先把 admin 的会话签出来（直接
+    // 置位不吊销既有会话）,cookieFor 记忆各 actor 的会话、不重复登录。
+    const adminCookie = await signInCookie(admin);
+    await enableTwoFactor(admin.userId);
+    const cookies = new Map<Actor, string>([[admin, adminCookie]]);
+    const cookieFor = async (actor: Actor): Promise<string> => {
+      const hit = cookies.get(actor);
+      if (hit !== undefined) return hit;
+      const fresh = await signInCookie(actor);
+      cookies.set(actor, fresh);
+      return fresh;
+    };
     return { owner, admin, sales, plain, target, cookieFor };
   }
 

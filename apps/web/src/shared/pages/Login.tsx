@@ -16,6 +16,7 @@
 // server's error code in the query string, and that code is what the screen
 // shows — verbatim, no translation layer.
 import { useEffect, useState, type ReactElement } from "react";
+import { z } from "zod";
 import { useLocation, useNavigate } from "react-router-dom";
 
 import { authClient } from "../lib/auth-client.ts";
@@ -23,6 +24,7 @@ import { fetchLoginProviders } from "../lib/login-providers.ts";
 import { clearSessionExpiredNotice, peekSessionExpiredNotice } from "../lib/session-expiry.ts";
 import { returnPathFrom, type ReturnToState } from "../lib/return-to.ts";
 import { SignIn } from "./auth/SignIn.tsx";
+import { TwoFactorChallenge, type ChallengeFactor } from "./auth/TwoFactorChallenge.tsx";
 
 export function Login(): ReactElement {
   const navigate = useNavigate();
@@ -63,6 +65,9 @@ export function Login(): ReactElement {
   // an empty list — no buttons is the honest render when the answer is missing.
   const [socialProviders, setSocialProviders] = useState<readonly string[]>([]);
   const [socialBusy, setSocialBusy] = useState(false);
+  // #24: non-null while the server is holding a two-factor challenge for this
+  // sign-in — the password beat is done, the code beat is next.
+  const [challenge, setChallenge] = useState<ChallengeFactor | null>(null);
   useEffect(() => {
     void fetchLoginProviders().then(setSocialProviders);
   }, []);
@@ -72,9 +77,9 @@ export function Login(): ReactElement {
     setError(null);
     setResendNotice(null);
     void (async () => {
-      const { error: refusal } = await authClient.signIn.email(credentials);
-      setBusy(false);
+      const { data, error: refusal } = await authClient.signIn.email(credentials);
       if (refusal) {
+        setBusy(false);
         // 403 EMAIL_NOT_VERIFIED is not a dead end like a bad password: the
         // credentials were RIGHT, only the mailbox isn't proven yet. The
         // server's message still shows verbatim; the resend affordance rides
@@ -88,6 +93,37 @@ export function Login(): ReactElement {
         return;
       }
       setUnverifiedEmail(null);
+      // 2FA (#24): the password was right, but the server kept the session —
+      // it answers twoFactorRedirect and holds a 10-minute challenge cookie
+      // instead. The second beat collects the code (or a backup code); only
+      // then is there a session and a place to resume. better-auth 1.7's
+      // inferred response type doesn't model the plugin's rewritten shape
+      // (runtime has it, the type doesn't), so the narrowing is a zod check —
+      // the same rule this repo applies to every external payload.
+      if (z.object({ twoFactorRedirect: z.literal(true) }).safeParse(data).success) {
+        setBusy(false);
+        setChallenge("totp");
+        return;
+      }
+      navigate(returnPath, { replace: true });
+    })();
+  }
+
+  function submitChallenge(code: string): void {
+    setBusy(true);
+    setError(null);
+    void (async () => {
+      // The factor kind is which endpoint gets the code; both create the
+      // session on success and hand back to the path RequireAuth was holding.
+      const { error: refusal } =
+        challenge === "backup_code"
+          ? await authClient.twoFactor.verifyBackupCode({ code })
+          : await authClient.twoFactor.verifyTotp({ code });
+      setBusy(false);
+      if (refusal) {
+        setError(refusal.message ?? "Sign-in failed. Try again.");
+        return;
+      }
       navigate(returnPath, { replace: true });
     })();
   }
@@ -138,6 +174,18 @@ export function Login(): ReactElement {
         setError(refusal.message ?? "Sign-in failed. Try again.");
       }
     })();
+  }
+
+  if (challenge !== null) {
+    return (
+      <TwoFactorChallenge
+        busy={busy}
+        error={error}
+        factor={challenge}
+        onFactorChange={setChallenge}
+        onSubmit={submitChallenge}
+      />
+    );
   }
 
   return (
