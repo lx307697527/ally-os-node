@@ -31,4 +31,16 @@ export {
   type MenuItemProps,
 } from "./Menu.tsx";
 export { Heading, Paragraph, linkStyles } from "./Typography.tsx";
+// The Toast family — brand notice only for now; `card`/`slide` (FEAT-638) port
+// with the bell's popup slice (see Toast.tsx header).
+export {
+  Toast,
+  ToastViewport,
+  TOAST_ENTER_MS,
+  TOAST_LEAVE_MS,
+  type ToastAction,
+  type ToastPosition,
+  type ToastProps,
+  type ToastViewportProps,
+} from "./Toast.tsx";
 export { cn } from "./lib/cn.ts";

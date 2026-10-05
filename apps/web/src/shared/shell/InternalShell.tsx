@@ -5,17 +5,14 @@
 //
 // WHAT IS NOT HERE YET, AND WHERE IT RETURNS:
 //   · pinned pages  — issue #129 later slice (needs the pin model)
-//   · notification bell — issue #129 later slice (needs the notifications
-//     domain); the shell takes no slot yet, the header keeps the session
-//     cluster only
 //   · record chip / parent crumb — return with the first record route
 //   · per-role menu visibility — #23 RBAC; until then every group renders and
 //     the rail answers "where is it", not "may you see it"
 //
-// THE SHELL GOES AND GETS NOTHING. It reads no application data: it renders
-// the identity its caller hands it, and derives everything else from the
-// ROUTE (see ./rail-groups.ts). That is what keeps it testable as text and
-// honest as chrome.
+// The notification bell (#129 slice 4) takes a SLOT, not a data dependency:
+// the shell renders whatever ReactNode the caller hands it and still goes and
+// gets nothing. The feedback entry is a menu item that calls back up — same
+// discipline, an event instead of a node.
 import { type ReactElement, type ReactNode } from "react";
 import { Link, NavLink, useLocation } from "react-router-dom";
 
@@ -42,6 +39,8 @@ export function InternalShell({
   children,
   onSignOut,
   identity,
+  bell,
+  onSubmitFeedback,
 }: {
   children?: ReactNode;
   /** Optional because a shell rendered outside the auth gate has no session to end. */
@@ -51,6 +50,17 @@ export function InternalShell({
    * means the chip keeps the brand initials and the words `Signed in`.
    */
   identity?: SessionIdentity | undefined;
+  /**
+   * The notification bell as a finished element (#129 slice 4) — the shell
+   * gives it the header slot and nothing else: no adapters, no fetching.
+   */
+  bell?: ReactNode;
+  /**
+   * Present = the session menu offers "Submit feedback" (#129 slice 4).
+   * The dialog itself lives in the composition root; the shell only raises
+   * the request.
+   */
+  onSubmitFeedback?: () => void;
 }): ReactElement {
   const location = useLocation();
   const { pathname } = location;
@@ -118,6 +128,9 @@ export function InternalShell({
         </div>
         <span className="flex-1" />
         <div className="flex shrink-0 items-center gap-3">
+          {/* The bell is a finished element from the composition root; the
+              shell only gives it its place in the cluster. */}
+          {bell}
           {onSignOut && (
             // `data-testid` sits on a wrapper because `Menu` renders no element
             // of its own.
@@ -150,6 +163,11 @@ export function InternalShell({
                       {identity.email}
                     </span>
                   ) : null}
+                  {onSubmitFeedback && (
+                    <MenuItem testId="submit-feedback" onClick={onSubmitFeedback}>
+                      Submit feedback
+                    </MenuItem>
+                  )}
                   <MenuItem testId="sign-out" onClick={onSignOut}>
                     Sign out
                   </MenuItem>

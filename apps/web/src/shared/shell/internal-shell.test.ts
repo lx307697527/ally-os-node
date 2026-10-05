@@ -36,6 +36,22 @@ describe("internal shell markup", () => {
     expect(shell).toContain("sessionIdentityDisplay");
   });
 
+  it("the bell is a slot (a finished element), not a data dependency (#129 slice 4)", () => {
+    expect(shell).toContain("bell?: ReactNode");
+    expect(shell).toContain("{bell}");
+    // The slot renders the caller's node verbatim — no bell import, no
+    // fetching: the shell still goes and gets nothing.
+    expect(shell).not.toContain("NotificationBell");
+    expect(shell).not.toContain("createNotificationAdapters");
+    expect(shell).not.toContain("fetch(");
+  });
+
+  it("the feedback entry is an opt-in menu item (#129 slice 4)", () => {
+    expect(shell).toContain('onSubmitFeedback?: () => void');
+    expect(shell).toContain('testId="submit-feedback"');
+    expect(shell).toContain("Submit feedback");
+  });
+
   it("the shell fetches nothing — identity arrives as a prop", () => {
     expect(shell).not.toMatch(/authClient|fetch\(|useSession/);
   });

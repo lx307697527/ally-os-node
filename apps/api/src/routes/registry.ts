@@ -35,4 +35,10 @@ export const API_ROUTES: readonly RouteDecl[] = [
   { method: "GET", path: "/api/users/:userId/roles", auth: { kind: "permission", permission: "roles.assign" } },
   { method: "POST", path: "/api/users/:userId/roles", auth: { kind: "permission", permission: "roles.assign" } },
   { method: "DELETE", path: "/api/users/:userId/roles/:role", auth: { kind: "permission", permission: "roles.assign" } },
+  // 站内通知（#129）：铃铛的单读摘要 + 已读/全读，全部只操作本人行
+  { method: "GET", path: "/api/notifications/summary", auth: { kind: "session" } },
+  { method: "POST", path: "/api/notifications/:id/read", auth: { kind: "session" } },
+  { method: "POST", path: "/api/notifications/read-all", auth: { kind: "session" } },
+  // 反馈上报（#129）：任何登录者可提交
+  { method: "POST", path: "/api/feedback-reports", auth: { kind: "session" } },
 ];
