@@ -55,4 +55,7 @@ export const API_ROUTES: readonly RouteDecl[] = [
   { method: "DELETE", path: "/api/comments/:id", auth: { kind: "session" } },
   // 审计日志查询（#29）：owner / admin（audit.read 权限点）
   { method: "GET", path: "/api/audit-events", auth: { kind: "permission", permission: "audit.read" } },
+  // 实时连接令牌（#110 切片 2）：把调用者自己会话的令牌发还给本人，WS auth
+  // 帧用（cookie HttpOnly，浏览器拿不到）——session 门，令牌即会话本身
+  { method: "GET", path: "/api/realtime/token", auth: { kind: "session" } },
 ];

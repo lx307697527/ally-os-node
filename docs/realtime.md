@@ -20,6 +20,26 @@ issue #30 的迁移要点新建的基础设施，前端各领域迁移时通过 
 | WS 胶水 | `apps/api/src/realtime/ws.ts` | ws upgrade（只放行 `/api/realtime`）、帧顺序、协议层 ping 保活 |
 | 客户端 | `packages/realtime-client` | 浏览器/Node SDK：自动重连、重连后恢复订阅并触发 resync |
 
+## user: 私人频道与通知「催」（#110 切片 2）
+
+`user:<userId>` 是保留前缀：**只有本人能订阅自己的 user: 频道**。实现是 hub
+新增的可注入 `authorize(channel, userId)`，生产接线为
+`apps/api/src/realtime/channels.ts` 的 `canSubscribeChannel`（拒绝回 error
+`unauthorized`，订阅表与 presence 都不动；未注入 = #30 的「登录即可订阅任何
+频道」）。第一个用途是站内通知的「催」信号：通知落库的事务**提交后**，业务
+路由经 `AppDeps.notifyUsers` 对拿到通知的用户各发一次知名事件
+`notifications.changed`（`data` 恒为空对象——推送只负责催，数据以 summary
+端点的重读为准；发布失败只降级回轮询，不重试、不拖垮业务请求）。
+
+前端消费方（本仓库第一个）：`apps/web/src/shared/lib/notification-live.ts`
+每标签页一条 WS，订阅 `user:<id>`，收到催或真重连（attempts>0 的 resync）
+即重读 summary；铃铛的 60s 可见轮询**保留为兜底**（at-most-once，丢的催由
+轮询补齐）。
+
+浏览器读不到 HttpOnly 的会话 cookie，auth 帧令牌改从 `GET /api/realtime/token`
+取：session 门（2FA 强制门内），把调用者**自己会话**的令牌发还给本人——
+持有者本就拥有它，不构成提权；客户端只存内存，每次连接尝试重取。
+
 ## WS 协议（JSON 文本帧）
 
 客户端 → 服务端：
@@ -75,6 +95,7 @@ hub 只认注入的 `authenticate(token) => { userId } | null`。
 - [x] 两个 API 实例之间消息互通（集成测试：总线级 + 真 WebSocket 端到端）
 - [x] 断线自动重连、重连后恢复（客户端 SDK 单测覆盖：重放 auth、重发订阅、resync）
 - [ ] "14 处订阅全部替换"：前提已过时（老系统无任何 realtime 用法），随各领域
-      前端迁移逐个接入本服务后关闭该条
+      前端迁移逐个接入本服务后关闭该条。**进度：第 1 个接入方是通知铃铛**
+      （#110 切片 2，推为主、60s 轮询为兜底）
 - [x] 连接鉴权换成 #22 的真实会话校验（#22 切片 1 落地：auth 帧带 Better Auth
       会话令牌，服务端查 `auth_session` 校验；`dev:` 令牌仅限非生产）

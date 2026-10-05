@@ -51,4 +51,16 @@ describe("NotificationBell rulings (#129 slice 4)", () => {
     expect(bell).toContain("if (!row.isRead) markRead(row.id);");
     expect(bell).toContain("if (face.href !== null) navigate(face.href);");
   });
+
+  it("实时推送是刷新触发器之一（#110 切片 2）：live 订阅、回调即 refresh、卸载退订", () => {
+    expect(bell).toContain("live?: NotificationLiveChannel");
+    expect(bell).toContain("live.subscribe(() => {");
+    expect(bell).toContain("void refresh();");
+    expect(bell).toContain("}, [live, refresh]);");
+  });
+
+  it("轮询保留为兜底（at-most-once：丢的催、死连接靠轮询补）", () => {
+    expect(bell).toContain("useVisiblePoll(");
+    expect(bell).toContain("NOTIFICATION_POLL_MS = 60_000");
+  });
 });

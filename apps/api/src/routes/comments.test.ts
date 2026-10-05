@@ -60,6 +60,9 @@ describe.skipIf(!databaseUrl)("comment endpoints (#110 slice 1, integration)", (
   // packages/db/src/migrations.test.ts 的 CI 实锤）。预期的拆除错误，吞掉。
   pool.on("error", () => {});
 
+  // #110 slice 2: collector for the realtime nudge callback
+  const nudged: string[][] = [];
+
   const app = createApp({
     logger,
     db,
@@ -80,6 +83,11 @@ describe.skipIf(!databaseUrl)("comment endpoints (#110 slice 1, integration)", (
       getDirectPermissions: () => Promise.resolve([]),
       grantRole: () => Promise.reject(new Error("not used")),
       revokeRole: () => Promise.reject(new Error("not used")),
+    },
+    // #110 slice 2: the realtime nudge callback
+    notifyUsers: (userIds) => {
+      nudged.push([...userIds]);
+      return Promise.resolve();
     },
   });
 
@@ -107,6 +115,7 @@ describe.skipIf(!databaseUrl)("comment endpoints (#110 slice 1, integration)", (
     await db.execute(sql`truncate table ${schema.tasks}`);
     await db.execute(sql`truncate table ${schema.notifications}`);
     await db.execute(sql`truncate table ${schema.auditEvents}`);
+    nudged.length = 0;
   });
 
   afterAll(async () => {
@@ -240,6 +249,8 @@ describe.skipIf(!databaseUrl)("comment endpoints (#110 slice 1, integration)", (
       subjectId: taskId,
       mentioned: [USERS.alice],
     });
+    // realtime nudge rides with the mention (#110 slice 2)
+    expect(nudged).toEqual([[USERS.alice]]);
   });
 
   it("mentions resolve only against the subject's viewers: outsiders and prose never notify", async () => {
@@ -269,6 +280,7 @@ describe.skipIf(!databaseUrl)("comment endpoints (#110 slice 1, integration)", (
     expect(selfMention.mentioned).toEqual([]);
     expect(await notificationsFor(USERS.bob)).toHaveLength(0);
     expect(await notificationsFor(USERS.alice)).toHaveLength(0);
+    expect(nudged).toEqual([]);
   });
 
   it("mentions are case-insensitive and both viewers can be named in one comment", async () => {

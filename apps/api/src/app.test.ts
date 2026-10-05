@@ -74,7 +74,8 @@ function makeApp(options: {
       }),
     socialProviders: options.socialProviders ?? [],
     authzStore: options.authzStore ?? memoryStore(),
-  });
+  
+    notifyUsers: async () => {},});
 }
 
 describe("health routes", () => {

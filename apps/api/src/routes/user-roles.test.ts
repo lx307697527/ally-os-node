@@ -65,7 +65,8 @@ describe.skipIf(!databaseUrl)("user roles routes (#23, integration)", () => {
     resolveSession: createSessionResolver(auth),
     socialProviders: [],
     authzStore,
-  });
+  
+    notifyUsers: async () => {},});
 
   const createdUserIds: string[] = [];
 

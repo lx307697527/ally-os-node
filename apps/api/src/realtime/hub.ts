@@ -49,6 +49,12 @@ export interface RealtimeHubDeps {
   publish: (payload: RealtimeBusPayload) => Promise<void>;
   presence: RealtimePresenceStoreLike;
   authenticate: RealtimeAuthenticator;
+  /**
+   * 频道授权（#110 切片 2 起）：返回 false = 该用户不得订阅该频道，回 error
+   * unauthorized，订阅表不动。缺省 = 登录即可订阅任何频道（#30 原行为）；
+   * 生产接线用 user: 私人频道规则（realtime/channels.ts）。
+   */
+  authorize?: ((channel: string, userId: string) => boolean) | undefined;
   /** 以下均为测试可调的内部节奏 */
   authTimeoutMs?: number | undefined;
   heartbeatIntervalMs?: number | undefined;
@@ -252,6 +258,15 @@ export class RealtimeHub {
     presenceState: Record<string, unknown> | undefined,
   ): Promise<void> {
     if (state.userId === null) {
+      this.sendError(state, REALTIME_ERROR_CODES.unauthorized);
+      return;
+    }
+    // 频道授权门先于任何订阅副作用：拒绝时订阅表与 presence 都不碰
+    if (this.deps.authorize !== undefined && !this.deps.authorize(channel, state.userId)) {
+      this.deps.logger.info(
+        { connectionId: state.conn.id, userId: state.userId, channel },
+        "realtime subscribe denied",
+      );
       this.sendError(state, REALTIME_ERROR_CODES.unauthorized);
       return;
     }

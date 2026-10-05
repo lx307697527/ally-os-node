@@ -14,6 +14,7 @@ import { feedbackRoutes } from "./routes/feedback.ts";
 import { healthRoutes } from "./routes/health.ts";
 import { meRoutes } from "./routes/me.ts";
 import { notificationsRoutes } from "./routes/notifications.ts";
+import { realtimeRoutes } from "./routes/realtime.ts";
 import { tasksRoutes } from "./routes/tasks.ts";
 import { userRolesRoutes } from "./routes/user-roles.ts";
 
@@ -32,6 +33,13 @@ export interface AppDeps {
   socialProviders: readonly string[];
   /** 角色与授权数据的读写口（#23）：生产查 user_role/user_permission，测试注入假实现 */
   authzStore: AuthzStore;
+  /**
+   * 通知实时「催」信号（#110 切片 2）：事务提交后对拿到新通知的用户各发一次
+   * notifications.changed。实现方（index.ts 走 realtime 总线）**不得 reject**
+   * —— 推送是 at-most-once 的加速器，失败只降级回 60s 轮询，不能让业务请求
+   * 失败。测试注入收集调用的假实现。
+   */
+  notifyUsers: (userIds: string[]) => Promise<void>;
 }
 
 export function createApp(deps: AppDeps) {
@@ -73,10 +81,13 @@ export function createApp(deps: AppDeps) {
   // 通知与反馈（#129）：本人数据、登录即可，无需权限点
   app.route("/", notificationsRoutes(deps));
   app.route("/", feedbackRoutes(deps));
-  // 任务（#113 切片 1）：创建人/经办人本人数据，登录即可
+  // 任务（#113 切片 1）：创建人/经办人本人数据，登录即可；notifyUsers =
+  // 分配通知落库后的实时「催」（#110 切片 2）
   app.route("/", tasksRoutes(deps));
   // 评论（#110 切片 1）：多态 subject 的行属门在路由内逐域裁决，登录即可
   app.route("/", commentsRoutes(deps));
+  // 实时连接令牌（#110 切片 2）：发还调用者自己会话的令牌给 WS auth 帧用
+  app.route("/", realtimeRoutes(deps));
   // 审计日志查询（#29）：audit.read 权限点门（owner/admin 默认）
   app.route("/", auditEventsRoutes(deps));
 

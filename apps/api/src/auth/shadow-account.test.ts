@@ -57,7 +57,8 @@ describe.skipIf(!databaseUrl)("shadow account: CRM 预建用户 (#25, integratio
     resolveSession: createSessionResolver(auth),
     socialProviders: [],
     authzStore: createAuthzStore(db),
-  });
+  
+    notifyUsers: async () => {},});
 
   const createdUserIds: string[] = [];
 

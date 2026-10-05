@@ -56,6 +56,9 @@ describe.skipIf(!databaseUrl)("task endpoints (#113 slice 1, integration)", () =
         })();
   const { db, pool } = createDb(scopedUrl);
 
+  // #110 切片 2：notifyUsers 收集器——实时「催」的调用面，beforeEach 清空
+  const nudged: string[][] = [];
+
   const app = createApp({
     logger,
     db,
@@ -76,6 +79,11 @@ describe.skipIf(!databaseUrl)("task endpoints (#113 slice 1, integration)", () =
       getDirectPermissions: () => Promise.resolve([]),
       grantRole: () => Promise.reject(new Error("not used")),
       revokeRole: () => Promise.reject(new Error("not used")),
+    },
+    // #110 切片 2：实时「催」的收集器
+    notifyUsers: (userIds) => {
+      nudged.push([...userIds]);
+      return Promise.resolve();
     },
   });
 
@@ -102,6 +110,7 @@ describe.skipIf(!databaseUrl)("task endpoints (#113 slice 1, integration)", () =
     await db.execute(sql`truncate table ${schema.tasks}`);
     await db.execute(sql`truncate table ${schema.notifications}`);
     await db.execute(sql`truncate table ${schema.auditEvents}`);
+    nudged.length = 0;
   });
 
   afterAll(async () => {
@@ -189,6 +198,8 @@ describe.skipIf(!databaseUrl)("task endpoints (#113 slice 1, integration)", () =
     expect(notes).toHaveLength(1);
     expect(notes[0]?.eventType).toBe("task.assigned");
     expect(notes[0]?.payload).toMatchObject({ taskTitle: "整理报价", actorName: "Alice" });
+    // 通知落库后对经办人发一次实时「催」（#110 切片 2）
+    expect(nudged).toEqual([[USERS.bob]]);
 
     const ghost = await createTask(alice, { title: "x", assigneeId: randomUUID() });
     expect(ghost.status).toBe(400);
@@ -202,6 +213,7 @@ describe.skipIf(!databaseUrl)("task endpoints (#113 slice 1, integration)", () =
     const { status } = await createTask(alice, { title: "自留任务", assigneeId: USERS.alice });
     expect(status).toBe(201);
     expect(await notificationsFor(USERS.alice)).toHaveLength(0);
+    expect(nudged).toEqual([]);
   });
 
   it("校验：空标题/错类型/超上限 400", async () => {
@@ -344,6 +356,8 @@ describe.skipIf(!databaseUrl)("task endpoints (#113 slice 1, integration)", () =
     expect(unassign.status).toBe(200);
     const unassigned = (await unassign.json()) as { task: TaskRow };
     expect(unassigned.task.assignee).toBeNull();
+    // 「催」与通知同拍：创建时一次，改派给 Bob 一次；改派给自己/解除不催
+    expect(nudged).toEqual([[USERS.bob], [USERS.bob]]);
   });
 
   it("创建人改内容：task.updated 审计记字段名；无关人 PATCH 404", async () => {

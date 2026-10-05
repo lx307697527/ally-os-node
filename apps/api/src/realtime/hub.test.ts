@@ -5,7 +5,9 @@ import {
   type RealtimeBusPayload,
   type RealtimePresenceMember,
 } from "@ally/realtime";
+import { userChannel } from "@ally/realtime";
 import { RealtimeHub, type RealtimeConnection, type RealtimePresenceStoreLike } from "./hub.ts";
+import { canSubscribeChannel } from "./channels.ts";
 
 const logger = pino({ level: "silent" });
 
@@ -82,6 +84,7 @@ function makeHub(overrides?: {
   authenticate?: (token: string) => Promise<{ userId: string } | null>;
   presence?: RealtimePresenceStoreLike;
   publish?: (payload: RealtimeBusPayload) => Promise<void>;
+  authorize?: (channel: string, userId: string) => boolean;
   authTimeoutMs?: number;
   heartbeatIntervalMs?: number;
   cleanupEveryTicks?: number;
@@ -100,6 +103,7 @@ function makeHub(overrides?: {
     authenticate:
       overrides?.authenticate ??
       ((token) => Promise.resolve(token === "good" ? { userId: `user-${token}` } : null)),
+    ...(overrides?.authorize !== undefined ? { authorize: overrides.authorize } : {}),
     ...(overrides?.authTimeoutMs !== undefined ? { authTimeoutMs: overrides.authTimeoutMs } : {}),
     ...(overrides?.heartbeatIntervalMs !== undefined
       ? { heartbeatIntervalMs: overrides.heartbeatIntervalMs }
@@ -393,6 +397,77 @@ describe("RealtimeHub presence", () => {
     const sentBefore = conn.sent.length;
     hub.onBusMessage({ type: "message", channel: "presence:room", event: "x", data: null });
     expect(conn.sent).toHaveLength(sentBefore);
+  });
+});
+
+describe("RealtimeHub channel authorization (#110 slice 2)", () => {
+  it("denies subscribing to another user's user: channel with an error frame, subscription table untouched", async () => {
+    const presence = makePresenceStore();
+    const { hub } = makeHub({
+      authorize: canSubscribeChannel,
+      presence,
+    });
+    const conn = makeConn("c1");
+    hub.connect(conn);
+    hub.handleFrame(conn, JSON.stringify({ type: "auth", token: "good" }));
+    await vi.waitFor(() => { expect(lastSent(conn).type).toBe("auth.ok"); });
+
+    hub.handleFrame(
+      conn,
+      JSON.stringify({ type: "subscribe", channel: userChannel("someone-else") }),
+    );
+    await vi.waitFor(() => { expect(lastSent(conn).code).toBe("unauthorized"); });
+    // 交出发布面也不行：没订阅成功，publish 走 not_subscribed
+    hub.handleFrame(
+      conn,
+      JSON.stringify({
+        type: "publish",
+        channel: userChannel("someone-else"),
+        event: "notifications.changed",
+        data: {},
+      }),
+    );
+    await vi.waitFor(() => { expect(lastSent(conn).code).toBe("not_subscribed"); });
+    expect(presence.joins).toHaveLength(0);
+  });
+
+  it("allows the user's own user: channel and ordinary channels", async () => {
+    const { hub } = makeHub({ authorize: canSubscribeChannel });
+    const conn = makeConn("c2");
+    hub.connect(conn);
+    hub.handleFrame(conn, JSON.stringify({ type: "auth", token: "good" }));
+    await vi.waitFor(() => { expect(lastSent(conn).type).toBe("auth.ok"); });
+    // authenticate 的约定：userId = `user-${token}`
+    hub.handleFrame(conn, JSON.stringify({ type: "subscribe", channel: "user-user-good" }));
+    await vi.waitFor(() => { expect(lastSent(conn).type).toBe("subscribed"); });
+    hub.handleFrame(conn, JSON.stringify({ type: "subscribe", channel: "notes:1" }));
+    await vi.waitFor(() => { expect(lastSent(conn).type).toBe("subscribed"); });
+  });
+
+  it("authorize denial also blocks presence joins on the denied channel", async () => {
+    const presence = makePresenceStore();
+    const { hub } = makeHub({ authorize: () => false, presence });
+    const conn = makeConn("c3");
+    hub.connect(conn);
+    hub.handleFrame(conn, JSON.stringify({ type: "auth", token: "good" }));
+    await vi.waitFor(() => { expect(lastSent(conn).type).toBe("auth.ok"); });
+
+    hub.handleFrame(
+      conn,
+      JSON.stringify({ type: "subscribe", channel: "presence:room", presence: { x: 1 } }),
+    );
+    await vi.waitFor(() => { expect(lastSent(conn).code).toBe("unauthorized"); });
+    expect(presence.joins).toHaveLength(0);
+  });
+
+  it("no authorize dep keeps the #30 behavior: any authenticated subscribe passes", async () => {
+    const { hub } = makeHub();
+    const conn = makeConn("c4");
+    hub.connect(conn);
+    hub.handleFrame(conn, JSON.stringify({ type: "auth", token: "good" }));
+    await vi.waitFor(() => { expect(lastSent(conn).type).toBe("auth.ok"); });
+    hub.handleFrame(conn, JSON.stringify({ type: "subscribe", channel: "user-someone-else" }));
+    await vi.waitFor(() => { expect(lastSent(conn).type).toBe("subscribed"); });
   });
 });
 
