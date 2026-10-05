@@ -60,6 +60,19 @@ resource "aws_secretsmanager_secret_version" "better_auth_secret" {
   secret_string = random_password.better_auth_secret.result
 }
 
+# ---------- 邮件 ----------
+# Resend API key（#22 邮件基建切片）。值从 Resend 控制台申请，经 tfvars 注入
+# 托管进 Secrets Manager，ECS 启动时注入；留空 = 应用侧日志模式（不发真信）。
+resource "aws_secretsmanager_secret" "resend_api_key" {
+  name                    = "${local.name}/resend-api-key"
+  recovery_window_in_days = var.env == "production" ? 7 : 0
+}
+
+resource "aws_secretsmanager_secret_version" "resend_api_key" {
+  secret_id     = aws_secretsmanager_secret.resend_api_key.id
+  secret_string = var.resend_api_key
+}
+
 # ---------- 对象存储 ----------
 resource "aws_s3_bucket" "files" {
   bucket_prefix = "${local.name}-files-"

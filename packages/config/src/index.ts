@@ -19,6 +19,17 @@ export const envSchema = z.object({
   // 本地留空 = 从请求推导
   BETTER_AUTH_URL: z.url().optional(),
 
+  // 邮件发送（#22 邮件基建切片）：Resend API key。留空 = 开发模式，邮件内容
+  // （含验证链接）整封打进日志不发真信；生产必须配置，否则验证邮件发不出去。
+  RESEND_API_KEY: z.string().min(1).optional(),
+  // 发件人。Resend 只认已验证域名，本地默认值发不出去也无所谓（走日志模式）；
+  // 生产由环境注入真实域名。
+  EMAIL_FROM: z.string().min(3).default("Ally OS <noreply@allyos.example>"),
+  // 后台控制台的对外地址（#22）：验证邮件里的链接落到它身上（/verify-email?token=…），
+  // 由前端页面代用户确认，避免邮件扫描器预取直接消耗掉 API 的 GET 验证端点。
+  // 留空 = 退回 Better Auth 自己的 API 链接（能验证但会被扫描器预取，生产必须配置）。
+  WEB_APP_URL: z.url().optional(),
+
   S3_BUCKET: z.string().min(1),
   S3_REGION: z.string().min(1).default("us-east-1"),
   // 留空 = AWS S3；填写 = 任意 S3 兼容存储（MinIO / 阿里云 OSS / 腾讯云 COS）

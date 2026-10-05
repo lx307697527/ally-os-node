@@ -3,3 +3,7 @@ region                      = "us-east-1"
 create_github_oidc_provider = true
 certificate_arn             = ""
 cors_origins                = ""
+# Resend API key：生产/预发必须配置，否则验证邮件只进日志（apps/api 日志模式）
+resend_api_key = ""
+# 公有域名定下来后配置（验证邮件链接落点）
+web_app_url    = ""

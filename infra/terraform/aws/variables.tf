@@ -65,6 +65,26 @@ variable "api_memory" {
   default = 1024
 }
 
+# ---------- 邮件（#22 邮件基建切片）----------
+variable "resend_api_key" {
+  description = "Resend API key（Resend 控制台申请，生产必须配置，否则验证邮件只进日志发不出去）"
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
+variable "email_from" {
+  description = "发件人，形如 `Ally OS <noreply@example.com>`；Resend 只认已验证域名"
+  type        = string
+  default     = "Ally OS <noreply@allyos.example>"
+}
+
+variable "web_app_url" {
+  description = "后台控制台对外地址（验证邮件链接落到它身上）；公有域名定下来后配置"
+  type        = string
+  default     = ""
+}
+
 variable "cors_origins" {
   description = "逗号分隔的前端域名"
   type        = string

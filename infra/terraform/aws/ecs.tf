@@ -23,10 +23,13 @@ locals {
     { name = "S3_BUCKET", value = aws_s3_bucket.files.id },
     { name = "S3_REGION", value = var.region },
     { name = "CORS_ORIGINS", value = var.cors_origins },
+    { name = "EMAIL_FROM", value = var.email_from },
+    { name = "WEB_APP_URL", value = var.web_app_url },
   ]
   server_secrets = [
     { name = "DATABASE_URL", valueFrom = aws_secretsmanager_secret.database_url.arn },
     { name = "BETTER_AUTH_SECRET", valueFrom = aws_secretsmanager_secret.better_auth_secret.arn },
+    { name = "RESEND_API_KEY", valueFrom = aws_secretsmanager_secret.resend_api_key.arn },
   ]
 
   # 名字 → 启动命令。api 对外提供 HTTP，其余不暴露端口
