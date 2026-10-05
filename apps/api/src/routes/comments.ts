@@ -6,6 +6,7 @@ import type { Db } from "@ally/db";
 import { schema } from "@ally/db";
 import { recordAudit } from "../audit/audit-log.ts";
 import type { AppEnv } from "../auth/session.ts";
+import { loadVisibleSubject } from "../subjects/registry.ts";
 
 /**
  * 评论端点（#110 切片 1：评论内核）。
@@ -13,10 +14,10 @@ import type { AppEnv } from "../auth/session.ts";
  * 老系统（这一代）没有可移植的评论/@实现（workspace_comments 属于更老一代，
  * 已不可考）；形态依据 #232 §11「评论、@、关注与附件：每个业务对象都有」。
  * 评论是内核机制：多态附着 subjectType/subjectId，合法类型与「谁能看/评」由
- * SUBJECT_LOADERS 注册表逐域裁决——task 是第一个注册的 subject，行属 =
- * 创建人或经办人（与 #113 的任务行属同一先例）；后续业务域切片在此注册自己
- * 的门，未注册类型 400，subject 不存在或不可见一律 404（反探测，与任务详情
- * 同一裁定）。
+ * subjects/registry.ts 的注册表逐域裁决——task 是第一个注册的 subject，行属 =
+ * 创建人或经办人（与 #113 的任务行属同一先例）；未注册类型 400，subject 不
+ * 存在或不可见一律 404（反探测，与任务详情同一裁定）。活动流（#110 切片 3）
+ * 是同一扇门的第二套读法。
  *
  * @提及（验收「被 @ 的人收到通知」）：提及从正文文本解析，对 **subject 的
  * 可见者** 精确匹配「@全名」（大小写不敏感、词边界收口）——不可见者永不匹配，
@@ -37,51 +38,6 @@ const COMMENT_BODY_MAX = 5000;
 
 /** 通知 payload 里正文的截断长度：铃铛一行 detail 的量级，不装全文 */
 const EXCERPT_MAX = 140;
-
-/** 一个 subject 的评论语境：可见者集合 + 通知 payload 的展示名 */
-interface SubjectContext {
-  id: string;
-  title: string;
-  viewers: { id: string; name: string }[];
-}
-
-type SubjectLoader = (db: Db, subjectId: string) => Promise<SubjectContext | null>;
-
-/** task 的语境 = 行本身 + 行属两人（创建人/经办人，去重、去空） */
-async function loadTaskContext(db: Db, taskId: string): Promise<SubjectContext | null> {
-  const assignee = alias(schema.authUser, "assignee");
-  const creator = alias(schema.authUser, "creator");
-  const rows = await db
-    .select({
-      id: schema.tasks.id,
-      title: schema.tasks.title,
-      assignee: { id: assignee.id, name: assignee.name },
-      creator: { id: creator.id, name: creator.name },
-    })
-    .from(schema.tasks)
-    .leftJoin(assignee, eq(schema.tasks.assigneeId, assignee.id))
-    .leftJoin(creator, eq(schema.tasks.createdById, creator.id))
-    .where(eq(schema.tasks.id, taskId))
-    .limit(1);
-  const row = rows[0];
-  if (row === undefined) return null;
-  const viewers: { id: string; name: string }[] = [];
-  for (const person of [row.assignee, row.creator]) {
-    if (person !== null && !viewers.some((v) => v.id === person.id)) {
-      viewers.push({ id: person.id, name: person.name });
-    }
-  }
-  return { id: row.id, title: row.title, viewers };
-}
-
-/**
- * subject 注册表：#232「评论挂在每个业务对象上」。每个业务域切片在此注册
- * 自己的加载器（同时回答可见性、提及名单与通知标题）；text 列不用枚举，
- * 新域注册不动数据库（与 notifications.event_type 同一裁法）。
- */
-const SUBJECT_LOADERS: Record<string, SubjectLoader> = {
-  task: loadTaskContext,
-};
 
 const createBody = z.object({
   subjectType: z.string().min(1).max(50),
@@ -104,13 +60,17 @@ export function commentsRoutes(deps: { db: Db; notifyUsers: (userIds: string[]) 
     if (!parsed.success) {
       return c.json({ error: "invalid_request" }, 400);
     }
-    const loader = SUBJECT_LOADERS[parsed.data.subjectType];
-    if (loader === undefined) {
+    const me = c.get("user").id;
+    const subject = await loadVisibleSubject(
+      deps.db,
+      parsed.data.subjectType,
+      parsed.data.subjectId,
+      me,
+    );
+    if (subject === "unregistered") {
       return c.json({ error: "invalid_request" }, 400);
     }
-    const me = c.get("user").id;
-    const subject = await loader(deps.db, parsed.data.subjectId);
-    if (subject?.viewers.some((v) => v.id === me) !== true) {
+    if (subject === null) {
       return c.json({ error: "not_found" }, 404);
     }
     const where = and(
@@ -131,13 +91,12 @@ export function commentsRoutes(deps: { db: Db; notifyUsers: (userIds: string[]) 
     if (!parsed.success) {
       return c.json({ error: "invalid_request" }, 400);
     }
-    const loader = SUBJECT_LOADERS[parsed.data.subjectType];
-    if (loader === undefined) {
+    const me = c.get("user");
+    const subject = await loadVisibleSubject(deps.db, parsed.data.subjectType, parsed.data.subjectId, me.id);
+    if (subject === "unregistered") {
       return c.json({ error: "invalid_request" }, 400);
     }
-    const me = c.get("user");
-    const subject = await loader(deps.db, parsed.data.subjectId);
-    if (subject?.viewers.some((v) => v.id === me.id) !== true) {
+    if (subject === null) {
       return c.json({ error: "not_found" }, 404);
     }
     // 提及解析：只对可见者精确匹配「@全名」；正文是不可变事实，通知是衍生物
@@ -224,9 +183,8 @@ export function commentsRoutes(deps: { db: Db; notifyUsers: (userIds: string[]) 
     if (comment === undefined) {
       return c.json({ error: "not_found" }, 404);
     }
-    const loader = SUBJECT_LOADERS[comment.subjectType];
-    const subject = loader === undefined ? null : await loader(deps.db, comment.subjectId);
-    if (subject?.viewers.some((v) => v.id === me.id) !== true) {
+    const visible = await loadVisibleSubject(deps.db, comment.subjectType, comment.subjectId, me.id);
+    if (visible === null || visible === "unregistered") {
       return c.json({ error: "not_found" }, 404);
     }
     // 删除是作者本人的动词：看得到但不是自己的 → 403（与任务改派同一形态）

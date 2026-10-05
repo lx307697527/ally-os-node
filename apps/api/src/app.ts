@@ -7,6 +7,7 @@ import type { AppEnv, ResolveSession } from "./auth/session.ts";
 import { sessionMiddleware } from "./auth/session.ts";
 import { authzMiddleware, requireTwoFactorGate } from "./authz/middleware.ts";
 import type { AuthzStore } from "./authz/service.ts";
+import { activityRoutes } from "./routes/activity.ts";
 import { authProvidersRoutes } from "./routes/auth-providers.ts";
 import { auditEventsRoutes } from "./routes/audit-events.ts";
 import { commentsRoutes } from "./routes/comments.ts";
@@ -86,6 +87,9 @@ export function createApp(deps: AppDeps) {
   app.route("/", tasksRoutes(deps));
   // 评论（#110 切片 1）：多态 subject 的行属门在路由内逐域裁决，登录即可
   app.route("/", commentsRoutes(deps));
+  // 活动流（#110 切片 3）：audit_events 的按对象读投影，subject 可见者门
+  // （subjects/registry.ts，与评论同一扇），登录即可
+  app.route("/", activityRoutes(deps));
   // 实时连接令牌（#110 切片 2）：发还调用者自己会话的令牌给 WS auth 帧用
   app.route("/", realtimeRoutes(deps));
   // 审计日志查询（#29）：audit.read 权限点门（owner/admin 默认）

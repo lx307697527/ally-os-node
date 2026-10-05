@@ -51,6 +51,39 @@
 - from/to 的第一个真实生产者是任务状态流转（`task.status_changed`，#113 切片
   1）；「前后值」的下一个业务域（#227 线索）按同一约定进 detail，不改表。
 
+## 第二个读者：按对象的活动流投影（#110 切片 3）
+
+审计表的第二个读者是**协作面向**的活动流：`GET /api/activity`（#232 §11
+「评论、@、关注与附件」；老系统对应物 `crm.activities` 手工落活动行——不照
+搬）。裁决：**活动流是 audit_events 的按对象读投影，不建第二张活动表**。每
+个业务变更本来就在同一事务里落了审计，再立一张表等于每个域把同一事实写两
+遍，两条写路径早晚会分叉；审计行的 append-only 正好是活动史需要的语义（发
+生过的事不会被改写）。
+
+一条事实流、两个读者，门各归各：
+
+| 读者 | 端点 / 页面 | 门 | 面向 |
+| --- | --- | --- | --- |
+| 系统审计日志 | `GET /api/audit-events` → `/system/audit` | `audit.read`（owner/admin） | 全公司操作记录，合规面向 |
+| 对象活动流 | `GET /api/activity?subjectType=&subjectId=` → 记录详情页时间线 | subject 可见者（subjects/registry.ts，与评论同扇） | 单对象历史，协作面向 |
+
+投影只含该 subject 自己的行——看得到对象就看得到对象的历史，不构成越权面；
+不匹配任何 subject 的行（role.granted 等）不出现在任何活动流里。
+
+**行 → subject 的归属约定**（新域接线时照此落）：一行审计属于 subject
+`(T, ID)` 当且仅当
+
+- `target = ID`——动作直接落在该对象上（词表的 object 段 = subject 类型，
+  如 `task.*` 的 target 是任务 id）；或
+- `detail.subjectType = T` 且 `detail.subjectId = ID`——多态子对象挂在
+  subject 上（第一个是评论：`comment.created/deleted` 的 target 是评论 id，
+  subject 引用在 detail）。
+
+将来新域的活动行默认自动进该对象的时间线；若某个动作**不该**出现在协作
+时间线（例如只对合规有意义的内部标记），在本文件登记并让该行不带 subject
+引用（target 指别的凭据、detail 不带 subject 键），投影端不做动作黑名单
+——黑名单会让「新域忘了登记」从「多显示一行」劣化成「漏显示该显示的」。
+
 ## 测试清库的唯一通道
 
 行级 DELETE 被触发器拒绝后，测试清库只剩 **TRUNCATE**（DDL，不触发行触发器）。

@@ -16,16 +16,22 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { z } from "zod";
 import { Button, Card, Heading, Paragraph } from "@ally/ui";
 
+import { createActivityAdapters, type ActivityRow } from "../lib/activity-client.ts";
 import { createCommentAdapters, type CommentRow, type Person } from "../lib/comments-client.ts";
 import { createTaskAdapters, type TaskRow } from "../lib/tasks-client.ts";
 import { useSession } from "../lib/session.ts";
 
 const taskAdapters = createTaskAdapters();
 const commentAdapters = createCommentAdapters();
+const activityAdapters = createActivityAdapters();
 
 /** The composer pulls one page; a busier subject pages later with the
  *  activity stream. The API's cap is the same 100. */
 const COMMENTS_PAGE = 100;
+
+/** The timeline pulls one page; older rows stay reachable through the pager
+ *  footer once a subject outlives the first fifty events. */
+const ACTIVITY_PAGE = 50;
 
 const COMMENT_BODY_MAX = 5000;
 
@@ -76,9 +82,20 @@ function TaskLoaded(props: {
         offset: 0,
       }),
   });
+  const activity = useQuery({
+    queryKey: ["activity", "task", props.taskId],
+    queryFn: () =>
+      activityAdapters.list({
+        subjectType: "task",
+        subjectId: props.taskId,
+        limit: ACTIVITY_PAGE,
+        offset: 0,
+      }),
+  });
 
   const taskData = task.data?.ok === true ? task.data.data : undefined;
   const commentsData = comments.data?.ok === true ? comments.data.data : undefined;
+  const activityData = activity.data?.ok === true ? activity.data.data : undefined;
 
   // The deep link's second half: once the comments are on screen, walk to the
   // mentioned one and hold the highlight. A param without a row (deleted, or
@@ -91,7 +108,10 @@ function TaskLoaded(props: {
   }, [props.highlightId, commentsData]);
 
   function refreshComments(): void {
+    // A new comment is also an activity row (comment.created); the delete
+    // path lands here too. Both readers of the subject refresh together.
     void queryClient.invalidateQueries({ queryKey: ["comments", "task", props.taskId] });
+    void queryClient.invalidateQueries({ queryKey: ["activity", "task", props.taskId] });
   }
 
   return (
@@ -132,6 +152,14 @@ function TaskLoaded(props: {
             viewers={participantsOf(taskData)}
             highlightId={props.highlightId}
             onChanged={refreshComments}
+          />
+
+          <ActivitySection
+            subjectId={props.taskId}
+            events={activityData?.events}
+            total={activityData?.total}
+            loading={activity.isPending}
+            unavailable={activity.data !== undefined && activityData === undefined}
           />
         </Card>
       )}
@@ -360,4 +388,114 @@ function CommentsSection(props: {
       ) : null}
     </div>
   );
+}
+
+/**
+ * The subject's timeline (#110 slice 3): a read-only projection of the same
+ * audit facts the system log keeps, scoped to this task. The verdicts live
+ * server-side; this section only renders them — newest first, actor named,
+ * unknown actions shown verbatim (the wordlist is open, rendering never
+ * guesses). Comment rows deep-link to their comment, reusing the same
+ * ?comment= highlight the bell notifications land on.
+ */
+function ActivitySection(props: {
+  subjectId: string;
+  events: ActivityRow[] | undefined;
+  total: number | undefined;
+  loading: boolean;
+  unavailable: boolean;
+}): ReactElement {
+  return (
+    <div className="mt-6 border-t border-line pt-4">
+      <Heading as="h3">Activity</Heading>
+      {props.events !== undefined && props.total !== undefined && props.total > props.events.length ? (
+        <Paragraph className="mt-1 font-mono text-[length:var(--fs-meta)] text-ink-soft">
+          Showing the first {String(props.events.length)} of {String(props.total)}.
+        </Paragraph>
+      ) : null}
+
+      {props.loading ? (
+        <Paragraph className="mt-2" data-testid="activity-loading">
+          Loading…
+        </Paragraph>
+      ) : props.unavailable || props.events === undefined ? (
+        <Paragraph className="mt-2 text-ink-soft" data-testid="activity-unavailable">
+          The activity timeline could not be loaded.
+        </Paragraph>
+      ) : props.events.length === 0 ? (
+        <Paragraph className="mt-2 text-ink-soft" data-testid="activity-empty">
+          Nothing has happened yet.
+        </Paragraph>
+      ) : (
+        <ul className="mt-2" data-testid="activity-list">
+          {props.events.map((row) => (
+            <li
+              key={row.id}
+              data-testid="activity-row"
+              className="border-b border-line py-2"
+            >
+              <span className="block text-ui leading-[var(--lh-ui)] text-ink">
+                <span className="font-medium">{row.actor?.name ?? "System"}</span>
+                {" "}
+                {row.action === "comment.created" && row.target !== null ? (
+                  <Link
+                    to={`/tasks/${props.subjectId}?comment=${row.target}`}
+                    className="text-link underline underline-offset-2 hover:text-link-hover"
+                  >
+                    {activityText(row)}
+                  </Link>
+                ) : (
+                  activityText(row)
+                )}
+              </span>
+              <span className="mt-0.5 block font-mono text-[length:var(--fs-meta)] text-ink-soft">
+                {formatDay(row.createdAt)}
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+function detailString(detail: ActivityRow["detail"], key: string): string | null {
+  const value = detail?.[key];
+  return typeof value === "string" ? value : null;
+}
+
+function detailFields(detail: ActivityRow["detail"]): string[] {
+  const value = detail?.fields;
+  if (!Array.isArray(value)) return [];
+  return value.filter((entry): entry is string => typeof entry === "string");
+}
+
+/**
+ * Open wordlist, explicit map: a known action reads as a sentence, an unknown
+ * one shows verbatim. Rendered text never invents facts the row doesn't carry.
+ */
+function activityText(row: ActivityRow): string {
+  switch (row.action) {
+    case "task.created":
+      return "created the task";
+    case "task.updated": {
+      const fields = detailFields(row.detail);
+      return fields.length > 0 ? `updated ${fields.join(", ")}` : "updated the task";
+    }
+    case "task.status_changed": {
+      const from = detailString(row.detail, "from") ?? "?";
+      const to = detailString(row.detail, "to") ?? "?";
+      return `changed status from ${from} to ${to}`;
+    }
+    case "task.assigned": {
+      const name = detailString(row.detail, "assigneeName");
+      return name === null ? "unassigned the task" : `assigned the task to ${name}`;
+    }
+    case "comment.created":
+      return "commented";
+    case "comment.deleted":
+      return "deleted a comment";
+    default:
+      return row.action;
+  }
 }
