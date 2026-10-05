@@ -3,6 +3,37 @@
 替代 Supabase Auth（GoTrue）的自建认证：**Better Auth** + Drizzle(PG)，
 邮箱密码登录，HttpOnly Cookie 会话。本页记录已落地的部分与后续切片的边界。
 
+## 已落地：存量 bcrypt 哈希导入（#22 切片 5）
+
+老用户从老系统(Supabase GoTrue)带原密码迁入,无需重置——对应 #22 验收
+第 1 条「老用户用原密码能登录」。老库 `auth.users.encrypted_password` 是
+bcrypt(GoTrue / pgcrypto `gen_salt('bf', 10)`,$2a$ / $2b$,cost 10),
+Better Auth 默认是自家 scrypt,不兼容则导入即等于强制全员重置。
+
+| 部分 | 位置 | 说明 |
+| --- | --- | --- |
+| 密码校验分派 | `apps/api/src/auth/legacy-password.ts` | `emailAndPassword.password.verify` 按哈希格式分派:bcrypt 前缀($2a$/$2b$/$2y$)→ bcrypt 比对;其余(better-auth scrypt)→ 显式回落 `better-auth/crypto` 的 `verifyPassword`。**提供 verify 即完全替换默认实现**(better-auth create-context 源码确认),所以 scrypt 分支必须自己回落 |
+| 坏哈希语义 | 同上 | 库层对非法哈希是抛错(=500);导入数据不完美是常态,坏哈希按「密码对不上」答 false → 401,登录路径永不因坏行 500 |
+| 新哈希格式 | 不改 | `hash` 不覆写:注册/重置仍产 scrypt;导入的 bcrypt 在用户改密/重置时自然迁移,**不做登录时重哈希**(热路径多一次写库,复杂度大于收益;bcrypt cost 10 并未破损) |
+| 导入核心 | `apps/api/src/auth/legacy-import.ts` | `importLegacyUsers(db, rows, { logger, apply })`:逐行 zod 校验(GoTrue 字段名)→ 冲突判定 → 行级事务写入。dry-run 与 apply 走同一条决定路径,dry-run 结论不失真 |
+| 幂等与冲突 | 同上 | 同 id 重跑 = 只补缺失/为空的 credential 密码(全满足则 skipped);同 email 异 id = 报错不合并(那条新系统记录可能已持有会话/外键,合并是数据损失风险,要人裁决);密码非 bcrypt 格式 = 报错 fail closed(老库只应产 $2a$/$2b$,别的格式说明导出有问题) |
+| OAuth-only 用户 | 同上 | 老库 `encrypted_password` 为空(Google-only 用户)→ 照常导入,credential 密码留空:登录等同「密码不对」401(better-auth 对 null 密码短路),用户走重置流程或 Google 登录 |
+| account 形状 | 同上 | `providerId: "credential"`、`accountId: user.id`——better-auth 登录路径按 `accountId === user.id` 找 account(sign-in 源码确认),导入必须同形状 |
+| 邮箱验证状态 | 同上 | 取 `email_confirmed_at`(兼容老字段 `confirmed_at`):未确认的导入为未验证,登录 403 走重发确认——与 FEAT-634 新系统策略一致 |
+| CLI | `apps/api/src/scripts/import-legacy-users.ts` | `node --env-file-if-exists=.env apps/api/src/scripts/import-legacy-users.ts <export.json> [--apply]`;默认 dry-run,`--apply` 才写库;报告 JSON 走 stdout、日志走 stderr;退出码 0/1(坏行)/2(用法·IO);可安全重跑。导出 SQL 见文件头注释(`copy (select …) to stdout with (format json)`) |
+| env | `@ally/config` | 零新变量。CLI 从 `envSchema.pick({ DATABASE_URL, LOG_LEVEL })` 取值——不要求整套服务 env,也不另立 schema |
+
+关键行为(集成测试钉住,`legacy-import.test.ts` 11 条 + `legacy-password.test.ts` 5 条):
+
+- 导入后用**原密码**登录 200、`/api/me` 拿到原 uuid 用户;错密码 401。
+- 原 uuid 保留(老系统业务表外键全挂在它上面,#22 裁定不重排)、展示名取
+  `raw_user_meta_data.name`(缺则 `full_name`,再缺邮箱本地部分)、
+  `created_at` 忠实迁移。
+- 未确认邮箱 → 导入为未验证,登录 403 `EMAIL_NOT_VERIFIED`(密码先验、
+  验证门后拦)。
+- 密码重置后该用户变 scrypt、旧 bcrypt 失效——两种格式共存一张表,迁移随
+  改密自然完成。
+
 ## 已落地：Google OAuth 登录（#22 切片 4）
 
 老系统依据：FEAT-167 社交登录（提供商登记表是纯决策层 + 「本部署开了哪几家」
@@ -136,9 +167,6 @@
 
 ## #22 后续切片（本切片不含）
 
-- 存量密码哈希导入：老库是 bcrypt（`$2a$`/`$2b$`，pgcrypto cost 10），
-  Better Auth 默认 scrypt——导入切片需配置 `emailAndPassword.password.verify`
-  兼容 bcrypt，用户无需重置密码
 - 员工开通/邀请（对应老系统 staff-invite / portal-invite 的语义，含
   shadow account #25）、管理员建用户（管理员建的账号可带已验证邮箱，
   不走注册确认）

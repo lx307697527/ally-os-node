@@ -7,6 +7,7 @@ import { schema } from "@ally/db";
 import type { Logger } from "pino";
 import type { Mailer } from "../mailer/mailer.ts";
 import { renderPasswordResetEmail, renderVerificationEmail } from "../mailer/mailer.ts";
+import { verifyLegacyPassword } from "./legacy-password.ts";
 import type { ResolveSession } from "./session.ts";
 
 /**
@@ -81,6 +82,12 @@ export function createAuth(deps: AuthDeps) {
       enabled: true,
       // FEAT-634：填注册表单不等于注册完成，邮箱确认了才算
       requireEmailVerification: true,
+      // 存量哈希兼容（#22 切片 5）：verify 按哈希格式分派——导入的老库 bcrypt
+      // （GoTrue/pgcrypto，$2a$/$2b$ cost 10）走 bcrypt 比对，老用户原密码直接
+      // 可登录；better-auth scrypt（注册/重置写入）走默认校验。提供 verify 即
+      // 完全替换默认实现，所以 scrypt 分支在 verifyLegacyPassword 内部显式回落。
+      // hash 不覆写：新密码与重置仍产 scrypt，导入的 bcrypt 随改密自然迁移。
+      password: { verify: verifyLegacyPassword },
       // 密码重置(#22 切片 3;老系统 resetPasswordForEmail + recovery 模板):
       // 请求端点 POST /request-password-reset 对存在与不存在的地址同答 200
       // (better-auth 内置时序仿真,反枚举,对应老系统 GoTrue 的同款性质),
