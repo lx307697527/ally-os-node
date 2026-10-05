@@ -40,13 +40,14 @@
 
 ## 词表与 detail 约定
 
-- action 是开集，格式 `domain.object.verb`：`role.granted`、`role.revoked`；
+- action 是开集，格式 `domain.object.verb`：`role.granted`、`role.revoked`、
+  `task.created`、`task.updated`（detail 记 `fields: [...]`）、`task.assigned`；
   状态变更类动作在 detail 里带 `from`/`to`（如
   `{ from: "new", to: "contacted" }`），日志页详情列原样展示。
 - detail 放变更细节（授予/撤销了什么、从哪到哪、审批裁决等），不放大对象全文
   ——要内容找 target 对应的记录，日志只记变化。
-- 验收标准里「前后值」的完整形态随第一个真实状态变更域（#227 线索）落地，
-  届时按本约定进 detail，不改表。
+- from/to 的第一个真实生产者是任务状态流转（`task.status_changed`，#113 切片
+  1）；「前后值」的下一个业务域（#227 线索）按同一约定进 detail，不改表。
 
 ## 测试清库的唯一通道
 
