@@ -8,12 +8,14 @@ import { BrowserRouter, Navigate, Outlet, Route, Routes, useNavigate } from "rea
 import { Dashboard } from "./pages/Dashboard.tsx";
 import { Region } from "./pages/Region.tsx";
 import { Login } from "./shared/pages/Login.tsx";
+import { NewVersionBanner } from "./shared/components/NewVersionBanner.tsx";
 import { RequireAuth } from "./shared/components/RequireAuth.tsx";
 import { SessionTimeoutWarning } from "./shared/components/SessionTimeoutWarning.tsx";
 import { InternalShell } from "./shared/shell/InternalShell.tsx";
 import { sessionIdentityFromUser } from "./shared/lib/session-identity.ts";
 import { signOut, useSession } from "./shared/lib/session.ts";
 import { useSessionTimeout } from "./shared/lib/use-session-timeout.ts";
+import { useVersionCheck } from "./shared/lib/use-version-check.ts";
 
 function ShellHost(): ReactElement {
   const { user } = useSession();
@@ -22,6 +24,10 @@ function ShellHost(): ReactElement {
   // down locally; the overlay renders OVER the shell, unmounting nothing —
   // taking the page away IS the data loss the warning exists to prevent.
   const { phase, secondsRemaining, stayLoggedIn } = useSessionTimeout();
+  // The deployment watch (#129 slice 3): "is a newer build live than the one
+  // this tab loaded?" — announced as a prompt, never acted on behind the
+  // operator's back; the banner's Refresh click is the only reload.
+  const newBuildId = useVersionCheck();
   const identity = sessionIdentityFromUser(user);
 
   return (
@@ -37,6 +43,13 @@ function ShellHost(): ReactElement {
       >
         <Outlet />
       </InternalShell>
+      {newBuildId !== null ? (
+        <NewVersionBanner
+          onRefresh={() => {
+            window.location.reload();
+          }}
+        />
+      ) : null}
       {phase === "warning" && secondsRemaining !== null ? (
         <SessionTimeoutWarning secondsRemaining={secondsRemaining} onStayLoggedIn={stayLoggedIn} />
       ) : null}
