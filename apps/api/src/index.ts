@@ -23,6 +23,13 @@ const mailer = createMailer({
   from: env.EMAIL_FROM,
 });
 
+// Google OAuth（#22 切片 4）：env 层已校验成对出现，这里只做「配了就启用」。
+// 未配置时 createAuth 不注册提供商、登录页拿不到 google，双方一致走密码登录。
+const googleOAuth =
+  env.GOOGLE_CLIENT_ID !== undefined && env.GOOGLE_CLIENT_SECRET !== undefined
+    ? { clientId: env.GOOGLE_CLIENT_ID, clientSecret: env.GOOGLE_CLIENT_SECRET }
+    : undefined;
+
 // 认证（#22）：Better Auth 处理 /api/auth/*，会话经中间件注入业务路由
 const auth = createAuth({
   db,
@@ -30,6 +37,7 @@ const auth = createAuth({
   trustedOrigins: env.CORS_ORIGINS,
   baseURL: env.BETTER_AUTH_URL,
   webAppUrl: env.WEB_APP_URL,
+  googleOAuth,
   mailer,
   logger,
 });
@@ -43,6 +51,7 @@ const app = createApp({
   },
   authHandler: (request) => auth.handler(request),
   resolveSession,
+  socialProviders: googleOAuth === undefined ? [] : ["google"],
 });
 
 // 实时推送（#30）：hub ↔ bus 互相引用，用先声明再赋值的函数引用解决循环创建。

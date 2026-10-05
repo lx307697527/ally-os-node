@@ -34,6 +34,12 @@ export interface AuthDeps {
   baseURL: string | undefined;
   /** 后台控制台的对外地址：验证邮件链接落到它身上；留空退回 Better Auth 的 API 链接 */
   webAppUrl: string | undefined;
+  /**
+   * Google OAuth（#22 切片 4）：成对配置才启用（@ally/config 启动即校验 both-or-none）。
+   * undefined = 不注册 google 提供商，`/sign-in/social` 对它答 404，登录页也不渲染按钮
+   * （老系统 FEAT-167：给没配置的提供商一个按钮 = 提供一个必然失败的动作）。
+   */
+  googleOAuth: { clientId: string; clientSecret: string } | undefined;
   /** 验证邮件经它发出；发送失败只记日志，注册流程照常完成（老系统 auth-send-email 裁定） */
   mailer: Mailer;
   logger: Logger;
@@ -56,6 +62,21 @@ export function createAuth(deps: AuthDeps) {
     secret: deps.secret,
     trustedOrigins: deps.trustedOrigins,
     baseURL: deps.baseURL,
+    // Google OAuth（#22 切片 4；老系统 FEAT-167 社交登录，按 #22 依赖序只渡
+    // Google 一家，azure/apple 等有人要了再进）。授权 URL 与回调交换由
+    // better-auth 托管：`POST /sign-in/social` 本地构造 accounts.google.com 的
+    // 授权 URL（不联网），回调落在 `{baseURL}/callback/google`，成功后会话
+    // cookie 与密码登录同款。Google 回传的邮箱视为已验证（emailVerified 取
+    // provider 声明），requireEmailVerification 只约束密码路径。
+    socialProviders:
+      deps.googleOAuth === undefined
+        ? {}
+        : {
+            google: {
+              clientId: deps.googleOAuth.clientId,
+              clientSecret: deps.googleOAuth.clientSecret,
+            },
+          },
     emailAndPassword: {
       enabled: true,
       // FEAT-634：填注册表单不等于注册完成，邮箱确认了才算

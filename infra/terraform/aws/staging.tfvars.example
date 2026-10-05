@@ -7,3 +7,7 @@ cors_origins                = ""
 resend_api_key = ""
 # 公有域名定下来后配置（验证邮件链接落点）
 web_app_url    = ""
+# Google OAuth（#22）：client id/secret 成对配置才启用；回调地址在 Google Cloud Console
+# 填 `<控制台域名>/api/auth/callback/google`。留空 = 不启用，登录页不渲染 Google 按钮
+google_client_id     = ""
+google_client_secret = ""

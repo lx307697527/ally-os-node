@@ -51,6 +51,7 @@ describe.skipIf(!databaseUrl)("auth: credential login (#22, integration)", () =>
     trustedOrigins: ["http://localhost:5173"],
     baseURL: undefined,
     webAppUrl: WEB_APP_URL,
+    googleOAuth: undefined,
     mailer,
     logger,
   });
@@ -62,6 +63,7 @@ describe.skipIf(!databaseUrl)("auth: credential login (#22, integration)", () =>
     },
     authHandler: (request) => auth.handler(request),
     resolveSession: createSessionResolver(auth),
+    socialProviders: [],
   });
 
   const createdUserIds: string[] = [];
@@ -411,5 +413,98 @@ describe.skipIf(!databaseUrl)("auth: credential login (#22, integration)", () =>
     expect(res.status).toBe(200);
     const body = (await res.json()) as { status?: boolean };
     expect(body.status).toBe(true);
+  });
+});
+
+describe.skipIf(!databaseUrl)("auth: google oauth (#22 slice 4, integration)", () => {
+  const GOOGLE_CLIENT_ID = "test-client-id.apps.googleusercontent.com";
+  const GOOGLE_CLIENT_SECRET = "test-client-secret";
+  const { db, pool } = createDb(databaseUrl ?? "");
+  const mailer = spyMailer();
+  // 同一部署的两种形态:配了 Google 的与只开密码的。共享一个库连接池。
+  const authWithGoogle = createAuth({
+    db,
+    secret: SECRET,
+    trustedOrigins: ["http://localhost:5173"],
+    baseURL: undefined,
+    webAppUrl: WEB_APP_URL,
+    googleOAuth: { clientId: GOOGLE_CLIENT_ID, clientSecret: GOOGLE_CLIENT_SECRET },
+    mailer,
+    logger,
+  });
+  const authWithoutGoogle = createAuth({
+    db,
+    secret: SECRET,
+    trustedOrigins: ["http://localhost:5173"],
+    baseURL: undefined,
+    webAppUrl: WEB_APP_URL,
+    googleOAuth: undefined,
+    mailer,
+    logger,
+  });
+  const appFactory = (auth: ReturnType<typeof createAuth>) =>
+    createApp({
+      logger,
+      corsOrigins: ["http://localhost:5173"],
+      checkDatabase: async () => {
+        await pool.query("select 1");
+      },
+      authHandler: (request) => auth.handler(request),
+      resolveSession: createSessionResolver(auth),
+      socialProviders: auth === authWithGoogle ? ["google"] : [],
+    });
+  const app = appFactory(authWithGoogle);
+
+  beforeAll(async () => {
+    await runMigrations(db);
+  });
+
+  afterAll(async () => {
+    await pool.end();
+  });
+
+  async function startSocial(provider: string, auth?: ReturnType<typeof createAuth>): Promise<Response> {
+    const target = auth === undefined ? app : appFactory(auth);
+    return await target.request("/api/auth/sign-in/social", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ provider, callbackURL: "/" }),
+    });
+  }
+
+  it("sign-in/social builds the Google authorize URL locally — our client id, our callback, a state", async () => {
+    const res = await startSocial("google");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { url?: string; redirect?: boolean };
+    expect(body.redirect).toBe(true);
+
+    // URL 由 better-auth 本地构造(测试不发网络请求):端点是 accounts.google.com,
+    // redirect_uri 指回我们的回调端点(回调交换由 better-auth 托管,需要真实
+    // 凭据才能端到端——此处钉住的是「请求长什么样」,不是「Google 答应什么」)。
+    const url = new URL(must(body.url));
+    expect(`${url.origin}${url.pathname}`).toBe("https://accounts.google.com/o/oauth2/v2/auth");
+    expect(url.searchParams.get("client_id")).toBe(GOOGLE_CLIENT_ID);
+    expect(url.searchParams.get("response_type")).toBe("code");
+    expect(url.searchParams.get("state")).toBeTruthy();
+    expect(url.searchParams.get("scope")).toContain("email");
+    expect(must(url.searchParams.get("redirect_uri"))).toMatch(/\/api\/auth\/callback\/google$/);
+  });
+
+  it("a provider this deployment has not configured is a 404 naming the mistake — not a 500", async () => {
+    // apple 是 better-auth 认识的提供商,但本部署没配凭据
+    const knownButUnconfigured = await startSocial("apple");
+    expect(knownButUnconfigured.status).toBe(404);
+    const body = (await knownButUnconfigured.json()) as { code?: string };
+    expect(body.code).toBe("PROVIDER_NOT_FOUND");
+
+    // 只开密码的部署对 google 同样 404:按钮不会渲染,直接打端点也拿不到授权 URL
+    const passwordOnly = await startSocial("google", authWithoutGoogle);
+    expect(passwordOnly.status).toBe(404);
+    expect(((await passwordOnly.json()) as { code?: string }).code).toBe("PROVIDER_NOT_FOUND");
+
+    // better-auth 不认识的提供商名也是同一个 404(无单独的入参校验分支)
+    const unknown = await startSocial("not-a-provider");
+    expect(unknown.status).toBe(404);
+    expect(((await unknown.json()) as { code?: string }).code).toBe("PROVIDER_NOT_FOUND");
   });
 });
