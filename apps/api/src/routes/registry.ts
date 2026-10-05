@@ -1,0 +1,38 @@
+import type { Permission } from "../authz/permissions.ts";
+
+/**
+ * API 路由的授权声明清单（#23 验收第 2 条：「每个 API 路由都有授权声明，缺失时
+ * lint / 测试会报错」）。
+ *
+ * 每个落在 /api/* 下的路由必须在这里有一行 auth 声明；`route-auth.test.ts` 把
+ * app.routes 的实际路由和这份清单做双向比对——新路由没声明、或声明指向已不存在的
+ * 路由，测试都会红。声明是给人审的（PR diff 上一眼可见）、测试是逼人写的：
+ * kind: "permission" 的路由还必须有覆盖 403 的集成测试。
+ *
+ * /api/auth/*（Better Auth 自管端点）、/health、/ready 不在会话中间件之后，也逐条
+ * 列在这里（auth: "public"），保证清单是完整的路由册而不是「受保护路由的补遗」。
+ */
+export type RouteAuth =
+  | { kind: "public" }
+  | { kind: "session" }
+  | { kind: "permission"; permission: Permission };
+
+export interface RouteDecl {
+  /** HTTP 方法；"*" = 该路径的任意方法（用于 /api/auth/* 这类方法集合端点） */
+  method: string;
+  /** Hono 路径模式，与 app.route 注册的一致（含 :param、* 通配） */
+  path: string;
+  auth: RouteAuth;
+}
+
+export const API_ROUTES: readonly RouteDecl[] = [
+  // 公开：登录前可访问（健康检查在 /health、/ready，不在 /api/* 下，不列）
+  { method: "*", path: "/api/auth/*", auth: { kind: "public" } },
+  { method: "GET", path: "/api/auth-providers", auth: { kind: "public" } },
+  // 登录即可
+  { method: "GET", path: "/api/me", auth: { kind: "session" } },
+  // 角色/权限管理（#23）：admin / owner（R-16-6 的高级角色门在路由内部再加一层）
+  { method: "GET", path: "/api/users/:userId/roles", auth: { kind: "permission", permission: "roles.assign" } },
+  { method: "POST", path: "/api/users/:userId/roles", auth: { kind: "permission", permission: "roles.assign" } },
+  { method: "DELETE", path: "/api/users/:userId/roles/:role", auth: { kind: "permission", permission: "roles.assign" } },
+];

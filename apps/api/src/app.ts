@@ -2,16 +2,22 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { requestId } from "hono/request-id";
 import type { Logger } from "pino";
+import type { Db } from "@ally/db";
 import type { AppEnv, ResolveSession } from "./auth/session.ts";
 import { sessionMiddleware } from "./auth/session.ts";
+import { authzMiddleware } from "./authz/middleware.ts";
+import type { AuthzStore } from "./authz/service.ts";
 import { authProvidersRoutes } from "./routes/auth-providers.ts";
 import { healthRoutes } from "./routes/health.ts";
 import { meRoutes } from "./routes/me.ts";
+import { userRolesRoutes } from "./routes/user-roles.ts";
 
 // 依赖通过参数注入，测试时可以传假的实现，不需要真数据库。
 export interface AppDeps {
   logger: Logger;
   corsOrigins: string[];
+  /** 主数据库连接：角色管理端点查用户存在性、写审计（#23） */
+  db: Db;
   checkDatabase: () => Promise<void>;
   /** Better Auth 的入口：处理 /api/auth/*（登录、注册、登出…），返回完整 Response */
   authHandler: (request: Request) => Promise<Response>;
@@ -19,6 +25,8 @@ export interface AppDeps {
   resolveSession: ResolveSession;
   /** 本部署启用的社交登录提供商（#22）：登录页据此渲染按钮；空 = 全密码登录 */
   socialProviders: readonly string[];
+  /** 角色与授权数据的读写口（#23）：生产查 user_role/user_permission，测试注入假实现 */
+  authzStore: AuthzStore;
 }
 
 export function createApp(deps: AppDeps) {
@@ -43,10 +51,13 @@ export function createApp(deps: AppDeps) {
   // 认证端点自己管理会话（未登录也要能登录），先于会话中间件注册
   app.on(["POST", "GET"], "/api/auth/*", (c) => deps.authHandler(c.req.raw));
 
-  // 其余 /api/* 一律要求已登录会话（#22 验收：业务代码统一经中间件拿当前用户）
+  // 其余 /api/* 一律要求已登录会话（#22 验收：业务代码统一经中间件拿当前用户），
+  // 随后加载角色与生效权限集（#23），业务路由上的 requireRole/requirePermission 直接读
   app.use("/api/*", sessionMiddleware(deps.resolveSession));
+  app.use("/api/*", authzMiddleware(deps.authzStore));
 
   app.route("/", meRoutes());
+  app.route("/", userRolesRoutes(deps));
 
   return app;
 }

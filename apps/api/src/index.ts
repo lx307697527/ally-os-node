@@ -6,6 +6,7 @@ import { RealtimeBus, type RealtimeBusPayload } from "@ally/realtime";
 import pino from "pino";
 import { createApp } from "./app.ts";
 import { createAuth, createSessionResolver, createSessionTokenVerifier } from "./auth/auth.ts";
+import { createAuthzStore } from "./authz/service.ts";
 import { createMailer } from "./mailer/mailer.ts";
 import { createRealtimeAuthenticator } from "./realtime/auth.ts";
 import { RealtimeHub } from "./realtime/hub.ts";
@@ -43,8 +44,12 @@ const auth = createAuth({
 });
 const resolveSession = createSessionResolver(auth);
 
+// 角色与授权数据（#23）：user_role / user_permission 两张表，同一连接池
+const authzStore = createAuthzStore(db);
+
 const app = createApp({
   logger,
+  db,
   corsOrigins: env.CORS_ORIGINS,
   checkDatabase: async () => {
     await pool.query("select 1");
@@ -52,6 +57,7 @@ const app = createApp({
   authHandler: (request) => auth.handler(request),
   resolveSession,
   socialProviders: googleOAuth === undefined ? [] : ["google"],
+  authzStore,
 });
 
 // 实时推送（#30）：hub ↔ bus 互相引用，用先声明再赋值的函数引用解决循环创建。

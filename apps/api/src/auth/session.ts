@@ -1,4 +1,5 @@
 import type { MiddlewareHandler } from "hono";
+import type { AuthzContext } from "../authz/permissions.ts";
 
 /**
  * 会话上下文的业务侧形状：刻意只暴露业务需要的字段，屏蔽 Better Auth 的
@@ -29,7 +30,14 @@ export interface SessionData {
  */
 export type ResolveSession = (headers: Headers) => Promise<SessionData | null>;
 
-export interface AppEnv { Variables: { user: SessionUser; session: SessionInfo } }
+export interface AppEnv {
+  Variables: {
+    user: SessionUser;
+    session: SessionInfo;
+    /** #23：authzMiddleware 对 /api/* 统一注入的角色与生效权限集 */
+    authz: AuthzContext;
+  };
+}
 
 /**
  * 会话中间件（#22 验收第 3 条）：/api/* 业务路由统一在这里拿当前用户，
