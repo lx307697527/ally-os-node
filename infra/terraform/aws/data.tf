@@ -73,6 +73,19 @@ resource "aws_secretsmanager_secret_version" "resend_api_key" {
   secret_string = var.resend_api_key
 }
 
+# ---------- Google OAuth（#22 切片 4）----------
+# client secret 经 tfvars 注入托管进 Secrets Manager，ECS 启动时注入；
+# client_id 不是机密，作为平铺 env 走 ecs.tf。两者都留空 = 不启用 Google 登录。
+resource "aws_secretsmanager_secret" "google_client_secret" {
+  name                    = "${local.name}/google-client-secret"
+  recovery_window_in_days = var.env == "production" ? 7 : 0
+}
+
+resource "aws_secretsmanager_secret_version" "google_client_secret" {
+  secret_id     = aws_secretsmanager_secret.google_client_secret.id
+  secret_string = var.google_client_secret
+}
+
 # ---------- 对象存储 ----------
 resource "aws_s3_bucket" "files" {
   bucket_prefix = "${local.name}-files-"

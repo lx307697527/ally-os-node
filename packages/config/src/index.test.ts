@@ -68,4 +68,27 @@ describe("parseEnv", () => {
     expect(() => parseEnv({ ...base, BETTER_AUTH_SECRET: undefined })).toThrow(/BETTER_AUTH_SECRET/);
     expect(() => parseEnv({ ...base, BETTER_AUTH_SECRET: "short" })).toThrow(/BETTER_AUTH_SECRET/);
   });
+
+  it("treats empty google oauth strings as unset (#22)", () => {
+    const env = parseEnv({ ...base, GOOGLE_CLIENT_ID: "", GOOGLE_CLIENT_SECRET: "" });
+    expect(env.GOOGLE_CLIENT_ID).toBeUndefined();
+    expect(env.GOOGLE_CLIENT_SECRET).toBeUndefined();
+  });
+
+  it("accepts google oauth credentials as a pair (#22)", () => {
+    const env = parseEnv({
+      ...base,
+      GOOGLE_CLIENT_ID: "123-apps.googleusercontent.com",
+      GOOGLE_CLIENT_SECRET: "GOCSPID-xxx",
+    });
+    expect(env.GOOGLE_CLIENT_ID).toBe("123-apps.googleusercontent.com");
+    expect(env.GOOGLE_CLIENT_SECRET).toBe("GOCSPID-xxx");
+  });
+
+  it("refuses a half-configured google oauth (fail closed at startup, not at callback time) (#22)", () => {
+    expect(() => parseEnv({ ...base, GOOGLE_CLIENT_ID: "123-apps.googleusercontent.com" }))
+      .toThrow(/GOOGLE_CLIENT_SECRET/);
+    expect(() => parseEnv({ ...base, GOOGLE_CLIENT_SECRET: "GOCSPID-xxx" }))
+      .toThrow(/GOOGLE_CLIENT_ID/);
+  });
 });

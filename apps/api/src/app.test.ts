@@ -14,6 +14,7 @@ function makeApp(options: {
   checkDatabase: () => Promise<void>;
   resolveSession?: (headers: Headers) => Promise<SessionData | null>;
   authHandler?: (request: Request) => Promise<Response>;
+  socialProviders?: readonly string[];
 }) {
   return createApp({
     logger,
@@ -27,6 +28,7 @@ function makeApp(options: {
       (() => {
         throw new Error("session should not be resolved");
       }),
+    socialProviders: options.socialProviders ?? [],
   });
 }
 
@@ -104,5 +106,30 @@ describe("session middleware (#22)", () => {
       },
     }).request("/health");
     expect(res.status).toBe(200);
+  });
+});
+
+describe("auth providers route (#22 slice 4)", () => {
+  it("lists the enabled social providers, without a session", async () => {
+    const res = await makeApp({
+      checkDatabase: async () => {},
+      resolveSession: () => {
+        throw new Error("session must not be resolved on the providers route");
+      },
+      socialProviders: ["google"],
+    }).request("/api/auth-providers");
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ providers: ["google"] });
+  });
+
+  it("answers an empty list on a password-only deployment — the SPA renders no button", async () => {
+    const res = await makeApp({
+      checkDatabase: async () => {},
+      resolveSession: () => {
+        throw new Error("session must not be resolved on the providers route");
+      },
+    }).request("/api/auth-providers");
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ providers: [] });
   });
 });

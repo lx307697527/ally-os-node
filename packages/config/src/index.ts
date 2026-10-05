@@ -30,6 +30,13 @@ export const envSchema = z.object({
   // 留空 = 退回 Better Auth 自己的 API 链接（能验证但会被扫描器预取，生产必须配置）。
   WEB_APP_URL: z.url().optional(),
 
+  // Google OAuth 登录（#22）。两者必须成对出现：只配一个说明部署抄错了配置，
+  // 启动即失败（fail closed），不带病跑到 OAuth 回调时才炸。都缺 = 不启用，
+  // 登录页也不渲染 Google 按钮（老系统 FEAT-167 裁定：给没配置的提供商一个
+  // 按钮，等于提供一个必然失败的动作，和死链接同罪）。
+  GOOGLE_CLIENT_ID: z.string().min(1).optional(),
+  GOOGLE_CLIENT_SECRET: z.string().min(1).optional(),
+
   S3_BUCKET: z.string().min(1),
   S3_REGION: z.string().min(1).default("us-east-1"),
   // 留空 = AWS S3；填写 = 任意 S3 兼容存储（MinIO / 阿里云 OSS / 腾讯云 COS）
@@ -54,12 +61,25 @@ export const envSchema = z.object({
 
 export type Env = z.infer<typeof envSchema>;
 
+// Google OAuth 成对校验（#22）：z.object 层面做不了跨字段的 both-or-none，
+// 挂在对象 refine 上——缺一边就指向缺的那个变量名，报错可直接照着补配置。
+const envSchemaWithPairs = envSchema.superRefine((env, ctx) => {
+  const hasId = env.GOOGLE_CLIENT_ID !== undefined;
+  const hasSecret = env.GOOGLE_CLIENT_SECRET !== undefined;
+  if (hasId === hasSecret) return;
+  ctx.addIssue({
+    code: "custom",
+    path: [hasId ? "GOOGLE_CLIENT_SECRET" : "GOOGLE_CLIENT_ID"],
+    message: "Google OAuth needs GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET set together (or neither, to disable it)",
+  });
+});
+
 export function parseEnv(source: Record<string, string | undefined>): Env {
   // 空字符串视为未设置，便于在 .env 里留空可选项
   const cleaned = Object.fromEntries(
     Object.entries(source).filter(([, v]) => v !== undefined && v !== ""),
   );
-  const result = envSchema.safeParse(cleaned);
+  const result = envSchemaWithPairs.safeParse(cleaned);
   if (!result.success) {
     const details = result.error.issues
       .map((i) => `  - ${i.path.join(".")}: ${i.message}`)

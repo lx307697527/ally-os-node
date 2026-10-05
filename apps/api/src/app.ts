@@ -4,6 +4,7 @@ import { requestId } from "hono/request-id";
 import type { Logger } from "pino";
 import type { AppEnv, ResolveSession } from "./auth/session.ts";
 import { sessionMiddleware } from "./auth/session.ts";
+import { authProvidersRoutes } from "./routes/auth-providers.ts";
 import { healthRoutes } from "./routes/health.ts";
 import { meRoutes } from "./routes/me.ts";
 
@@ -16,6 +17,8 @@ export interface AppDeps {
   authHandler: (request: Request) => Promise<Response>;
   /** 会话解析：生产是 auth.api.getSession，测试注入假实现 */
   resolveSession: ResolveSession;
+  /** 本部署启用的社交登录提供商（#22）：登录页据此渲染按钮；空 = 全密码登录 */
+  socialProviders: readonly string[];
 }
 
 export function createApp(deps: AppDeps) {
@@ -33,6 +36,9 @@ export function createApp(deps: AppDeps) {
   app.notFound((c) => c.json({ error: "not_found" }, 404));
 
   app.route("/", healthRoutes(deps));
+
+  // 登录页要用的提供商列表：公开（未登录是常态），先于会话中间件注册
+  app.route("/", authProvidersRoutes(deps));
 
   // 认证端点自己管理会话（未登录也要能登录），先于会话中间件注册
   app.on(["POST", "GET"], "/api/auth/*", (c) => deps.authHandler(c.req.raw));

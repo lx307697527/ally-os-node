@@ -85,6 +85,20 @@ variable "web_app_url" {
   default     = ""
 }
 
+# ---------- Google OAuth（#22 切片 4）----------
+variable "google_client_id" {
+  description = "Google OAuth client ID（Google Cloud Console 凭据页申请；授权回调地址填 `<控制台域名>/api/auth/callback/google`）。留空 = 不启用 Google 登录，登录页不渲染按钮"
+  type        = string
+  default     = ""
+}
+
+variable "google_client_secret" {
+  description = "Google OAuth client secret，与 client_id 成对；只配一个 Terraform 照常 apply，但 @ally/config 会在应用启动时拒绝（fail closed）"
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
 variable "cors_origins" {
   description = "逗号分隔的前端域名"
   type        = string
