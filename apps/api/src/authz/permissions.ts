@@ -1,0 +1,93 @@
+import { z } from "zod";
+
+/**
+ * 角色与权限点注册表（#23）。
+ *
+ * 与老系统的对应：老系统 `core.app_role` 枚举（16 个值）+ `core.user_roles` 表 +
+ * `has_role()`/`has_any_role()` SECURITY DEFINER 函数支撑 679 条 RLS 策略；新系统
+ * 按 #232 §12 收敛为 14 个员工角色 + 客户门户（枚举见 packages/db schema 的
+ * app_role），授权挪到 API 层，这里就是服务端的单一真相源。
+ *
+ * 「权限点 = 一组角色」的默认矩阵是裁决原文的代码化（docs/permissions.md 有对照表）：
+ * 大多数权限点随业务模块切片逐个进场（quotes.*、orders.*…），当前只有管理 RBAC
+ * 自身所需的两个。角色默认集之外还能给人单独授权限点（如「标签设计」授给任意
+ * 角色的人，或给外部设计师开无员工角色的受限账号），存 user_permission 表。
+ */
+
+export const ROLES = [
+  "owner",
+  "admin",
+  "sales_lead",
+  "sales",
+  "customer_service",
+  "sales_assistant",
+  "ops_assistant",
+  "formulator",
+  "purchaser",
+  "warehouse",
+  "production_lead",
+  "qa",
+  "lab_technician",
+  "finance",
+  "customer",
+] as const;
+
+export type Role = (typeof ROLES)[number];
+
+export const roleSchema = z.enum(ROLES);
+
+/** 请求上下文里的授权快照：authzMiddleware 每请求加载一次，链上的 requireX 直接读 */
+export interface AuthzContext {
+  roles: readonly Role[];
+  permissions: ReadonlySet<Permission>;
+}
+
+/** #23 切片内的两个权限点；随业务模块切片增加，新增必须先进这个注册表 */
+export const PERMISSIONS = ["roles.assign", "label_design"] as const;
+
+export type Permission = (typeof PERMISSIONS)[number];
+
+export const permissionSchema = z.enum(PERMISSIONS);
+
+/**
+ * 角色的默认权限点。刻意让矩阵「缺省为空」：一个权限点要么写在这里有出处，
+ * 要么不存在——不存在「隐式全员」。
+ *
+ * - roles.assign：管理员（#232 §12「管理员：分配权限」）。owner 也持有：R-16-6
+ *   要求授予 owner/admin/finance 级需老板确认，在审批流（#221）落地前，这类
+ *   授予直接只允许 owner 本人执行（fail closed，见 routes/user-roles.ts）。
+ * - label_design：无角色默认携带——裁决原文「标签设计是独立权限点，不新增角色，
+ *   管理员可授予任意角色的人」，只能单独授人。
+ */
+export const ROLE_PERMISSIONS: Readonly<Record<Role, readonly Permission[]>> = {
+  owner: ["roles.assign"],
+  admin: ["roles.assign"],
+  sales_lead: [],
+  sales: [],
+  customer_service: [],
+  sales_assistant: [],
+  ops_assistant: [],
+  formulator: [],
+  purchaser: [],
+  warehouse: [],
+  production_lead: [],
+  qa: [],
+  lab_technician: [],
+  finance: [],
+  customer: [],
+};
+
+/** R-16-6：授予这几个角色需要老板确认；审批流落地前直接只允许 owner 执行 */
+export const OWNER_APPROVAL_ROLES: readonly Role[] = ["owner", "admin", "finance"];
+
+/** 角色默认集 + 个人附加授权 = 生效权限集（user_permission 表存个人附加授权） */
+export function effectivePermissions(
+  roles: readonly Role[],
+  directGrants: readonly Permission[],
+): Set<Permission> {
+  const granted = new Set<Permission>(directGrants);
+  for (const role of roles) {
+    for (const permission of ROLE_PERMISSIONS[role]) granted.add(permission);
+  }
+  return granted;
+}

@@ -6,6 +6,7 @@ import { createDb, runMigrations, schema } from "@ally/db";
 import { createApp } from "../app.ts";
 import type { MailMessage } from "../mailer/mailer.ts";
 import { createAuth, createSessionResolver, createSessionTokenVerifier } from "./auth.ts";
+import { createAuthzStore } from "../authz/service.ts";
 
 // 集成测试：需要真实 PostgreSQL（Better Auth 走库读写 user/session/account）。
 // 未设 DATABASE_URL 时跳过。
@@ -57,6 +58,7 @@ describe.skipIf(!databaseUrl)("auth: credential login (#22, integration)", () =>
   });
   const app = createApp({
     logger,
+    db,
     corsOrigins: ["http://localhost:5173"],
     checkDatabase: async () => {
       await pool.query("select 1");
@@ -64,6 +66,7 @@ describe.skipIf(!databaseUrl)("auth: credential login (#22, integration)", () =>
     authHandler: (request) => auth.handler(request),
     resolveSession: createSessionResolver(auth),
     socialProviders: [],
+    authzStore: createAuthzStore(db),
   });
 
   const createdUserIds: string[] = [];
@@ -445,6 +448,7 @@ describe.skipIf(!databaseUrl)("auth: google oauth (#22 slice 4, integration)", (
   const appFactory = (auth: ReturnType<typeof createAuth>) =>
     createApp({
       logger,
+      db,
       corsOrigins: ["http://localhost:5173"],
       checkDatabase: async () => {
         await pool.query("select 1");
@@ -452,6 +456,7 @@ describe.skipIf(!databaseUrl)("auth: google oauth (#22 slice 4, integration)", (
       authHandler: (request) => auth.handler(request),
       resolveSession: createSessionResolver(auth),
       socialProviders: auth === authWithGoogle ? ["google"] : [],
+      authzStore: createAuthzStore(db),
     });
   const app = appFactory(authWithGoogle);
 
