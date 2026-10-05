@@ -2,7 +2,7 @@
 // feed the shell its identity. Slice 1 of issue #129 — sign-in plus the
 // internal shell. The health probe the old bootstrap page read moved to the
 // Dashboard, where a signed-in operator can actually see it.
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { ReactElement } from "react";
 import { BrowserRouter, Navigate, Outlet, Route, Routes, useNavigate } from "react-router-dom";
 
@@ -23,6 +23,7 @@ import { RequireAuth } from "./shared/components/RequireAuth.tsx";
 import { SessionTimeoutWarning } from "./shared/components/SessionTimeoutWarning.tsx";
 import { InternalShell } from "./shared/shell/InternalShell.tsx";
 import { sessionIdentityFromUser } from "./shared/lib/session-identity.ts";
+import { createNotificationLiveChannel, type NotificationLiveChannel } from "./shared/lib/notification-live.ts";
 import { createNotificationAdapters } from "./shared/lib/notifications-client.ts";
 import { signOut, useSession } from "./shared/lib/session.ts";
 import { useSessionTimeout } from "./shared/lib/use-session-timeout.ts";
@@ -47,12 +48,22 @@ function ShellHost(): ReactElement {
   // bell element and a callback; the data and the dialog live HERE.
   const [feedbackOpen, setFeedbackOpen] = useState(false);
   const identity = sessionIdentityFromUser(user);
+  // The bell's live channel (#110 slice 2), one per signed-in user id: the
+  // socket nudges, the bell's own summary read stays the data truth. Rebuilt
+  // only when the id changes (a different account signed in), closed on
+  // unmount — a sign-out tears the socket down with the shell.
+  const userId = user?.id;
+  const notificationLive = useMemo<NotificationLiveChannel | null>(() => {
+    if (userId === undefined) return null;
+    return createNotificationLiveChannel({ userId });
+  }, [userId]);
+  useEffect(() => () => notificationLive?.close(), [notificationLive]);
 
   return (
     <>
       <InternalShell
         identity={identity ?? undefined}
-        bell={<NotificationBell adapters={notificationAdapters} />}
+        bell={<NotificationBell adapters={notificationAdapters} live={notificationLive ?? undefined} />}
         onSubmitFeedback={() => {
           setFeedbackOpen(true);
         }}

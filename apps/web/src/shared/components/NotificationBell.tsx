@@ -12,6 +12,13 @@
 //    claim, not a fallback.
 //  · THE SHELL GOES AND GETS NOTHING — data arrives via `adapters`, built by
 //    the composition root (ShellHost). This component never imports a client.
+//
+// LIVE PUSH (#110 slice 2): the publisher landed, so the bell now takes an
+// optional `live` channel (also built by the composition root) and re-reads
+// on its nudge — realtime became the PRIMARY trigger, and the 60s visible
+// poll DEMOTED to the fallback that catches what at-most-once delivery (and
+// a dead socket) drops. Same refresh, same generation guard, no new data
+// path: a nudge without a following read changes nothing.
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ReactElement } from "react";
 import { useNavigate } from "react-router-dom";
@@ -24,6 +31,7 @@ import {
   unreadBadge,
   type NotificationRow,
 } from "../lib/notification-face.ts";
+import type { NotificationLiveChannel } from "../lib/notification-live.ts";
 import type { NotificationAdapters } from "../lib/notifications-client.ts";
 import { useVisiblePoll } from "../lib/use-visible-poll.ts";
 
@@ -32,9 +40,15 @@ export const NOTIFICATION_POLL_MS = 60_000;
 
 export function NotificationBell({
   adapters,
+  live,
   pollMs = NOTIFICATION_POLL_MS,
 }: {
   adapters: NotificationAdapters;
+  /**
+   * Live push channel (#110 slice 2), built by the composition root. Absent
+   * = poll-only (the #129 slice 4 behavior).
+   */
+  live?: NotificationLiveChannel | undefined;
   /** `0` disables the timer — what the tests use. */
   pollMs?: number;
 }): ReactElement {
@@ -74,6 +88,15 @@ export function NotificationBell({
     // Coming back to the tab is a read trigger, same as opening the dropdown.
     { onReturn: () => refresh() },
   );
+
+  // The live nudge (#110 slice 2) is just another refresh trigger — the same
+  // generation guard absorbs it colliding with a poll or a write re-read.
+  useEffect(() => {
+    if (live === undefined) return undefined;
+    return live.subscribe(() => {
+      void refresh();
+    });
+  }, [live, refresh]);
 
   const openBell = useCallback((next: boolean): void => {
     setOpen(next);

@@ -13,9 +13,10 @@ export default defineConfig({
   plugins: [react(), tailwindcss(), versionPlugin({ buildId: resolveBuildId() })],
   server: {
     port: 5173,
-    // 本地开发把 API 请求转发到 apps/api；线上由负载均衡按路径分流
+    // 本地开发把 API 请求转发到 apps/api；线上由负载均衡按路径分流。
+    // ws: true 让 /api/realtime 的 WebSocket upgrade 也走同源代理（#110 切片 2）
     proxy: {
-      "/api": apiTarget,
+      "/api": { target: apiTarget, ws: true },
       "/health": apiTarget,
     },
   },

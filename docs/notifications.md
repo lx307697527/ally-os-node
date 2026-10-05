@@ -21,12 +21,18 @@ Status: framework landed (slice 4). Producers come with business domains.
   the shell still fetches nothing), adapters in `notifications-client.ts` (zod-validated,
   every failure degrades to `null` = keep last good state), pure display in
   `notification-face.ts`, 60s visible-poll via `use-visible-poll.ts`.
+- **Live push** (#110 slice 2): `notification-live.ts` (built by the composition root,
+  passed to the bell as the `live` prop) holds one WebSocket per tab, subscribed to the
+  signed-in user's private `user:<id>` channel. A `notifications.changed` nudge — or a
+  reconnect `resync` — just re-runs the same summary read. Producers publish the nudge
+  through `AppDeps.notifyUsers` **after** the insert transaction commits.
 
 ## Rulings kept from the old system
 
-- **Polling, not a subscription** — 60s, visible tabs only (hidden tabs stop, return
-  catches up immediately). The realtime bus (#30) has no notifications publisher; when
-  business domains land one, the bell MAY move to push — until then this is the mechanism.
+- **Push is the trigger, the poll is the fallback** (#110 slice 2 revised the #129
+  ruling) — the realtime nudge is the primary refresh trigger, and the 60s visible-poll
+  STAYS: delivery is at-most-once (docs/realtime.md), so what a dead socket or a lost
+  NOTIFY drops, the poll catches up. Hidden tabs still pause the poll but receive pushes.
 - **A failed read is not zero** — a failed summary keeps the last state on screen and
   says so in the panel.
 - **Writes re-read from the server** — mark-read/mark-all never clear locally.
@@ -41,3 +47,10 @@ per-user rows from an event-type whitelist, idempotent on `(user_id, outbox_id)`
 new system has no outbox yet. When the first business domain needs a bell entry:
 add the fan-out (pg-boss job or inline insert), add `outbox_id` + the unique index
 (expand-only migration), extend `describeNotification` + its whitelist test.
+
+The two producers so far (`task.assigned` in routes/tasks.ts, `comment.mentioned` in
+routes/comments.ts) insert inline inside the business transaction and then call
+`deps.notifyUsers(userIds)` after it commits — the realtime nudge (see docs/realtime.md,
+`user:` channels). New producers follow the same two-step shape; `notifyUsers` is
+contracted to never reject, so a realtime outage degrades to the poll, never fails the
+business request.

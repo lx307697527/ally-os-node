@@ -81,7 +81,8 @@ describe.skipIf(!databaseUrl)("audit events route (#29, integration)", () => {
     resolveSession: createSessionResolver(auth),
     socialProviders: [],
     authzStore: createAuthzStore(db),
-  });
+  
+    notifyUsers: async () => {},});
 
   beforeAll(async () => {
     if (!databaseUrl) throw new Error("unreachable: suite is skipped without DATABASE_URL");

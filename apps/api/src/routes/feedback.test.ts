@@ -46,7 +46,8 @@ function makeApp() {
       grantRole: () => Promise.reject(new Error("not used")),
       revokeRole: () => Promise.reject(new Error("not used")),
     },
-  });
+  
+    notifyUsers: async () => {},});
   return { app, db, pool };
 }
 

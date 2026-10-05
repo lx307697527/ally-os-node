@@ -49,7 +49,8 @@ describe.skipIf(!databaseUrl)("notification endpoints (#129, integration)", () =
       grantRole: () => Promise.reject(new Error("not used")),
       revokeRole: () => Promise.reject(new Error("not used")),
     },
-  });
+  
+    notifyUsers: async () => {},});
 
   beforeAll(async () => {
     await runMigrations(db);

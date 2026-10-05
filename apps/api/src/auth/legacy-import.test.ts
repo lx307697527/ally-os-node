@@ -77,7 +77,8 @@ describe.skipIf(!databaseUrl)("legacy user import (#22 slice 5, integration)", (
     resolveSession: createSessionResolver(auth),
     socialProviders: [],
     authzStore: createAuthzStore(db),
-  });
+  
+    notifyUsers: async () => {},});
 
   const createdUserIds: string[] = [];
 

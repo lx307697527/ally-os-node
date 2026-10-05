@@ -67,7 +67,8 @@ describe.skipIf(!databaseUrl)("auth: credential login (#22, integration)", () =>
     resolveSession: createSessionResolver(auth),
     socialProviders: [],
     authzStore: createAuthzStore(db),
-  });
+  
+    notifyUsers: async () => {},});
 
   const createdUserIds: string[] = [];
 
@@ -457,7 +458,8 @@ describe.skipIf(!databaseUrl)("auth: google oauth (#22 slice 4, integration)", (
       resolveSession: createSessionResolver(auth),
       socialProviders: auth === authWithGoogle ? ["google"] : [],
       authzStore: createAuthzStore(db),
-    });
+    
+    notifyUsers: async () => {},});
   const app = appFactory(authWithGoogle);
 
   beforeAll(async () => {

@@ -42,6 +42,29 @@ export function isPresenceChannel(channel: string): boolean {
   return channel.startsWith(PRESENCE_CHANNEL_PREFIX);
 }
 
+/**
+ * 私人频道的命名约定（#110 切片 2：通知实时推送的第一个消费方）：`user:` 前缀
+ * + 用户 id，如 `user:8f3a…`。这是保留前缀：服务端只允许本人订阅自己的
+ * user: 频道（hub 的 authorize 规则），其他频道暂无授权规则。
+ */
+export const USER_CHANNEL_PREFIX = "user:";
+
+export function isUserChannel(channel: string): boolean {
+  return channel.startsWith(USER_CHANNEL_PREFIX);
+}
+
+/** 某用户的私人频道名（通知的「催」信号发布在这里） */
+export function userChannel(userId: string): string {
+  return `${USER_CHANNEL_PREFIX}${userId}`;
+}
+
+/**
+ * 应用级知名事件：站内通知有了新行（#110）。payload 刻意是空对象 —— 推送只
+ * 负责「催」，数据一律以 summary 端点的重读为准（at-most-once，重连 resync
+ * 同样只触发重拉）。
+ */
+export const NOTIFICATIONS_CHANGED_EVENT = "notifications.changed";
+
 const channelBase = z
   .string()
   .min(1)

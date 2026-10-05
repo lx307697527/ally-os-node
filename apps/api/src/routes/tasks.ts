@@ -20,6 +20,8 @@ import type { AppEnv } from "../auth/session.ts";
  * 零角色账号与纯门户账号不可被派任务）。分配动作写站内通知（task.assigned，
  * 通知表的第一个真实生产者；统一通知服务与邮件渠道随 #116 落地）。每次真实
  * 变更在同一事务里写审计（#29 约定：状态变更带 from/to，审计失败则业务失败）。
+ * 通知落库、事务提交后，再对被通知者发一次实时「催」（#110 切片 2）——催不
+ * 携带数据，铃铛重读 summary；催失败只降级回轮询，实现方保证不 reject。
  */
 
 /** 列表单页上限；分页语义与 audit-events 一致（limit/offset + 精确 total） */
@@ -53,7 +55,7 @@ const listQuery = z.object({
 
 type Tx = Parameters<Db["transaction"]>[0] extends (tx: infer T) => unknown ? T : never;
 
-export function tasksRoutes(deps: { db: Db }) {
+export function tasksRoutes(deps: { db: Db; notifyUsers: (userIds: string[]) => Promise<void> }) {
   const app = new Hono<AppEnv>();
 
   // 字面路由先于 /:id 注册（Hono 按注册顺序匹配，"assignee-options" 不能落进 uuid 校验）
@@ -128,12 +130,19 @@ export function tasksRoutes(deps: { db: Db }) {
         detail: { title: parsed.data.title, assignee: assignee?.id ?? null },
       });
       // 派给自己不通知自己（与 PATCH 同一裁定）
+      let notifiedUserId: string | null = null;
       if (assignee !== null && assignee.id !== me.id) {
         await notifyAssignee(tx, task.id, parsed.data.title, assignee.id, me.name);
+        notifiedUserId = assignee.id;
       }
-      return task.id;
+      return { id: task.id, notifiedUserId };
     });
-    const rows = await selectTaskRows(deps.db, eq(schema.tasks.id, created)).limit(1);
+    // 通知已随事务落库，实时「催」在提交后发（#110 切片 2）：铃铛收到后重读
+    // summary，读到的就是已提交的数据
+    if (created.notifiedUserId !== null) {
+      await deps.notifyUsers([created.notifiedUserId]);
+    }
+    const rows = await selectTaskRows(deps.db, eq(schema.tasks.id, created.id)).limit(1);
     const row = rows[0];
     if (row === undefined) throw new Error("task row missing right after insert");
     return c.json({ task: row }, 201);
@@ -216,6 +225,8 @@ export function tasksRoutes(deps: { db: Db }) {
       return c.json({ task });
     }
 
+    // 事务闭包里的赋值不参与外层窄化，用数组持有人选（length 判空）
+    const nudgedTo: string[] = [];
     await deps.db.transaction(async (tx) => {
       if (statusChanged) {
         set.status = body.data.status;
@@ -250,8 +261,13 @@ export function tasksRoutes(deps: { db: Db }) {
       if (assigneeChanged && nextAssignee !== null && nextAssignee.id !== me.id) {
         const title = body.data.title ?? task.title;
         await notifyAssignee(tx, task.id, title, nextAssignee.id, me.name);
+        nudgedTo.push(nextAssignee.id);
       }
     });
+    // 提交后再催（#110 切片 2）：铃铛重读 summary，读到的就是已提交的数据
+    if (nudgedTo.length > 0) {
+      await deps.notifyUsers(nudgedTo);
+    }
     const rows = await selectTaskRows(deps.db, eq(schema.tasks.id, task.id)).limit(1);
     return c.json({ task: rows[0] ?? null });
   });

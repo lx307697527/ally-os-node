@@ -37,7 +37,8 @@ const app = createApp({
   resolveSession: () => Promise.resolve(null),
   socialProviders: [],
   authzStore: memoryStore,
-});
+
+    notifyUsers: async () => {},});
 
 /**
  * app.routes 的 (method, path) 对；方法统一大写。method 为 "ALL" 的是 app.use

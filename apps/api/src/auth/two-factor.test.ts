@@ -57,7 +57,8 @@ describe.skipIf(!databaseUrl)("auth: two-factor (#24, integration)", () => {
     resolveSession: createSessionResolver(auth),
     socialProviders: [],
     authzStore: createAuthzStore(db),
-  });
+  
+    notifyUsers: async () => {},});
 
   const createdUserIds: string[] = [];
 

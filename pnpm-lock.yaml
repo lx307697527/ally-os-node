@@ -72,6 +72,12 @@ importers:
 
   apps/web:
     dependencies:
+      '@ally/realtime':
+        specifier: workspace:^
+        version: link:../../packages/realtime
+      '@ally/realtime-client':
+        specifier: workspace:^
+        version: link:../../packages/realtime-client
       '@ally/ui':
         specifier: workspace:^
         version: link:../../packages/ui

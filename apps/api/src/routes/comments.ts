@@ -24,7 +24,8 @@ import type { AppEnv } from "../auth/session.ts";
  * （任务的可见集 = 创建人 + 经办人，至多两人），提到圈外人要么是行文要么是
  * 该先拉人进任务，那属于可见性裁决，不在评论内核顺手发明。每个被提及者一条
  * comment.mentioned 站内通知（聚合指向 subject，深链由前端计算），作者本人
- * 提到自己不通知（与 task.assigned 同裁）；通知与评论、审计在同一事务。
+ * 提到自己不通知（与 task.assigned 同裁）；通知与评论、审计在同一事务，
+ * 提交后对被提及者发一次实时「催」（#110 切片 2，铃铛据此即时重读）。
  */
 
 /** 列表单页上限；分页语义与 tasks / audit-events 一致（limit/offset + 精确 total） */
@@ -95,7 +96,7 @@ const listQuery = z.object({
   offset: z.coerce.number().int().min(0).default(0),
 });
 
-export function commentsRoutes(deps: { db: Db }) {
+export function commentsRoutes(deps: { db: Db; notifyUsers: (userIds: string[]) => Promise<void> }) {
   const app = new Hono<AppEnv>();
 
   app.get("/api/comments", async (c) => {
@@ -181,6 +182,11 @@ export function commentsRoutes(deps: { db: Db }) {
       }
       return row;
     });
+    // 提交后再对被提及者发实时「催」（#110 切片 2）：铃铛重读 summary，读到
+    // 的就是已提交的数据；催失败只降级回轮询（实现方保证不 reject）
+    if (mentioned.length > 0) {
+      await deps.notifyUsers(mentioned.map((person) => person.id));
+    }
     return c.json(
       {
         comment: {

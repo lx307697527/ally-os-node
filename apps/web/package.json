@@ -9,6 +9,8 @@
     "typecheck": "tsc -p tsconfig.json"
   },
   "dependencies": {
+    "@ally/realtime": "workspace:^",
+    "@ally/realtime-client": "workspace:^",
     "@ally/ui": "workspace:^",
     "@tanstack/react-query": "^5.104.0",
     "better-auth": "^1.7.7",
