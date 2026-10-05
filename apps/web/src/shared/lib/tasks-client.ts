@@ -68,6 +68,13 @@ export type TaskResult =
   | { ok: true; data: TaskRow }
   | { ok: false; reason: "forbidden" | "conflict" | "unavailable" };
 
+/** One task by id (#110 slice 1: the detail page). 404 is meaningful here —
+ * the task is gone or the caller is not its creator/assignee — so "notfound"
+ * is its own answer, never flattened into "unavailable". */
+export type TaskGetResult =
+  | { ok: true; data: TaskRow }
+  | { ok: false; reason: "notfound" | "unavailable" };
+
 export type TaskListResult =
   | { ok: true; data: z.infer<typeof taskListSchema> }
   | { ok: false; reason: "unavailable" };
@@ -78,6 +85,7 @@ export type AssigneeOptionsResult =
 
 export interface TaskAdapters {
   list(query: TaskListQuery): Promise<TaskListResult>;
+  get(id: string): Promise<TaskGetResult>;
   assigneeOptions(): Promise<AssigneeOptionsResult>;
   create(input: TaskCreateInput): Promise<TaskResult>;
   patch(id: string, input: TaskPatchInput): Promise<TaskResult>;
@@ -107,6 +115,23 @@ export function createTaskAdapters(fetchFn: typeof fetch = fetch): TaskAdapters 
         // 本人数据的会话路由不会 403/400：任何失败对页面都是「拿不到」
         if (!gate.ok) return { ok: false, reason: "unavailable" };
         return { ok: true, data: taskListSchema.parse(gate.data) };
+      } catch {
+        return { ok: false, reason: "unavailable" };
+      }
+    },
+
+    async get(id: string): Promise<TaskGetResult> {
+      try {
+        const res = await fetchFn(`/api/tasks/${encodeURIComponent(id)}`);
+        if (res.status === 404) return { ok: false, reason: "notfound" };
+        if (!res.ok) return { ok: false, reason: "unavailable" };
+        const gate = await readOk(res);
+        if (!gate.ok) return { ok: false, reason: "unavailable" };
+        const parsed = z.object({ task: taskRowSchema.nullable() }).safeParse(gate.data);
+        if (!parsed.success || parsed.data.task === null) {
+          return { ok: false, reason: "unavailable" };
+        }
+        return { ok: true, data: parsed.data.task };
       } catch {
         return { ok: false, reason: "unavailable" };
       }

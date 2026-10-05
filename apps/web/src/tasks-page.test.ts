@@ -65,6 +65,12 @@ describe("tasks page (#113)", () => {
   it("overdue is computed from facts, never invented", () => {
     expect(page).toContain('row.dueAt !== null && row.status === "open"');
   });
+
+  it("the title is the way into the detail page (#110 slice 1) — cancelled keeps the strike", () => {
+    expect(page).toContain('to={`/tasks/${row.id}`}');
+    expect(page).toContain('data-testid="tasks-row-title"');
+    expect(page).toContain('text-ui text-ink-soft line-through hover:text-link');
+  });
 });
 
 describe("wiring (#113)", () => {

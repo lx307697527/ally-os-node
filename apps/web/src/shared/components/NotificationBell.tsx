@@ -14,6 +14,7 @@
 //    the composition root (ShellHost). This component never imports a client.
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ReactElement } from "react";
+import { useNavigate } from "react-router-dom";
 
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "@ally/ui";
 
@@ -37,6 +38,7 @@ export function NotificationBell({
   /** `0` disables the timer — what the tests use. */
   pollMs?: number;
 }): ReactElement {
+  const navigate = useNavigate();
   const [rows, setRows] = useState<NotificationRow[]>([]);
   // `null` = no read has landed yet; the badge stays off until a real count
   // arrives. A FAILED read leaves this exactly where it was.
@@ -164,8 +166,14 @@ export function NotificationBell({
                       key={row.id}
                       keepOpen
                       testId="notification-row"
+                      // The click-through (#110 slice 1): a row with a place
+                      // to go takes it — unread is marked on the way and the
+                      // router walks to the task (the ?comment= param lands
+                      // on the mentioned comment). Nowhere to go = the old
+                      // read-only click.
                       onClick={() => {
                         if (!row.isRead) markRead(row.id);
+                        if (face.href !== null) navigate(face.href);
                       }}
                       dataAttributes={{
                         "data-read": String(row.isRead),

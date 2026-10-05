@@ -45,4 +45,10 @@ describe("NotificationBell rulings (#129 slice 4)", () => {
     expect(bell).toContain("pollMs = NOTIFICATION_POLL_MS");
     expect(poll).toContain("if (!intervalMs) return undefined");
   });
+
+  it("有点可去的通知点了就走（#110 切片 1）：先标已读再跳，无处可去只标已读", () => {
+    expect(bell).toContain("useNavigate()");
+    expect(bell).toContain("if (!row.isRead) markRead(row.id);");
+    expect(bell).toContain("if (face.href !== null) navigate(face.href);");
+  });
 });

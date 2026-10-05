@@ -9,6 +9,7 @@ import { authzMiddleware, requireTwoFactorGate } from "./authz/middleware.ts";
 import type { AuthzStore } from "./authz/service.ts";
 import { authProvidersRoutes } from "./routes/auth-providers.ts";
 import { auditEventsRoutes } from "./routes/audit-events.ts";
+import { commentsRoutes } from "./routes/comments.ts";
 import { feedbackRoutes } from "./routes/feedback.ts";
 import { healthRoutes } from "./routes/health.ts";
 import { meRoutes } from "./routes/me.ts";
@@ -74,6 +75,8 @@ export function createApp(deps: AppDeps) {
   app.route("/", feedbackRoutes(deps));
   // 任务（#113 切片 1）：创建人/经办人本人数据，登录即可
   app.route("/", tasksRoutes(deps));
+  // 评论（#110 切片 1）：多态 subject 的行属门在路由内逐域裁决，登录即可
+  app.route("/", commentsRoutes(deps));
   // 审计日志查询（#29）：audit.read 权限点门（owner/admin 默认）
   app.route("/", auditEventsRoutes(deps));
 

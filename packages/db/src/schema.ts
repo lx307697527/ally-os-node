@@ -343,3 +343,29 @@ export const tasks = pgTable(
     index("tasks_created_by_idx").on(t.createdById),
   ],
 );
+
+// ── 评论（#110 切片 1：评论内核）────────────────────────────────────────────
+// 老系统（这一代）从未建成评论/@提及——issue 正文里的 workspace_comments 属于
+// 更老一代、在本仓库立项前已不可考；设计依据是 #232 §11「评论、@、关注与附件：
+// 每个业务对象都有」。评论是内核机制：多态附着（subject_type/subject_id，老
+// crm.tasks 的多态形态），合法的 subject 类型与「谁能看/评」由 API 侧的注册表
+// 逐域裁决（第一个注册的是 task，行属 = 创建人或经办人）——列用 text 不用枚举，
+// 新业务域注册不動数据库（与 notifications.event_type 同一裁法）。
+// 作者与用户行共生灭（CASCADE，与 notifications.user_id 同裁）：评论是对话性
+// 内容，不是记录；人删则其言论随之（审计里的 comment.* 行留下，actor 是 text）。
+// 没有 updated_at：编辑随后续切片 expand-only 进场，没有消费者的列不预置。
+export const comments = pgTable(
+  "comments",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    subjectType: text("subject_type").notNull(),
+    subjectId: uuid("subject_id").notNull(),
+    authorId: uuid("author_id")
+      .notNull()
+      .references(() => authUser.id, { onDelete: "cascade" }),
+    body: text("body").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  // 唯一读法：「这条记录上的评论，按时间正序」；作者维度暂无读者，不建索引
+  (t) => [index("comments_subject_created_idx").on(t.subjectType, t.subjectId, t.createdAt)],
+);

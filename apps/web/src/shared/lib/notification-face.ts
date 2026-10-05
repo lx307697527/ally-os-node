@@ -1,12 +1,16 @@
 /**
- * 通知的展示层（#129 切片 4）——老系统 notification-display.ts 的种子直译。
+ * 通知的展示层（#129 切片 4，白名单与深链 #110 切片 1）——老系统
+ * notification-display.ts 的直译。
  *
  * 老系统的裁定「文案与深链在 TS 不在库」在这里生效：event_type → {title,
- * detail, href} 的映射表（NOTIFIED_EVENT_TYPES 白名单 + 与 SQL 侧的双向
- * parity 测试）随第一个扇出生产者（业务域迁移）一起落地。在那之前所有行都
- * 走 `describeNotification` 的兜底面：payload 里带 title/detail 就用，
- * 没有就亮 event_type 原文，去处一律 null（本仓库还没有可跳的业务页）。
- * 兜底面是诚实的占位，不是最终文案。
+ * detail, href} 的映射只认白名单里的类型（NOTIFIED_EVENT_TYPES），每类文案
+ * 从 payload 的事实字段拼出、href 从 aggregate 指到真实页面。白名单之外的
+ * 行走 `describeNotification` 的兜底面：payload 里带 title/detail 就用，
+ * 没有就亮 event_type 原文，去处一律 null。兜底面是诚实的占位，不是最终文案。
+ *
+ * href 的落点必须真实存在：notification-href-routes.test.ts 把白名单的每个
+ * 去处对着 App.tsx 注册的路由做 parity 校验（老系统同一守卫的移植——它抓到
+ * 过深链静默落进 catch-all 重定向的真 bug）。
  */
 
 /** 铃铛下拉一次带走的行数，与 API 的 BELL_RECENT_LIMIT 是等价性契约。 */
@@ -14,6 +18,9 @@ export const BELL_RECENT_LIMIT = 20;
 
 /** 未读数到这个值为「封顶」：API 返回 21 = 「超过 20」，角标打印 "20+"。 */
 export const UNREAD_BADGE_CAP = 20;
+
+/** 铃铛认得的事件类型：文案与深链只在这张表里，生产者随业务域落地时进来。 */
+export const NOTIFIED_EVENT_TYPES: readonly string[] = ["task.assigned", "comment.mentioned"];
 
 /** API summary 的一行（zod 校验后的形状，camelCase）。 */
 export interface NotificationRow {
@@ -49,13 +56,37 @@ function stringField(payload: Record<string, unknown>, key: string): string | nu
   return typeof value === "string" && value.length > 0 ? value : null;
 }
 
-/** 生产者白名单落地前的兜底面（见文件头）。 */
+function actorOf(payload: Record<string, unknown>): string {
+  return stringField(payload, "actorName") ?? "Someone";
+}
+
+/** 任务详情页的深链：聚合指向任务，带 comment 参数时落到那条评论上。 */
+function taskHref(aggregateId: string | null, commentId: string | null): string | null {
+  if (aggregateId === null) return null;
+  return commentId === null ? `/tasks/${aggregateId}` : `/tasks/${aggregateId}?comment=${commentId}`;
+}
+
 export function describeNotification(row: NotificationRow): NotificationFace {
-  return {
-    title: stringField(row.payload, "title") ?? row.eventType,
-    detail: stringField(row.payload, "detail") ?? "",
-    href: null,
-  };
+  switch (row.eventType) {
+    case "task.assigned":
+      return {
+        title: `${actorOf(row.payload)} assigned you a task`,
+        detail: stringField(row.payload, "taskTitle") ?? "",
+        href: taskHref(row.aggregateId, null),
+      };
+    case "comment.mentioned":
+      return {
+        title: `${actorOf(row.payload)} mentioned you on a task`,
+        detail: stringField(row.payload, "excerpt") ?? stringField(row.payload, "taskTitle") ?? "",
+        href: taskHref(row.aggregateId, stringField(row.payload, "commentId")),
+      };
+    default:
+      return {
+        title: stringField(row.payload, "title") ?? row.eventType,
+        detail: stringField(row.payload, "detail") ?? "",
+        href: null,
+      };
+  }
 }
 
 /** 「刚刚发生」的相对表述只到分钟粒度；铃铛轮询 60s，粒度对齐刷新节奏。 */
