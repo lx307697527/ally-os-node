@@ -17,7 +17,7 @@ import type { AuthzStore } from "./service.ts";
 const logger = pino({ level: "silent" });
 
 const session: SessionData = {
-  user: { id: "u-1", email: "user@example.com", name: "User", emailVerified: true },
+  user: { id: "u-1", email: "user@example.com", name: "User", emailVerified: true, twoFactorEnabled: true },
   session: { id: "s-1", userId: "u-1", expiresAt: new Date(Date.now() + 60_000) },
 };
 

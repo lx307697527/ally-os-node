@@ -2,6 +2,7 @@ import { sql } from "drizzle-orm";
 import {
   boolean,
   index,
+  integer,
   jsonb,
   pgEnum,
   pgTable,
@@ -37,6 +38,9 @@ export const authUser = pgTable(
     name: text("name").notNull(),
     email: text("email").notNull(),
     emailVerified: boolean("email_verified").notNull().default(false),
+    // Better Auth two-factor 插件的 user 侧字段（#24）：TOTP 完成首次校验后置
+    // true；管理员的强制门（authz/two-factor gate）读它放行或拦截。
+    twoFactorEnabled: boolean("two_factor_enabled").notNull().default(false),
     image: text("image"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
@@ -107,6 +111,30 @@ export const authVerification = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [index("auth_verification_identifier_idx").on(t.identifier)],
+);
+
+// ── 双因素认证（#24）────────────────────────────────────────────────────────
+// Better Auth two-factor 插件的因子表，一行 = 一个用户的 TOTP 因子。secret 与
+// backupCodes 都是密文：secret 是 TOTP 共享密钥（XChaCha20-Poly1305，密钥派生自
+// BETTER_AUTH_SECRET，与老系统 GoTrue 的 at-rest 加密同级——老-老系统手搓
+// admin-2fa 的明文密钥是审计点名缺陷，勿继承）；backupCodes 是整批备份码明文
+// JSON 的加密体。verified = 该因子已完成过一次真实码校验（enable 只落半成品，
+// 校验通过才算启用）；failedVerificationCount/lockedUntil 是登录挑战的
+// 账号级尝试预算与锁定（NIST SP 800-63B §5.2.2，better-auth 内置）。
+export const authTwoFactor = pgTable(
+  "auth_two_factor",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    secret: text("secret").notNull(),
+    backupCodes: text("backup_codes").notNull(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => authUser.id, { onDelete: "cascade" }),
+    verified: boolean("verified").notNull().default(true),
+    failedVerificationCount: integer("failed_verification_count").notNull().default(0),
+    lockedUntil: timestamp("locked_until", { withTimezone: true }),
+  },
+  (t) => [index("auth_two_factor_user_idx").on(t.userId)],
 );
 
 // 实时推送的在线状态（#30）。一条记录 = 一个连接在一个 presence 频道上的成员资格；

@@ -11,6 +11,12 @@ export interface SessionUser {
   email: string;
   name: string;
   emailVerified: boolean;
+  /**
+   * #24：是否已启用双因素（TOTP 完成过一次真实码校验）。业务路由不拿它做
+   * 访问控制——强制门在 authz 侧统一执行（requireTwoFactorGate）；这里暴露
+   * 是给 /api/me 返回自己的状态，前端据此提示该去绑定。
+   */
+  twoFactorEnabled: boolean;
 }
 
 export interface SessionInfo {

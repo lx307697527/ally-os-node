@@ -5,7 +5,7 @@ import type { Logger } from "pino";
 import type { Db } from "@ally/db";
 import type { AppEnv, ResolveSession } from "./auth/session.ts";
 import { sessionMiddleware } from "./auth/session.ts";
-import { authzMiddleware } from "./authz/middleware.ts";
+import { authzMiddleware, requireTwoFactorGate } from "./authz/middleware.ts";
 import type { AuthzStore } from "./authz/service.ts";
 import { authProvidersRoutes } from "./routes/auth-providers.ts";
 import { healthRoutes } from "./routes/health.ts";
@@ -56,7 +56,14 @@ export function createApp(deps: AppDeps) {
   app.use("/api/*", sessionMiddleware(deps.resolveSession));
   app.use("/api/*", authzMiddleware(deps.authzStore));
 
+  // /api/me 在强制门之前（#24）：返回的正是调用者自己的角色与 twoFactorEnabled，
+  // 未绑定 2FA 的管理员靠它得知自己被强制、该去绑定——把它拦在门外，前端就
+  // 失去了得知状态的通道。自己的数据对自己的会话可见，不构成越权面。
   app.route("/", meRoutes());
+  // 双因素强制门（#24）：持有强制角色而未启用 2FA 的用户，业务路由一律 403
+  // two_factor_required；2FA 管理端点都在 /api/auth/*（上文已分流），绑定流程
+  // 不被自己拦住。此后注册的业务路由默认都在门后——新模块忘了接门也不开口子。
+  app.use("/api/*", requireTwoFactorGate());
   app.route("/", userRolesRoutes(deps));
 
   return app;
