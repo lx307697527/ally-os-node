@@ -39,6 +39,9 @@ services:
       DATABASE_URL: postgres://ally:ally@postgres:5432/ally
       # 仅本地容器联调用；真实部署由 Terraform 生成并注入 Secrets Manager 值
       BETTER_AUTH_SECRET: local-compose-secret-0123456789abcdef
+      # 邮件（#22）：compose 里不配 key = 日志模式，验证链接从 api 容器日志拿
+      EMAIL_FROM: "Ally OS <noreply@allyos.example>"
+      WEB_APP_URL: http://localhost:8080
       S3_BUCKET: ally-local
       S3_ENDPOINT: http://minio:9000
       S3_ACCESS_KEY_ID: minio

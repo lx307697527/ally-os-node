@@ -3,6 +3,11 @@
 // OAuth and password reset return with the later slices of issue #22, and a
 // link to a route that does not exist is a dead link.
 //
+// The unverified-email block (#22 email-verification slice): the server
+// refused with "not verified", so the screen offers the one action that
+// unblocks this operator — re-mailing the confirmation link. Still decides
+// nothing: the resend is a reported intent, like the submission.
+//
 // GROUND RULE: this screen decides NOTHING. It holds the two inputs (UI state)
 // and reports a submission; whether the credentials are good is the caller's
 // business.
@@ -15,6 +20,10 @@ export function SignIn({
   busy,
   error,
   notice,
+  unverifiedEmail,
+  resendNotice,
+  resendBusy,
+  onResendVerification,
   onSubmit,
 }: {
   busy: boolean;
@@ -23,6 +32,13 @@ export function SignIn({
   /** Why the operator is here when they did not choose to be — e.g. the
    *  session-timeout watch walked them out (#129 slice 2). */
   notice: string | null;
+  /** Set when the server refused a sign-in because the email is not yet
+   *  confirmed (#22): the address that needs confirming. */
+  unverifiedEmail: string | null;
+  /** The server's answer to a resend request, verbatim. */
+  resendNotice: string | null;
+  resendBusy: boolean;
+  onResendVerification: () => void;
   onSubmit: (credentials: { email: string; password: string }) => void;
 }): ReactElement {
   const [email, setEmail] = useState("");
@@ -42,6 +58,30 @@ export function SignIn({
         {notice && (
           <div className="mb-3 text-ui font-medium text-err" data-testid="session-expired-notice">
             {notice}
+          </div>
+        )}
+        {unverifiedEmail !== null && (
+          <div className="mb-3" data-testid="unverified-notice">
+            <div className="text-ui font-medium text-ink">
+              Your email isn't confirmed yet. Confirm it to finish signing in — check your inbox
+              for the link, or send it again:
+            </div>
+            <div className="mt-2">
+              <Button
+                data-testid="resend-verification"
+                variant="default"
+                type="button"
+                disabled={resendBusy}
+                onClick={onResendVerification}
+              >
+                {resendBusy ? "Sending…" : "Resend confirmation email"}
+              </Button>
+            </div>
+            {resendNotice && (
+              <div className="mt-2 text-ui font-medium" data-testid="resend-notice">
+                {resendNotice}
+              </div>
+            )}
           </div>
         )}
         <h1 className="mb-4 font-slab text-[length:var(--text-display-sm)] leading-[var(--lh-display)] font-semibold text-ink">Sign in</h1>

@@ -7,3 +7,5 @@ db_instance_class           = "db.t4g.medium"
 api_desired_count           = 2
 web_desired_count           = 2
 cors_origins                = "https://os.allynutra.com"
+resend_api_key = ""
+web_app_url    = "https://os.allynutra.com"

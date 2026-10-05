@@ -29,6 +29,7 @@ resource "aws_iam_role_policy" "task_execution_secrets" {
       Resource = [
         aws_secretsmanager_secret.database_url.arn,
         aws_secretsmanager_secret.better_auth_secret.arn,
+        aws_secretsmanager_secret.resend_api_key.arn,
       ]
     }]
   })

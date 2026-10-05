@@ -6,6 +6,7 @@ import { RealtimeBus, type RealtimeBusPayload } from "@ally/realtime";
 import pino from "pino";
 import { createApp } from "./app.ts";
 import { createAuth, createSessionResolver, createSessionTokenVerifier } from "./auth/auth.ts";
+import { createMailer } from "./mailer/mailer.ts";
 import { createRealtimeAuthenticator } from "./realtime/auth.ts";
 import { RealtimeHub } from "./realtime/hub.ts";
 import { createPresenceStore } from "./realtime/presence.ts";
@@ -15,12 +16,22 @@ const env = parseEnv(process.env);
 const logger = pino({ level: env.LOG_LEVEL });
 const { db, pool } = createDb(env.DATABASE_URL);
 
+// 邮件发送（#22 邮件基建切片）：key 未配置时走日志模式，本地开发从日志拿验证链接
+const mailer = createMailer({
+  logger,
+  resendApiKey: env.RESEND_API_KEY,
+  from: env.EMAIL_FROM,
+});
+
 // 认证（#22）：Better Auth 处理 /api/auth/*，会话经中间件注入业务路由
 const auth = createAuth({
   db,
   secret: env.BETTER_AUTH_SECRET,
   trustedOrigins: env.CORS_ORIGINS,
   baseURL: env.BETTER_AUTH_URL,
+  webAppUrl: env.WEB_APP_URL,
+  mailer,
+  logger,
 });
 const resolveSession = createSessionResolver(auth);
 

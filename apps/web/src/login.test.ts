@@ -45,6 +45,21 @@ describe("login page", () => {
     // server's refusal keeps its own line.
     expect(login).toMatch(/sessionExpired \? "Your session expired/);
   });
+
+  it("a 403 refusal means the mailbox isn't proven — the sign-in offers to re-mail the link (#22)", () => {
+    expect(login).toContain("refusal.status === 403");
+    expect(login).toContain("authClient.sendVerificationEmail");
+    expect(signIn).toContain('data-testid="unverified-notice"');
+    expect(signIn).toContain('data-testid="resend-verification"');
+    // Any later sign-in outcome clears the unverified state — it is not a
+    // mode this page sticks in.
+    expect(login).toMatch(/setUnverifiedEmail\(null\)/);
+  });
+
+  it("the resend affordance is a reported intent — the screen still decides nothing", () => {
+    expect(signIn).toContain("onResendVerification: () => void");
+    expect(signIn).not.toContain("authClient");
+  });
 });
 
 describe("require-auth guard", () => {

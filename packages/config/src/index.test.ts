@@ -15,6 +15,26 @@ describe("parseEnv", () => {
     expect(env.S3_FORCE_PATH_STYLE).toBe(false);
     expect(env.S3_ENDPOINT).toBeUndefined();
     expect(env.CORS_ORIGINS).toEqual([]);
+    // 邮件基建（#22）：key 缺省 = 日志模式；发件人有默认值
+    expect(env.RESEND_API_KEY).toBeUndefined();
+    expect(env.WEB_APP_URL).toBeUndefined();
+    expect(env.EMAIL_FROM).toContain("<");
+  });
+
+  it("accepts the email-sending variables when set (#22)", () => {
+    const env = parseEnv({
+      ...base,
+      RESEND_API_KEY: "re_123",
+      WEB_APP_URL: "https://os.example.com",
+      EMAIL_FROM: "Ally OS <noreply@example.com>",
+    });
+    expect(env.RESEND_API_KEY).toBe("re_123");
+    expect(env.WEB_APP_URL).toBe("https://os.example.com");
+    expect(env.EMAIL_FROM).toBe("Ally OS <noreply@example.com>");
+  });
+
+  it("rejects a malformed web app url", () => {
+    expect(() => parseEnv({ ...base, WEB_APP_URL: "not-a-url" })).toThrow(/WEB_APP_URL/);
   });
 
   it("treats empty strings as unset", () => {
