@@ -34,6 +34,21 @@ import { loadVisibleSubject } from "../subjects/registry.ts";
  * 通知的人不重复投（提及优先，一人一评论至多一条）；关注者必须仍在当前
  * 可见者集合里（关注不改变可见性——任务改派后，陈旧关注者不越过可见性门，
  * 与 follows.ts 同一裁法）。作者本人关注自己的对象也不收自己的评论。
+ *
+ * 编辑（#110 切片 5）：作者是编辑的唯一动词（与删除同一形态，403 带码）；
+ * 门序与删除一致——id 定位行，subject 门在先，404 与不存在同回答。正文是
+ * 事实的最新版：行内更新 body + edited_at（null = 从未编辑，只服务「(已编辑)」
+ * 一个读者），编辑历史由审计行承载（comment.updated，detail 记 subject 引用
+ * 与 fields，自动进对象活动流）。与 follows 内核同一纪律：**真变化才落审计**
+ * ——正文没变（trim 后相等）的提交是幂等成功，不动 edited_at、不写审计。
+ *
+ * 编辑与提及：通知是衍生物，衍生物跟着事实的最新版走——编辑后重新解析提及，
+ * 但只对 **新增** 提及的人补发 comment.mentioned（新正文 @ 了、旧正文没 @ 的
+ * 当前可见者；创建时已通知过的人不二次打扰，作者本人永不自提自通知）。「新增」
+ * 由两版正文各自解析后的差集得出，不查询历史通知——纯函数，重复编辑同一批
+ * 名字不重复通知。编辑不向关注者重发扇出：编辑是对既有事实的更正，不是新的
+ * 动静（关注者收的是「有新评论」，不是「有评论被改」）；已发出的通知里的
+ * 摘要是发出时的事实快照，不随编辑重写。
  */
 
 /** 列表单页上限；分页语义与 tasks / audit-events 一致（limit/offset + 精确 total） */
@@ -49,6 +64,10 @@ const EXCERPT_MAX = 140;
 const createBody = z.object({
   subjectType: z.string().min(1).max(50),
   subjectId: z.uuid(),
+  body: z.string().trim().min(1).max(COMMENT_BODY_MAX),
+});
+
+const editBody = z.object({
   body: z.string().trim().min(1).max(COMMENT_BODY_MAX),
 });
 
@@ -196,12 +215,129 @@ export function commentsRoutes(deps: { db: Db; notifyUsers: (userIds: string[]) 
           body: parsed.data.body,
           author: { id: me.id, name: me.name },
           createdAt: created.row.createdAt.toISOString(),
+          editedAt: null,
         },
         mentioned,
         notifiedFollowers: created.watcherIds.length,
       },
       201,
     );
+  });
+
+  app.patch("/api/comments/:id", async (c) => {
+    const id = z.uuid().safeParse(c.req.param("id"));
+    if (!id.success) {
+      return c.json({ error: "invalid_request" }, 400);
+    }
+    const parsed = editBody.safeParse(await c.req.json().catch(() => undefined));
+    if (!parsed.success) {
+      return c.json({ error: "invalid_request" }, 400);
+    }
+    const me = c.get("user");
+    const rows = await deps.db
+      .select({
+        id: schema.comments.id,
+        authorId: schema.comments.authorId,
+        subjectType: schema.comments.subjectType,
+        subjectId: schema.comments.subjectId,
+        body: schema.comments.body,
+        createdAt: schema.comments.createdAt,
+        editedAt: schema.comments.editedAt,
+      })
+      .from(schema.comments)
+      .where(eq(schema.comments.id, id.data))
+      .limit(1);
+    const comment = rows[0];
+    // 不存在与看不见同回答：404（先验 subject 门，与删除同序）
+    if (comment === undefined) {
+      return c.json({ error: "not_found" }, 404);
+    }
+    const visible = await loadVisibleSubject(deps.db, comment.subjectType, comment.subjectId, me.id);
+    if (visible === null || visible === "unregistered") {
+      return c.json({ error: "not_found" }, 404);
+    }
+    // 编辑是作者本人的动词：看得到但不是自己的 → 403 带码（与删除同一形态）
+    if (comment.authorId !== me.id) {
+      return c.json({ error: "forbidden", code: "author_only" }, 403);
+    }
+    // 真变化才动行（follows 内核同一纪律）：trim 后相等的提交是幂等成功，
+    // 不动 edited_at、不写审计、不重新解析提及
+    if (parsed.data.body === comment.body) {
+      return c.json({
+        comment: commentJson({
+          id: comment.id,
+          subjectType: comment.subjectType,
+          subjectId: comment.subjectId,
+          body: comment.body,
+          author: { id: me.id, name: me.name },
+          createdAt: comment.createdAt,
+          editedAt: comment.editedAt,
+        }),
+        mentioned: [],
+      });
+    }
+    // 新增提及 = 新正文解析出的提及 − 旧正文已有的提及（两版都只认当前
+    // 可见者、排除作者）；创建时通知过的人不在差集里，不二次打扰
+    const oldMentioned = new Set(
+      visible.viewers
+        .filter((v) => v.id !== me.id && mentionsName(comment.body, v.name))
+        .map((v) => v.id),
+    );
+    const newlyMentioned = visible.viewers.filter(
+      (v) =>
+        v.id !== me.id &&
+        mentionsName(parsed.data.body, v.name) &&
+        !oldMentioned.has(v.id),
+    );
+    const updated = await deps.db.transaction(async (tx) => {
+      const written = await tx
+        .update(schema.comments)
+        .set({ body: parsed.data.body, editedAt: new Date() })
+        .where(eq(schema.comments.id, comment.id))
+        .returning({
+          id: schema.comments.id,
+          subjectType: schema.comments.subjectType,
+          subjectId: schema.comments.subjectId,
+          body: schema.comments.body,
+          createdAt: schema.comments.createdAt,
+          editedAt: schema.comments.editedAt,
+        });
+      const row = written[0];
+      if (row === undefined) throw new Error("comment update returned no row");
+      await recordAudit(tx, {
+        actor: me.id,
+        action: "comment.updated",
+        target: row.id,
+        detail: {
+          subjectType: comment.subjectType,
+          subjectId: comment.subjectId,
+          fields: ["body"],
+        },
+      });
+      for (const person of newlyMentioned) {
+        await tx.insert(schema.notifications).values({
+          userId: person.id,
+          eventType: "comment.mentioned",
+          aggregateType: comment.subjectType,
+          aggregateId: comment.subjectId,
+          payload: {
+            taskTitle: visible.title,
+            commentId: row.id,
+            actorName: me.name,
+            excerpt: parsed.data.body.slice(0, EXCERPT_MAX),
+          },
+        });
+      }
+      return row;
+    });
+    // 提交后对新提及者发实时「催」；催失败降级回轮询（实现方保证不 reject）
+    if (newlyMentioned.length > 0) {
+      await deps.notifyUsers(newlyMentioned.map((person) => person.id));
+    }
+    return c.json({
+      comment: commentJson({ ...updated, author: { id: me.id, name: me.name } }),
+      mentioned: newlyMentioned,
+    });
   });
 
   app.delete("/api/comments/:id", async (c) => {
@@ -279,9 +415,31 @@ function selectCommentRows(db: Db, where: SQL | undefined) {
         name: author.name,
       },
       createdAt: schema.comments.createdAt,
+      editedAt: schema.comments.editedAt,
     })
     .from(schema.comments)
     .leftJoin(author, eq(schema.comments.authorId, author.id))
     .where(where)
     .orderBy(asc(schema.comments.createdAt), asc(schema.comments.id));
+}
+
+/** 单行的 JSON 形态：列表、创建、编辑三个出口同一形状（作者可能已被删） */
+function commentJson(row: {
+  id: string;
+  subjectType: string;
+  subjectId: string;
+  body: string;
+  author: { id: string; name: string } | null;
+  createdAt: Date;
+  editedAt: Date | null;
+}) {
+  return {
+    id: row.id,
+    subjectType: row.subjectType,
+    subjectId: row.subjectId,
+    body: row.body,
+    author: row.author === null ? null : { id: row.author.id, name: row.author.name },
+    createdAt: row.createdAt.toISOString(),
+    editedAt: row.editedAt === null ? null : row.editedAt.toISOString(),
+  };
 }

@@ -353,7 +353,9 @@ export const tasks = pgTable(
 // 新业务域注册不動数据库（与 notifications.event_type 同一裁法）。
 // 作者与用户行共生灭（CASCADE，与 notifications.user_id 同裁）：评论是对话性
 // 内容，不是记录；人删则其言论随之（审计里的 comment.* 行留下，actor 是 text）。
-// 没有 updated_at：编辑随后续切片 expand-only 进场，没有消费者的列不预置。
+// edited_at（#110 切片 5）只标记「作者改过」，null = 从未编辑——不是通用
+// updated_at（行只有 body 可变，编辑历史由审计行的 comment.updated 承载，
+// 列只服务「(已编辑)」这一个读者）。
 export const comments = pgTable(
   "comments",
   {
@@ -365,6 +367,7 @@ export const comments = pgTable(
       .references(() => authUser.id, { onDelete: "cascade" }),
     body: text("body").notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    editedAt: timestamp("edited_at", { withTimezone: true }),
   },
   // 唯一读法：「这条记录上的评论，按时间正序」；作者维度暂无读者，不建索引
   (t) => [index("comments_subject_created_idx").on(t.subjectType, t.subjectId, t.createdAt)],

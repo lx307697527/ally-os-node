@@ -146,6 +146,7 @@ describe.skipIf(!databaseUrl)("comment endpoints (#110 slice 1, integration)", (
     body: string;
     author: { id: string; name: string } | null;
     createdAt: string;
+    editedAt: string | null;
   }
 
   async function listComments(
@@ -172,6 +173,27 @@ describe.skipIf(!databaseUrl)("comment endpoints (#110 slice 1, integration)", (
       body: JSON.stringify(body),
     });
     const json = (await res.json()) as { comment?: CommentRow | null; mentioned?: { id: string }[] };
+    return { status: res.status, comment: json.comment ?? null, mentioned: json.mentioned ?? [] };
+  }
+
+  async function editComment(
+    headers: Record<string, string>,
+    id: string,
+    body: Record<string, unknown>,
+  ): Promise<{
+    status: number;
+    comment: (CommentRow & { editedAt: string | null }) | null;
+    mentioned: { id: string }[];
+  }> {
+    const res = await app.request(`/api/comments/${id}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json", ...headers },
+      body: JSON.stringify(body),
+    });
+    const json = (await res.json()) as {
+      comment?: (CommentRow & { editedAt: string | null }) | null;
+      mentioned?: { id: string }[];
+    };
     return { status: res.status, comment: json.comment ?? null, mentioned: json.mentioned ?? [] };
   }
 
@@ -335,6 +357,150 @@ describe.skipIf(!databaseUrl)("comment endpoints (#110 slice 1, integration)", (
     const audits = await auditRows("comment.deleted");
     expect(audits).toHaveLength(1);
     expect(audits[0]?.detail).toMatchObject({ subjectType: "task", subjectId: taskId });
+  });
+
+  // ── 编辑（#110 slice 5）──────────────────────────────────────────────────
+  it("the author edits the body; edited_at is set and comment.updated lands in the same transaction", async () => {
+    const taskId = await seedTask(USERS.alice, USERS.bob);
+    const made = await postComment(bob, { subjectType: "task", subjectId: taskId, body: "draft wording" });
+    const commentId = made.comment?.id;
+    if (commentId === undefined) throw new Error("comment creation returned no id");
+    expect(made.comment?.editedAt).toBeNull();
+
+    const edited = await editComment(bob, commentId, { body: "final wording" });
+    expect(edited.status).toBe(200);
+    expect(edited.comment?.body).toBe("final wording");
+    expect(edited.comment?.editedAt).not.toBeNull();
+    expect(edited.comment?.author).toEqual({ id: USERS.bob, name: "Bob" });
+    // 无新提及：不产生通知、不催任何人
+    expect(edited.mentioned).toEqual([]);
+    expect(await notificationsFor(USERS.alice)).toHaveLength(0);
+    expect(nudged).toEqual([]);
+    // 审计同行落：subject 引用在 detail（活动流投影的第二种归属）
+    const audits = await auditRows("comment.updated");
+    expect(audits).toHaveLength(1);
+    expect(audits[0]?.detail).toMatchObject({
+      subjectType: "task",
+      subjectId: taskId,
+      fields: ["body"],
+    });
+    // 列表读法看到新正文与已编辑标记
+    const page = await listComments(alice, "task", taskId);
+    expect(page.comments[0]?.body).toBe("final wording");
+    expect((page.comments[0] as CommentRow & { editedAt: string | null }).editedAt).not.toBeNull();
+  });
+
+  it("editing is the author's verb: another viewer gets 403, outsiders and strangers get 404", async () => {
+    const taskId = await seedTask(USERS.alice, USERS.bob);
+    const made = await postComment(bob, { subjectType: "task", subjectId: taskId, body: "bob's note" });
+    const commentId = made.comment?.id;
+    if (commentId === undefined) throw new Error("comment creation returned no id");
+    // 同为可见者的 alice 改不了别人的评论：403 带码，与删除同形态
+    const forbidden = await editComment(alice, commentId, { body: "alice was here" });
+    expect(forbidden.status).toBe(403);
+    expect(forbidden.comment).toBeNull();
+    const res403 = await app.request(`/api/comments/${commentId}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json", ...alice },
+      body: JSON.stringify({ body: "x" }),
+    });
+    expect(await res403.json()).toEqual({ error: "forbidden", code: "author_only" });
+    // 圈外人拿不到探测结论：404 与不存在同回答
+    expect((await editComment({ "x-test-user": "dave" }, commentId, { body: "x" })).status).toBe(404);
+    expect((await editComment(bob, randomUUID(), { body: "x" })).status).toBe(404);
+    // 请求本身坏了：400（id 不是 uuid / 正文越界 / 正文空白）
+    expect((await editComment(bob, "not-a-uuid", { body: "x" })).status).toBe(400);
+    expect((await editComment(bob, commentId, { body: "  " })).status).toBe(400);
+    expect((await editComment(bob, commentId, { body: "x".repeat(5001) })).status).toBe(400);
+    expect((await editComment(bob, commentId, {})).status).toBe(400);
+    // 行没被动过
+    const page = await listComments(bob, "task", taskId);
+    expect(page.comments[0]?.body).toBe("bob's note");
+    expect(await auditRows("comment.updated")).toHaveLength(0);
+  });
+
+  it("an unchanged body is an idempotent success: no edited_at, no audit row, no re-parse", async () => {
+    const taskId = await seedTask(USERS.alice, USERS.bob);
+    const made = await postComment(bob, { subjectType: "task", subjectId: taskId, body: "same words" });
+    const commentId = made.comment?.id;
+    if (commentId === undefined) throw new Error("comment creation returned no id");
+    const again = await editComment(bob, commentId, { body: "same words" });
+    expect(again.status).toBe(200);
+    expect(again.comment?.body).toBe("same words");
+    expect(again.comment?.editedAt).toBeNull();
+    expect(again.mentioned).toEqual([]);
+    expect(await auditRows("comment.updated")).toHaveLength(0);
+  });
+
+  it("an edit that adds a mention notifies only the newly mentioned viewer", async () => {
+    const taskId = await seedTask(USERS.alice, USERS.bob);
+    const made = await postComment(bob, { subjectType: "task", subjectId: taskId, body: "plain text, nobody named" });
+    const commentId = made.comment?.id;
+    if (commentId === undefined) throw new Error("comment creation returned no id");
+    expect(await notificationsFor(USERS.alice)).toHaveLength(0);
+
+    const edited = await editComment(bob, commentId, { body: "@Alice can you look at the revised wording?" });
+    expect(edited.status).toBe(200);
+    expect(edited.mentioned).toEqual([{ id: USERS.alice, name: "Alice" }]);
+    const rows = await notificationsFor(USERS.alice);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.eventType).toBe("comment.mentioned");
+    expect(rows[0]?.payload.commentId).toBe(commentId);
+    expect(rows[0]?.payload.excerpt).toBe("@Alice can you look at the revised wording?");
+    // realtime nudge rides with the new mention, after commit
+    expect(nudged).toEqual([[USERS.alice]]);
+  });
+
+  it("a viewer already mentioned at creation is not re-notified by later edits, and removing a mention notifies nobody", async () => {
+    const taskId = await seedTask(USERS.alice, USERS.bob);
+    const made = await postComment(bob, { subjectType: "task", subjectId: taskId, body: "@Alice first look" });
+    const commentId = made.comment?.id;
+    if (commentId === undefined) throw new Error("comment creation returned no id");
+    expect(await notificationsFor(USERS.alice)).toHaveLength(1);
+    nudged.length = 0;
+
+    // 同一个人还在正文里：编辑不重复打扰（差集为空）
+    const reworded = await editComment(bob, commentId, { body: "@Alice second, sharper look" });
+    expect(reworded.status).toBe(200);
+    expect(reworded.mentioned).toEqual([]);
+    expect(await notificationsFor(USERS.alice)).toHaveLength(1);
+    expect(nudged).toEqual([]);
+
+    // 提及被删掉：撤回不是通知的动词，谁也不收
+    const removed = await editComment(bob, commentId, { body: "no names anymore" });
+    expect(removed.status).toBe(200);
+    expect(removed.mentioned).toEqual([]);
+    expect(await notificationsFor(USERS.alice)).toHaveLength(1);
+    // 再加回来 = 相对当前正文又是新增提及：再次通知（正文 @ 了谁，谁就该收到）
+    const reintroduced = await editComment(bob, commentId, { body: "back again: @Alice third look" });
+    expect(reintroduced.mentioned).toEqual([{ id: USERS.alice, name: "Alice" }]);
+    expect(await notificationsFor(USERS.alice)).toHaveLength(2);
+  });
+
+  it("mentions resolve against the CURRENT viewers on edit: an outsider's name never notifies", async () => {
+    const taskId = await seedTask(USERS.alice, USERS.bob);
+    const made = await postComment(bob, { subjectType: "task", subjectId: taskId, body: "draft" });
+    const commentId = made.comment?.id;
+    if (commentId === undefined) throw new Error("comment creation returned no id");
+    const edited = await editComment(bob, commentId, { body: "carol from the customer team will help" });
+    expect(edited.status).toBe(200);
+    expect(edited.mentioned).toEqual([]);
+    expect(await notificationsFor(USERS.carol)).toHaveLength(0);
+    expect(nudged).toEqual([]);
+  });
+
+  it("an author who lost visibility (task reassigned away) can no longer edit: 404", async () => {
+    const taskId = await seedTask(USERS.alice, USERS.bob);
+    const made = await postComment(bob, { subjectType: "task", subjectId: taskId, body: "bob's note while assigned" });
+    const commentId = made.comment?.id;
+    if (commentId === undefined) throw new Error("comment creation returned no id");
+    // bob 被改派出可见者集合（可见者 = 创建人 + 经办人）：行还在，门已过不去
+    await db.update(schema.tasks).set({ assigneeId: USERS.alice }).where(eq(schema.tasks.id, taskId));
+    const after = await editComment(bob, commentId, { body: "trying from outside" });
+    expect(after.status).toBe(404);
+    const page = await listComments(alice, "task", taskId);
+    expect(page.comments[0]?.body).toBe("bob's note while assigned");
+    expect(await auditRows("comment.updated")).toHaveLength(0);
   });
 });
 

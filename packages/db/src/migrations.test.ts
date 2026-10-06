@@ -34,14 +34,20 @@ describe.skipIf(!databaseUrl)("runMigrations (integration)", () => {
       // 空 listener 吞掉；断言本身不受影响。
       for (const { pool } of [a, b]) pool.on("error", () => {});
       try {
-        await expect(Promise.all([runMigrations(a.db), runMigrations(b.db)])).resolves.toHaveLength(2);
+        // 断言的是「并发迁移被串行化」的语义，不是速度：默认 5s 预算是给快机
+        // 单测的，全量套件并行（65 worker 都在打同一个 postgres）时曾把它顶爆
+        // （#110 切片 5 在套件里 +11 条 DB 测试后本地必红）。给足余量，让机器
+        // 忙时测的仍然是那把锁，不是时钟。
+        await expect(
+          Promise.all([runMigrations(a.db), runMigrations(b.db)]),
+        ).resolves.toHaveLength(2);
       } finally {
         await Promise.all([a.pool.end(), b.pool.end()]);
       }
     } finally {
       await adminPool.query(`drop database if exists "${dbName}" with (force)`);
     }
-  });
+  }, 30_000);
 });
 
 /** 同一实例上连 maintenance 库（postgres）用的管理连接串。 */

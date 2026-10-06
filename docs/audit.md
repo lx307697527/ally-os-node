@@ -43,6 +43,8 @@
 - action 是开集，格式 `domain.object.verb`：`role.granted`、`role.revoked`、
   `task.created`、`task.updated`（detail 记 `fields: [...]`）、`task.assigned`、
   `comment.created`（detail 记 `subjectType`/`subjectId`/`mentioned`）、
+  `comment.updated`（#110 切片 5；detail 记 `subjectType`/`subjectId`/
+  `fields: ["body"]`；正文未变的幂等提交不落此行）、
   `comment.deleted`（detail 记 `subjectType`/`subjectId`）、
   `follow.created`/`follow.deleted`（关注 #110 切片 4；行无 id，身份是
   `(subject_type, subject_id, user_id)` 三元组——target 为空，subject 引用在
@@ -79,8 +81,8 @@
 - `target = ID`——动作直接落在该对象上（词表的 object 段 = subject 类型，
   如 `task.*` 的 target 是任务 id）；或
 - `detail.subjectType = T` 且 `detail.subjectId = ID`——多态子对象挂在
-  subject 上（第一个是评论：`comment.created/deleted` 的 target 是评论 id，
-  subject 引用在 detail）。
+  subject 上（第一个是评论：`comment.created/updated/deleted` 的 target 是
+  评论 id，subject 引用在 detail）。
 
 将来新域的活动行默认自动进该对象的时间线；若某个动作**不该**出现在协作
 时间线（例如只对合规有意义的内部标记），在本文件登记并让该行不带 subject
