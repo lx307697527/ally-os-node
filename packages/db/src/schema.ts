@@ -454,3 +454,93 @@ export const esignSignatures = pgTable(
     uniqueIndex("esign_signatures_client_token_idx").on(t.clientToken),
   ],
 );
+
+// ── 流程与状态机（#220 切片 1：可配置内核）──────────────────────────────────
+// 老系统的阶段流转全是「SQL 迁移里 frozen 边表 + TS 硬编码镜像 + parity 测试」
+// 三件套（crm.change_inquiry_status 边表、production.advance_job_phase 前置门、
+// billing.invoice_transition_allowed……），改流程要发版。新设计（#232 §4.4/§4.9）
+// 把流程做成配置：XState v5 的 JSON 定义存成模板，服务端只用它计算「当前状态 +
+// 事件 → 下一状态」，结果写库；门槛/进入后动作按名字引用代码里的条件积木、动作
+// 积木。subject 是开集 text（线索/商机/订单履约/偏差……与 subjects/registry.ts
+// 同一裁法），属主域切片注册加载器，不加列不动库。
+//
+// 版本列此刻恒为 1：#226「配置版本、审计与发布」进场前，模板只有初版；列先立住
+// 语义（快照与在飞实例的绑定读法要引用它），字段不预建机制之外的读者。
+export const workflowTemplates = pgTable(
+  "workflow_templates",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    subjectType: text("subject_type").notNull(),
+    // 流程模板键 = XState machine id 的宿主身份（如 standard_lead）；一个 subject
+    // 类型下键唯一，模板替换 = 停用旧行 + 新键，不 UPDATE 定义（#226 前的最小纪律）
+    templateKey: text("template_key").notNull(),
+    // 按产品类型选模板（#220「按产品类型切换模板」）：null = 不分类型的兜底模板
+    productType: text("product_type"),
+    isDefault: boolean("is_default").notNull().default(false),
+    active: boolean("active").notNull().default(true),
+    definition: jsonb("definition").notNull(),
+    version: integer("version").notNull().default(1),
+    createdById: uuid("created_by_id").references(() => authUser.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("workflow_templates_key_idx").on(t.subjectType, t.templateKey),
+    // 每个 subject 类型至多一个默认模板——「产品类型精确命中，否则落默认」的
+    // 解析语义由唯一部分索引钉成结构不变式，双默认在写入侧即被拒绝
+    uniqueIndex("workflow_templates_default_idx")
+      .on(t.subjectType)
+      .where(sql`is_default`),
+    index("workflow_templates_resolution_idx").on(t.subjectType, t.active),
+  ],
+);
+
+// 流程实例：一条业务记录同一时刻至多一个流程（ERPNext 工作流形态，状态是记录的
+// 一个面向）。definition 是启动时刻的模板快照——模板后续改版/停用不改写在飞
+// 实例的语义（与签名绑定 recordVersion 的同一裁法）；currentState 只存状态名，
+// 推进时用快照重新解析，服务端无驻留机。
+export const workflowInstances = pgTable(
+  "workflow_instances",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    subjectType: text("subject_type").notNull(),
+    subjectId: uuid("subject_id").notNull(),
+    templateId: uuid("template_id").references(() => workflowTemplates.id),
+    templateKey: text("template_key").notNull(),
+    definition: jsonb("definition").notNull(),
+    currentState: text("current_state").notNull(),
+    // 当前状态的进入时刻 = 超时提醒的时间基准（#220「停留超过设定时间时提醒」）；
+    // stateDueAt 由推进方按快照里的 timeoutAfterHours 一次性算好，到期扫描不碰 jsonb
+    stateEnteredAt: timestamp("state_entered_at", { withTimezone: true }).notNull().defaultNow(),
+    stateDueAt: timestamp("state_due_at", { withTimezone: true }),
+    startedById: uuid("started_by_id").references(() => authUser.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("workflow_instances_subject_idx").on(t.subjectType, t.subjectId),
+    index("workflow_instances_due_idx").on(t.stateDueAt),
+  ],
+);
+
+// 流转历史：状态机的「发生过的事实」流水。actor 与用户行不共生灭（不带 CASCADE，
+// 与 esign 签名人同裁——历史是对真实的人的事实，删人不得连带抹史）；整表
+// append-only（0013 触发器，与 audit_events/esign_signatures 同一底线）。
+export const workflowTransitions = pgTable(
+  "workflow_transitions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    instanceId: uuid("instance_id")
+      .notNull()
+      .references(() => workflowInstances.id),
+    fromState: text("from_state").notNull(),
+    toState: text("to_state").notNull(),
+    event: text("event").notNull(),
+    // 人工推进的原因（§4.7「必须写原因」的承接列；requireNote 门在引擎侧强制）
+    note: text("note"),
+    actorId: uuid("actor_id").notNull().references(() => authUser.id),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    // 历史时间线唯一读法：按实例倒序翻页
+    index("workflow_transitions_instance_idx").on(t.instanceId, t.createdAt),
+  ],
+);

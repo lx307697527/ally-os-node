@@ -20,6 +20,8 @@ import { notificationsRoutes } from "./routes/notifications.ts";
 import { realtimeRoutes } from "./routes/realtime.ts";
 import { tasksRoutes } from "./routes/tasks.ts";
 import { userRolesRoutes } from "./routes/user-roles.ts";
+import { workflowInstancesRoutes } from "./routes/workflow-instances.ts";
+import { workflowTemplatesRoutes } from "./routes/workflow-templates.ts";
 
 // 依赖通过参数注入，测试时可以传假的实现，不需要真数据库。
 export interface AppDeps {
@@ -97,6 +99,11 @@ export function createApp(deps: AppDeps) {
   // 电子签名（#219）：签名仪式（重输密码 + 2FA）、签名墙读法；可签名 subject
   // 由属主域在 esign/registry.ts 注册，本切片注册表为空（机制先行）
   app.route("/", esignaturesRoutes(deps));
+  // 流程与状态机（#220）：模板管理（workflow.configure 权限点）+ 实例读/推
+  // （可见性门）；可挂流程的 subject 由属主域在 workflow/registry.ts 注册，
+  // 实例启动是属主域的进程内调用，不开 HTTP 面
+  app.route("/", workflowTemplatesRoutes(deps));
+  app.route("/", workflowInstancesRoutes(deps));
   // 实时连接令牌（#110 切片 2）：发还调用者自己会话的令牌给 WS auth 帧用
   app.route("/", realtimeRoutes(deps));
   // 审计日志查询（#29）：audit.read 权限点门（owner/admin 默认）

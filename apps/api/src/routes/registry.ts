@@ -68,6 +68,17 @@ export const API_ROUTES: readonly RouteDecl[] = [
   // Part 11 不设「无需双因素即可签名」的例外，故无新权限点
   { method: "POST", path: "/api/esignatures", auth: { kind: "session" } },
   { method: "GET", path: "/api/esignatures", auth: { kind: "session" } },
+  // 流程模板（#220）：配置工作室的流程配置面，改流程 = 改全员的工作方式，
+  // workflow.configure 权限点门（owner/admin 默认持有）
+  { method: "POST", path: "/api/workflow-templates", auth: { kind: "permission", permission: "workflow.configure" } },
+  { method: "GET", path: "/api/workflow-templates", auth: { kind: "permission", permission: "workflow.configure" } },
+  { method: "GET", path: "/api/workflow-templates/:id", auth: { kind: "permission", permission: "workflow.configure" } },
+  // 流程实例（#220）：状态读法 / 推进 / 历史三读，subject 可见性门与评论同扇
+  // （推进另过员工地板 + 模板 roles/gates，在服务层）；可挂流程类型由属主域
+  // 注册（workflow/registry.ts），实例启动是属主域进程内调用，无 HTTP 面
+  { method: "GET", path: "/api/workflow-instances/:subjectType/:subjectId", auth: { kind: "session" } },
+  { method: "POST", path: "/api/workflow-instances/:subjectType/:subjectId/transitions", auth: { kind: "session" } },
+  { method: "GET", path: "/api/workflow-instances/:subjectType/:subjectId/transitions", auth: { kind: "session" } },
   // 审计日志查询（#29）：owner / admin（audit.read 权限点）
   { method: "GET", path: "/api/audit-events", auth: { kind: "permission", permission: "audit.read" } },
   // 实时连接令牌（#110 切片 2）：把调用者自己会话的令牌发还给本人，WS auth
