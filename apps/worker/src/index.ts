@@ -4,6 +4,7 @@ import { PgBoss } from "pg-boss";
 import pino from "pino";
 import { automationJobs } from "./automations/index.ts";
 import { jobs } from "./jobs/index.ts";
+import { rulesJobs } from "./rules/index.ts";
 import { registerJobs, type JobFailureAlerter } from "./runner.ts";
 import { createSlackAlerter, formatJobFailure } from "./slack.ts";
 
@@ -30,7 +31,7 @@ boss.on("error", (err) => {
 });
 
 await boss.start();
-await registerJobs(boss, [...jobs, ...automationJobs({ db, pool, boss, logger })], {
+await registerJobs(boss, [...jobs, ...automationJobs({ db, pool, boss, logger }), ...rulesJobs({ db, pool, logger })], {
   logger,
   onJobFailure,
 });
