@@ -6,6 +6,7 @@ import type { Db } from "@ally/db";
 import { schema } from "@ally/db";
 import { recordAudit } from "../audit/audit-log.ts";
 import type { AppEnv } from "../auth/session.ts";
+import { isSubjectSigned } from "../esign/service.ts";
 
 /**
  * 任务端点（#113 切片 1：任务内核）。
@@ -183,6 +184,12 @@ export function tasksRoutes(deps: { db: Db; notifyUsers: (userIds: string[]) => 
     const task = current[0];
     if (task === undefined) {
       return c.json({ error: "not_found" }, 404);
+    }
+    // 签名锁定（#219）：签过名的记录一律拒改——更正走新记录或变更流程，不走
+    // 改写。可签名注册表（esign/registry.ts）为空时任务上不可能有签名，此处
+    // 恒通过；首个把 task 注册为可签名的域进场那天，这行检查即生效。
+    if (await isSubjectSigned(deps.db, "task", task.id)) {
+      return c.json({ error: "record_signed" }, 409);
     }
     // 派给谁只有创建人能改；经办人改自己的任务内容与状态
     if (body.data.assigneeId !== undefined && task.createdBy?.id !== me.id) {

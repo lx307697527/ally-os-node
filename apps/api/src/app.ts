@@ -11,6 +11,7 @@ import { activityRoutes } from "./routes/activity.ts";
 import { authProvidersRoutes } from "./routes/auth-providers.ts";
 import { auditEventsRoutes } from "./routes/audit-events.ts";
 import { commentsRoutes } from "./routes/comments.ts";
+import { esignaturesRoutes } from "./routes/esignatures.ts";
 import { feedbackRoutes } from "./routes/feedback.ts";
 import { followsRoutes } from "./routes/follows.ts";
 import { healthRoutes } from "./routes/health.ts";
@@ -93,6 +94,9 @@ export function createApp(deps: AppDeps) {
   app.route("/", activityRoutes(deps));
   // 关注（#110 切片 4）：多态 subject 的行属门在路由内逐域裁决，登录即可
   app.route("/", followsRoutes(deps));
+  // 电子签名（#219）：签名仪式（重输密码 + 2FA）、签名墙读法；可签名 subject
+  // 由属主域在 esign/registry.ts 注册，本切片注册表为空（机制先行）
+  app.route("/", esignaturesRoutes(deps));
   // 实时连接令牌（#110 切片 2）：发还调用者自己会话的令牌给 WS auth 帧用
   app.route("/", realtimeRoutes(deps));
   // 审计日志查询（#29）：audit.read 权限点门（owner/admin 默认）

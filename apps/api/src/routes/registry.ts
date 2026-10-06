@@ -63,6 +63,11 @@ export const API_ROUTES: readonly RouteDecl[] = [
   { method: "GET", path: "/api/follows/:subjectType/:subjectId", auth: { kind: "session" } },
   { method: "PUT", path: "/api/follows/:subjectType/:subjectId", auth: { kind: "session" } },
   { method: "DELETE", path: "/api/follows/:subjectType/:subjectId", auth: { kind: "session" } },
+  // 电子签名（#219）：签名仪式（重输密码 + 2FA 门在路由内）与签名墙读法，
+  // subject 可见性门与评论同扇；可签名类型由属主域注册（esign/registry.ts），
+  // Part 11 不设「无需双因素即可签名」的例外，故无新权限点
+  { method: "POST", path: "/api/esignatures", auth: { kind: "session" } },
+  { method: "GET", path: "/api/esignatures", auth: { kind: "session" } },
   // 审计日志查询（#29）：owner / admin（audit.read 权限点）
   { method: "GET", path: "/api/audit-events", auth: { kind: "permission", permission: "audit.read" } },
   // 实时连接令牌（#110 切片 2）：把调用者自己会话的令牌发还给本人，WS auth
