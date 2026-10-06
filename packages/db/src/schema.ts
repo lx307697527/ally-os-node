@@ -657,6 +657,11 @@ export const approvalRequests = pgTable(
       .notNull()
       .references(() => authUser.id),
     completedAt: timestamp("completed_at", { withTimezone: true }),
+    // 催办台账（#221 pg-boss 催办）：本级最近一轮提醒的时刻与所在级。扫描据此
+    // 去重——同一级 24h 只催一轮，级推进后按新级重新计时；null = 从未催过。
+    // 与通知行的 digest_sent_at 同一裁法：台账在行上，重试与重扫不重复投递。
+    lastReminderAt: timestamp("last_reminder_at", { withTimezone: true }),
+    lastReminderStep: integer("last_reminder_step"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [

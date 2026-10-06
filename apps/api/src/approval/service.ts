@@ -1,4 +1,4 @@
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, eq, inArray } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import { z } from "zod";
 import type { Db } from "@ally/db";
@@ -65,6 +65,72 @@ export function parseApprovalLevels(value: unknown): { ok: true; levels: Approva
   return parsed.success ? { ok: true, levels: parsed.data } : { ok: false };
 }
 
+// ── 通知扇出（#221 多级通知扇出：轮到谁，谁就在铃铛里）──────────────────────
+
+/**
+ * 一级的审批人集合（uuid）：点名 users ∪ 角色持有者。角色按 app_role 枚举过滤
+ * （与 worker 侧规则提醒同一防御——api 的 Role 词表与库内枚举是两处定义）。
+ * 集合可能为空（配置只点了一个无人持有的角色）：校验面要求 users+roles ≥ 1，
+ * 但「角色无人持有」合法存在——扇出跳过，待办页同样不显示（同一事实的两面）。
+ */
+async function resolveAdjudicatorIds(db: Pick<Db, "select">, level: ApprovalLevel): Promise<string[]> {
+  const eligible = level.roles.filter((role): role is (typeof schema.appRole.enumValues)[number] =>
+    (schema.appRole.enumValues as readonly string[]).includes(role),
+  );
+  const holders =
+    eligible.length === 0
+      ? []
+      : await db
+          .select({ id: schema.authUser.id })
+          .from(schema.authUser)
+          .innerJoin(schema.userRole, eq(schema.userRole.userId, schema.authUser.id))
+          .where(inArray(schema.userRole.role, eligible));
+  return [...new Set([...level.users, ...holders.map((row) => row.id)])];
+}
+
+export interface ApprovalFanoutFact {
+  requestId: string;
+  subjectType: string;
+  subjectId: string;
+  configKey: string;
+  /** 配置名（事实字段：铃铛文案、邮件摘要都从它拼，不带服务端文案） */
+  configName: string;
+  /** 触发这一轮的动作方姓名（提交人 / 推进的审批人） */
+  actorName: string;
+}
+
+/**
+ * 给一级审批人各落一行 approval.pending 通知（事务内调用：通知与推进同生灭），
+ * 返回实际收到的人（排除 exclude——自批线上的动作方不给自己报信，task.assigned
+ * 「派给自己不发」同一裁法）。行只存事实：文案在展示层（notification-face）。
+ */
+async function notifyAdjudicators(db: Pick<Db, "select" | "insert">,
+  fact: ApprovalFanoutFact,
+  level: ApprovalLevel,
+  exclude: readonly string[],
+): Promise<string[]> {
+  const recipients = (await resolveAdjudicatorIds(db, level)).filter((id) => !exclude.includes(id));
+  if (recipients.length === 0) return [];
+  await db.insert(schema.notifications).values(
+    recipients.map((userId) => ({
+      userId,
+      eventType: "approval.pending",
+      aggregateType: "approval_request",
+      aggregateId: fact.requestId,
+      payload: {
+        subjectType: fact.subjectType,
+        subjectId: fact.subjectId,
+        configKey: fact.configKey,
+        configName: fact.configName,
+        levelName: level.name,
+        actorName: fact.actorName,
+        detail: `${fact.configName} · ${level.name}`,
+      },
+    })),
+  );
+  return recipients;
+}
+
 // ── 提交审批请求 ─────────────────────────────────────────────────────────────
 
 export interface SubmitCommand {
@@ -94,7 +160,11 @@ export type SubmitOutcome =
     };
 
 /** 单据进入审批（属主域在业务动作里进程内调用；触发条件随 #233 决策表进场） */
-export async function submitApprovalRequest(db: Db, cmd: SubmitCommand): Promise<SubmitOutcome> {
+export async function submitApprovalRequest(
+  db: Db,
+  cmd: SubmitCommand,
+  opts: { notifyUsers?: (userIds: string[]) => Promise<void> } = {},
+): Promise<SubmitOutcome> {
   // 带 outcome 自动化的 subject 无参数不放行：批准无从执行（通用提交端点不带
   // payload，天然被此门挡住——带自动化线的唯一提交路径是属主域自己的路由）
   if (cmd.payload === undefined && approvalOutcomeHandler(cmd.subjectType) !== undefined) {
@@ -167,6 +237,32 @@ export async function submitApprovalRequest(db: Db, cmd: SubmitCommand): Promise
       ...(cmd.payload !== undefined ? { payload: cmd.payload } : {}),
     },
   });
+  // 首级扇出（#221 多级通知扇出）：轮到谁审，谁就在铃铛里。发起人自己点名的
+  // 级（自批线）不给自己报信；实时「催」在提交后发，失败只降级轮询。
+  const firstLevel = parsed.levels[0];
+  if (firstLevel !== undefined) {
+    const submitterRows = await db
+      .select({ name: schema.authUser.name })
+      .from(schema.authUser)
+      .where(eq(schema.authUser.id, cmd.submitterId))
+      .limit(1);
+    const nudged = await notifyAdjudicators(
+      db,
+      {
+        requestId: row.id,
+        subjectType: cmd.subjectType,
+        subjectId: cmd.subjectId,
+        configKey: config.configKey,
+        configName: config.name,
+        actorName: submitterRows[0]?.name ?? cmd.submitterId,
+      },
+      firstLevel,
+      [cmd.submitterId],
+    );
+    if (nudged.length > 0 && opts.notifyUsers !== undefined) {
+      await opts.notifyUsers(nudged);
+    }
+  }
   return { status: "created", requestId: row.id };
 }
 
@@ -231,12 +327,14 @@ export async function actOnApproval(
   opts: { notifyUsers?: (userIds: string[]) => Promise<void> } = {},
 ): Promise<ActOutcome> {
   const requestRows = await db
-    .select()
+    .select({ request: schema.approvalRequests, configName: schema.approvalConfigs.name })
     .from(schema.approvalRequests)
+    .innerJoin(schema.approvalConfigs, eq(schema.approvalRequests.configId, schema.approvalConfigs.id))
     .where(eq(schema.approvalRequests.id, cmd.requestId))
     .limit(1);
-  const request = requestRows[0];
-  if (request === undefined) {
+  const row = requestRows[0];
+  const request = row?.request;
+  if (request === undefined || row === undefined) {
     return { status: "rejected", reason: "not_found" };
   }
   if (request.status !== "pending") {
@@ -266,6 +364,23 @@ export async function actOnApproval(
   }
 
   const note = cmd.note?.trim();
+  // 动作方姓名（通知 payload 的事实字段）：裁决人刚通过会话门，行必然在
+  const actorRows = await db
+    .select({ name: schema.authUser.name })
+    .from(schema.authUser)
+    .where(eq(schema.authUser.id, cmd.actorId))
+    .limit(1);
+  const actorName = actorRows[0]?.name ?? cmd.actorId;
+  const fanoutFact: ApprovalFanoutFact = {
+    requestId: request.id,
+    subjectType: request.subjectType,
+    subjectId: request.subjectId,
+    configKey: request.configKey,
+    configName: row.configName,
+    actorName,
+  };
+  // 事务内落的通知收件人：下一级审批人（推进时）——提交后统一「催」
+  let nextLevelNudged: string[] = [];
   let outcome: ActOutcome;
   try {
     outcome = await db.transaction(async (tx): Promise<ActOutcome> => {
@@ -369,6 +484,16 @@ export async function actOnApproval(
           ...(needsSignature ? { signatureMeaning: level.signatureMeaning } : {}),
         },
       });
+      // 推进扇出（#221 多级通知扇出）：非末级同意 = 轮到下一级，下一级审批人
+      // 的通知与推进同一事务（推进回滚 = 通知不存在）；动作方自己不报信——
+      // 他可能是下一级点名的审批人（多角色兼任），铃铛里不该有自己批给自己的信
+      if (nextStatus === "pending") {
+        const nextLevel = parsed.levels[request.currentStep + 1];
+        if (nextLevel === undefined) {
+          throw new Error(`approval request ${request.id} next step out of range`);
+        }
+        nextLevelNudged = await notifyAdjudicators(tx, fanoutFact, nextLevel, [cmd.actorId]);
+      }
       if (nextStatus !== "pending") {
         await recordAudit(tx, {
           actor: cmd.actorId,
@@ -382,7 +507,10 @@ export async function actOnApproval(
             finalStep: request.currentStep,
           },
         });
-        // 终态通知发起人（驳回回到发起人的「回到」是真的递到手上；#110 通知内核）
+        // 终态通知发起人（驳回回到发起人的「回到」是真的递到手上；#110 通知内核）。
+        // payload 补事实（configName/actorName）：铃铛兜底面与邮件摘要据此说话，
+        // 文案仍在展示层——终态还没有承载页（我发起的审批随 phase-2 进场），
+        // 兜底面亮事件类型 + 事实，去处 null 是诚实的占位。
         await tx.insert(schema.notifications).values({
           userId: request.submittedById,
           eventType: nextStatus === "approved" ? "approval.completed" : "approval.rejected",
@@ -392,6 +520,9 @@ export async function actOnApproval(
             subjectType: request.subjectType,
             subjectId: request.subjectId,
             configKey: request.configKey,
+            configName: row.configName,
+            actorName,
+            detail: row.configName,
           },
         });
       }
@@ -416,9 +547,14 @@ export async function actOnApproval(
     throw err;
   }
 
-  // 事务提交后才「催」（AppDeps.notifyUsers 的 at-most-once 合同：失败只降级轮询）
-  if (outcome.status === "applied" && outcome.requestStatus !== "pending" && opts.notifyUsers !== undefined) {
-    await opts.notifyUsers([request.submittedById]);
+  // 事务提交后才「催」（AppDeps.notifyUsers 的 at-most-once 合同：失败只降级轮询）。
+  // 终态催发起人；推进催下一级审批人（通知行已在事务里，催只是让铃铛立刻重读）。
+  if (outcome.status === "applied" && opts.notifyUsers !== undefined) {
+    const bell =
+      outcome.requestStatus !== "pending" ? [request.submittedById] : nextLevelNudged;
+    if (bell.length > 0) {
+      await opts.notifyUsers(bell);
+    }
   }
   return outcome;
 }

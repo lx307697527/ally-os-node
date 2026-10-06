@@ -172,12 +172,16 @@ export function approvalsRoutes(deps: { db: Db; logger: Logger; notifyUsers: (us
     if (visible === null) {
       return c.json({ error: "not_found" }, 404);
     }
-    const outcome = await submitApprovalRequest(deps.db, {
-      subjectType: body.subjectType,
-      subjectId: body.subjectId,
-      configKey: body.configKey,
-      submitterId: c.get("user").id,
-    });
+    const outcome = await submitApprovalRequest(
+      deps.db,
+      {
+        subjectType: body.subjectType,
+        subjectId: body.subjectId,
+        configKey: body.configKey,
+        submitterId: c.get("user").id,
+      },
+      { notifyUsers: deps.notifyUsers },
+    );
     if (outcome.status === "rejected") {
       if (outcome.reason === "levels_invalid") {
         // 配置行被外力改歪：服务端数据问题，不探细节给客户端

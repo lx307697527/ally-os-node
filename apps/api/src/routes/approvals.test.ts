@@ -114,6 +114,9 @@ describe.skipIf(!databaseUrl)("approvals route (#221, integration)", () => {
   const { db, pool } = createDb(scopedUrl);
 
   const mailer = spyMailer();
+  // 实时「催」的记录面（#221 多级扇出）：铃铛 nudge 的收件人序列，逐测试清空。
+  // 通知行是权威事实（事务内落库），nudge 只是 at-most-once 的加速器——两者都断言。
+  const bellNudges: string[][] = [];
   const auth = createAuth({
     db,
     secret: SECRET,
@@ -135,7 +138,10 @@ describe.skipIf(!databaseUrl)("approvals route (#221, integration)", () => {
     resolveSession: createSessionResolver(auth),
     socialProviders: [],
     authzStore: createAuthzStore(db),
-    notifyUsers: async () => {},
+    notifyUsers: (userIds: string[]) => {
+      bellNudges.push([...userIds]);
+      return Promise.resolve();
+    },
   });
 
   // owner（配置管理 + 审计读法 + 流程模板，无需 2FA：强制门只盯 admin）/
@@ -178,6 +184,7 @@ describe.skipIf(!databaseUrl)("approvals route (#221, integration)", () => {
     docs.clear();
     outcomeCalls.length = 0;
     outcomeFailNext = false;
+    bellNudges.length = 0;
   });
 
   afterAll(async () => {
@@ -597,6 +604,94 @@ describe.skipIf(!databaseUrl)("approvals route (#221, integration)", () => {
     };
     expect(viewBody.request.status).toBe("rejected");
     expect(viewBody.request.actions[0]).toMatchObject({ decision: "rejected", note: "numbers look wrong" });
+  });
+
+  // ── 多级通知扇出（#221：轮到谁审，谁就在铃铛里）───────────────────────────
+
+  it("fans approval.pending out to the first level's named and role adjudicators on submit", async () => {
+    await createConfig("doc_release", [{ name: "lead review", users: [bobId], roles: ["sales_lead"] }]);
+    const docId = makeDoc([aliceId, bobId, carolId]);
+    const created = await submit(docId, "doc_release");
+    expect(created.status).toBe(201);
+
+    const rows = await db.select().from(schema.notifications).where(eq(schema.notifications.eventType, "approval.pending"));
+    expect(rows.map((r) => r.userId).sort()).toEqual([bobId, daveId].sort());
+    const first = must(rows[0]);
+    expect(first.aggregateType).toBe("approval_request");
+    expect(first.aggregateId).toBe(((await created.json()) as { requestId: string }).requestId);
+    expect(first.payload).toMatchObject({
+      subjectType: "approval-doc",
+      configKey: "doc_release",
+      configName: "Config doc_release",
+      levelName: "lead review",
+      actorName: "User alice",
+    });
+    // 发起人自己不在收件人里（自批线不给自己报信）；实时「催」与行同名单
+    expect(rows.map((r) => r.userId)).not.toContain(aliceId);
+    expect(bellNudges).toHaveLength(1);
+    expect(bellNudges[0]?.sort()).toEqual([bobId, daveId].sort());
+
+    // 已在飞的第二次提交不重复扇出（409 语义，行数不变）
+    const again = await submit(docId, "doc_release");
+    expect(again.status).toBe(409);
+    const after = await db.select().from(schema.notifications).where(eq(schema.notifications.eventType, "approval.pending"));
+    expect(after).toHaveLength(rows.length);
+    expect(bellNudges).toHaveLength(1);
+  });
+
+  it("notifies the next level on advance and the submitter only at a terminal state", async () => {
+    await createConfig("doc_release", [
+      { name: "lead review", users: [bobId] },
+      { name: "final sign-off", users: [carolId] },
+    ]);
+    const docId = makeDoc([aliceId, bobId, carolId]);
+    const requestId = ((await (await submit(docId, "doc_release")).json()) as { requestId: string }).requestId;
+
+    // 提交只扇出首级：carol（第二级）此刻没有通知
+    const carolRows = await db.select().from(schema.notifications).where(eq(schema.notifications.userId, carolId));
+    expect(carolRows).toHaveLength(0);
+
+    const step1 = await act(requestId, "bob", { decision: "approved" });
+    expect(step1.status).toBe(200);
+    const advanced = await db.select().from(schema.notifications).where(eq(schema.notifications.userId, carolId));
+    expect(advanced).toHaveLength(1);
+    expect(must(advanced[0]).eventType).toBe("approval.pending");
+    expect(must(advanced[0]).payload).toMatchObject({
+      configName: "Config doc_release",
+      levelName: "final sign-off",
+      actorName: "User bob",
+    });
+    expect(bellNudges.at(-1)).toEqual([carolId]);
+
+    // 中间级推进不通知发起人：发起人的铃铛只在终态响
+    const aliceMid = await db.select().from(schema.notifications).where(eq(schema.notifications.userId, aliceId));
+    expect(aliceMid).toHaveLength(0);
+
+    const step2 = await act(requestId, "carol", { decision: "approved" });
+    expect(step2.status).toBe(200);
+    const terminal = await db.select().from(schema.notifications).where(eq(schema.notifications.userId, aliceId));
+    expect(terminal).toHaveLength(1);
+    expect(must(terminal[0]).eventType).toBe("approval.completed");
+    expect(must(terminal[0]).payload).toMatchObject({
+      configName: "Config doc_release",
+      actorName: "User carol",
+    });
+    expect(bellNudges.at(-1)).toEqual([aliceId]);
+  });
+
+  it("does not notify the submitter of their own self-approval line", async () => {
+    await createConfig("self_line", [{ name: "own call", users: [aliceId] }]);
+    const docId = makeDoc([aliceId]);
+    const created = await submit(docId, "self_line");
+    expect(created.status).toBe(201);
+    const rows = await db.select().from(schema.notifications);
+    expect(rows).toHaveLength(0);
+    expect(bellNudges).toHaveLength(0);
+    // 请求照常在飞，发起人兼审批人照常可裁（R-16-5 业务自批）
+    const todo = await app.request("/api/approval-requests/todo", {
+      headers: { cookie: must(session.get("alice")) },
+    });
+    expect(((await todo.json()) as { requests: unknown[] }).requests).toHaveLength(1);
   });
 
   // ── 签名仪式 ────────────────────────────────────────────────────────────

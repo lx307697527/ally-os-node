@@ -102,10 +102,43 @@ template / instance / transition 同构。
 
 - ~~**触发条件与自动进入**~~：机制半边已落地（路由决策表 + R-16-6 消费）；剩余
   是金额域的首次接线（#229/#231）。
-- **pg-boss 执行与提醒**：超时未裁决的催办、多级的通知扇出（#116 渠道层）。
+- ~~**pg-boss 执行与提醒**~~：已落地（见下一节）。剩余是会签/票签等需要 pg-boss
+  编排的多人推进形态。
 - **多人审批方式**：会签（全员同意）/票签（多数决）——现在任一命中即过。
 - **配置面管理（#226）**：configKey 替换 = 建新键 + 停用旧行，停用端点与定义
   改写端点随 #226 后续切片；版本台账已进场——审批线创建即记 v1，版本史/差异
   可读（docs/config-versions.md），回滚对该族答 409（无就地改写路径）。
 - **后台审批配置 UI**：随配置工作室前端进场（R-16-6 的审批线配置目前由持
   `approval.configure` 的人经 API 创建一次）。
+
+## 已落地：多级通知扇出 + pg-boss 催办（#221 通知切片）
+
+**扇出（api 内核，apps/api/src/approval/service.ts）**：轮到谁审，谁就在铃铛里。
+提交 → 首级审批人各一行 `approval.pending`；非末级同意 → 下一级审批人（与推进
+同一事务：推进回滚 = 通知不存在）；终态 → 发起人（`approval.completed` /
+`approval.rejected`，切片 1 已有，payload 补了 configName/actorName 事实）。
+审批人集合 = 点名 users ∪ 角色持有者（app_role 枚举过滤）；动作方不给自己报信
+（自批线不自我通知，task.assigned「派给自己不发」同一裁法）。行只存事实
+（configName/levelName/actorName/detail），文案在展示层
+（apps/web notification-face：白名单收 pending/reminder → `/approvals`；终态
+刻意不在白名单——还没有承载页，兜底面亮类型 + 事实）。实时「催」在事务提交后
+发（notifyUsers at-most-once，失败只降级轮询）。
+
+**催办（worker，apps/worker/src/approval/reminder.ts）**：`approval-reminders`
+每小时 ：45 对账扫描（与规则提醒 13:00、邮件摘要 13:30 同锚错峰）。在飞请求在
+本级停满 24h（`APPROVAL_REMIND_AFTER_MS`）没人裁 → 当前级审批人各一行
+`approval.reminder`；再催要隔另一个 24h；级推进后按新级重新计时。停留时刻 =
+最后一条 action 的 createdAt（在飞请求上已有 action 都是已完成级），首级回落
+提交时刻。台账 `approval_requests.last_reminder_at/last_reminder_step`（0026，
+expand-only）：盖章先行且带 current_step/status 条件——扫描期间被推进/关闭的
+请求本轮不催，盖章与通知行同一事务。开邮件摘要的人，催办行自动进每日摘要
+（#116 渠道层，digest 拾取 payload 的 detail 事实），无需单独邮件通道。
+
+**worker 侧 levels 读法（不跨 app 依赖的裁法）**：审批内核在 apps/api，worker
+用窄读取 schema 只投影提醒需要的 name/users/roles 三字段——写面的完整校验仍是
+api 的 approvalLevelsSchema 一处收口；读不准的快照跳过并告警（含审批人集合为空：
+配置只点了无人持有的角色是合法配置，但一条没人看得见的提醒是假成功）。
+
+**刻意不做**：审批没有超时拒绝——业务自批（R-16-5）之下没人有权替审批人做决定，
+催办只是把「这儿等着」再递一次。24h 常量目前不进配置面：需要调的人还没有，
+第一个要调的消费域把它抬进审批线配置（expand-only）。
