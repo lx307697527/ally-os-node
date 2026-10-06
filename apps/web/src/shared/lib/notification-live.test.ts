@@ -4,7 +4,7 @@
 // else on the wire changes nothing. Token reads fail soft (null → the client
 // retries), and close() is final.
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { NOTIFICATIONS_CHANGED_EVENT, userChannel } from "@ally/realtime";
+import { NOTIFICATIONS_CHANGED_EVENT, userChannel } from "@ally/realtime/protocol";
 import type { RealtimeWebSocket } from "@ally/realtime-client";
 import { createNotificationLiveChannel, realtimeUrl } from "./notification-live.ts";
 

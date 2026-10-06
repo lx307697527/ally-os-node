@@ -11,7 +11,7 @@
 // Like every lib here, failures never throw: a failed token read is `null`
 // (the client retries on its next connection attempt), and nothing here can
 // reject into the bell's refresh path.
-import { NOTIFICATIONS_CHANGED_EVENT, REALTIME_WS_PATH, userChannel } from "@ally/realtime";
+import { NOTIFICATIONS_CHANGED_EVENT, REALTIME_WS_PATH, userChannel } from "@ally/realtime/protocol";
 import { RealtimeClient, type RealtimeWebSocket } from "@ally/realtime-client";
 import { z } from "zod";
 
