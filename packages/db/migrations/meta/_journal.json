@@ -190,6 +190,13 @@
       "when": 1791317918040,
       "tag": "0026_faulty_thing",
       "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "7",
+      "when": 1791320923904,
+      "tag": "0027_typical_reptil",
+      "breakpoints": true
     }
   ]
 }

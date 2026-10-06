@@ -157,14 +157,19 @@ describe.skipIf(!databaseUrl)("approval reminder scan (#221, integration)", () =
     return must(rows[0]).id;
   }
 
-  /** 已完成级的 action 行（createdAt 即进入下一级的时刻） */
-  async function insertAction(requestId: string, stepIndex: number, ageMs: number): Promise<void> {
+  /** action 行（createdAt 即进入下一级/最近表决的时刻） */
+  async function insertAction(
+    requestId: string,
+    stepIndex: number,
+    ageMs: number,
+    actorId: string = named,
+  ): Promise<void> {
     await db.insert(schema.approvalActions).values({
       requestId,
       stepIndex,
       levelName: stepIndex === 0 ? "lead review" : "final sign-off",
       decision: "approved",
-      actorId: named,
+      actorId,
       createdAt: new Date(Date.now() - ageMs),
     });
   }
@@ -270,6 +275,34 @@ describe.skipIf(!databaseUrl)("approval reminder scan (#221, integration)", () =
 
   it("催办节奏就是 24h 一轮（常量契约，两个语义同一值）", () => {
     expect(APPROVAL_REMIND_AFTER_MS).toBe(24 * HOUR);
+  });
+
+  it("会签级别：已表决的人不再催，提醒只落在没交票的人", async () => {
+    const requestId = await insertRequest({
+      ageMs: 30 * HOUR,
+      levels: [{ name: "unanimous", users: [adminA, adminB], roles: [], mode: "all" }],
+    });
+    // adminA 26h 前交的票：级静默已满 24h，但该催的是还没交票的 adminB
+    await insertAction(requestId, 0, 26 * HOUR, adminA);
+
+    const summary = await runApprovalReminderScan(services());
+    expect(summary.dueRequests).toBe(1);
+    expect(summary.remindersSent).toBe(1);
+    const rows = await reminderRows();
+    expect(rows.map((r) => r.userId)).toEqual([adminB]);
+  });
+
+  it("会签级别全员已表决而请求仍在本级：催无可催，跳过并告警", async () => {
+    const requestId = await insertRequest({
+      ageMs: 30 * HOUR,
+      levels: [{ name: "unanimous", users: [adminA], roles: [], mode: "all" }],
+    });
+    await insertAction(requestId, 0, 26 * HOUR, adminA);
+
+    const summary = await runApprovalReminderScan(services());
+    expect(summary.dueRequests).toBe(0);
+    expect(summary.skippedRequests).toBe(1);
+    expect(await reminderRows()).toHaveLength(0);
   });
 });
 

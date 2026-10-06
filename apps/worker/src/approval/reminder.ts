@@ -36,7 +36,8 @@ export const APPROVAL_REMINDERS_JOB = "approval-reminders";
 /** 本级停满多久开始催；催过之后再隔多久催下一轮（同一个节奏：24h 一轮） */
 export const APPROVAL_REMIND_AFTER_MS = 24 * 60 * 60 * 1000;
 
-/** 提醒的窄读取 schema：只认提醒需要的字段，多余字段不拒（快照由写面负责） */
+/** 提醒的窄读取 schema：只认提醒需要的字段，多余字段（mode/quorum 等）不拒
+ * （快照由写面负责） */
 const reminderLevelSchema = z.object({
   name: z.string(),
   users: z.array(z.string()).default([]),
@@ -137,8 +138,10 @@ export async function runApprovalReminderScan(services: ApprovalReminderServices
   summary.pendingRequests = pendingRows.length;
   if (pendingRows.length === 0) return summary;
 
-  // 在飞请求上已存在的 action 都是已完成级（当前级还没有 action 行）：
-  // max(createdAt) 即进入当前级的时刻，首级没有 action → 回落提交时刻。
+  // 「进入本级/最近进展」时刻：在飞请求上已有的 action 里 max(createdAt)。
+  // any 模式下在飞请求的 action 都是已完成级（当前级还没有行），即进入本级
+  // 的时刻；会签/票签的当前级已有部分表决行，max 即最近一次表决——两种读法
+  // 语义同一：这个级已经静默多久了。首级没有 action → 回落提交时刻。
   // 裸 sql 聚合不走列类型映射，返回 ISO 串——用 new Date 归一（Date 入参也兼容）
   const enteredRows = await db
     .select({
@@ -181,6 +184,29 @@ export async function runApprovalReminderScan(services: ApprovalReminderServices
       );
       continue;
     }
+    // 会签/票签（#221）：本级已同意的人不再催——票已交，等的是没交的人。any
+    // 模式在首票前集合不变（首票即终局，请求离开在飞集）；全员已表决而请求
+    // 仍停在本级 = 推进滞留（审批人集合在飞期间收缩等），催无可催，告警跳过。
+    const actedRows = await db
+      .select({ actorId: schema.approvalActions.actorId })
+      .from(schema.approvalActions)
+      .where(
+        and(
+          eq(schema.approvalActions.requestId, row.id),
+          eq(schema.approvalActions.stepIndex, row.currentStep),
+          eq(schema.approvalActions.decision, "approved"),
+        ),
+      );
+    const acted = new Set(actedRows.map((actedRow) => actedRow.actorId));
+    const waiting = adjudicators.filter((userId) => !acted.has(userId));
+    if (waiting.length === 0) {
+      summary.skippedRequests += 1;
+      services.logger.warn(
+        { requestId: row.id, level: level.name, acted: acted.size },
+        "approval level fully voted but still pending; reminder skipped",
+      );
+      continue;
+    }
 
     // 盖章先行并带 current_step/status 条件：扫描期间请求被推进或关闭 → 本轮
     // 不催（update 匹配 0 行），通知行与台账同一事务，要么都在要么都不在
@@ -198,7 +224,7 @@ export async function runApprovalReminderScan(services: ApprovalReminderServices
         .returning({ id: schema.approvalRequests.id });
       if (updated[0] === undefined) return false;
       await tx.insert(schema.notifications).values(
-        adjudicators.map((userId) => ({
+        waiting.map((userId) => ({
           userId,
           eventType: "approval.reminder",
           aggregateType: "approval_request",
@@ -218,8 +244,8 @@ export async function runApprovalReminderScan(services: ApprovalReminderServices
     });
     if (!stamped) continue;
     summary.dueRequests += 1;
-    summary.remindersSent += adjudicators.length;
-    for (const userId of adjudicators) nudged.add(userId);
+    summary.remindersSent += waiting.length;
+    for (const userId of waiting) nudged.add(userId);
   }
 
   if (nudged.size > 0) {

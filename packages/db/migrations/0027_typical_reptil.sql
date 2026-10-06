@@ -1,0 +1,2 @@
+DROP INDEX "approval_actions_request_step_idx";--> statement-breakpoint
+CREATE UNIQUE INDEX "approval_actions_request_step_actor_idx" ON "approval_actions" USING btree ("request_id","step_index","actor_id");

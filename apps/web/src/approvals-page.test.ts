@@ -74,6 +74,14 @@ describe("approvals page (#221)", () => {
     expect(page).toContain('"Decision recorded."');
     expect(page).toContain("never \"recorded\": this operator's decision did NOT land");
   });
+
+  it("countersign/vote rows show their progress and retire the buttons once voted (#221)", () => {
+    expect(client).toContain("levelMode");
+    expect(client).toContain("viewerAlreadyActed");
+    expect(page).toContain('data-testid="approvals-row-progress"');
+    expect(page).toContain('data-testid="approvals-row-acted"');
+    expect(page).toContain("You have already voted on this level");
+  });
 });
 
 describe("signature dialog (#219 frontend half)", () => {

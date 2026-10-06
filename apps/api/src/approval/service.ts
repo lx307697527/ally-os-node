@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray } from "drizzle-orm";
+import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import { z } from "zod";
 import type { Db } from "@ally/db";
@@ -21,9 +21,10 @@ import { approvalOutcomeHandler } from "./outcomes.ts";
  * - 驳回是终态：请求结束、单据回到发起人（通知落库），修改后重新提交 = 新请求
  *   ——历史逐请求可溯，不改写旧裁决（0014 触发器拒改 action 行）。
  *
- * 并发推进双保险：action 行的 (request_id, step_index) 唯一约束把同级的两个审批人
- * 串行化（输家撞 23505），UPDATE 带 current_step/status 条件的乐观并发控制守住
- * 状态迁移——两个都输的人按冲突拒绝，不覆盖别人的裁决。
+ * 并发推进：请求行锁（FOR UPDATE）串行化同级裁决——会签/票签一级多行，「最后
+ * 一张同意票推进」在锁内数票；any 模式下同级的第二个裁决人经 CAS 抢输按冲突
+ * 拒绝。两类输家同答 409：不覆盖别人的裁决，同一人重复表决同答（「你已表决」
+ * 与「别人先裁了」对客户端是同一个冲突面）。
  */
 
 /** 一级审批的形状（配置保存时 zod 收口，请求提交时整份快照进 levels 列） */
@@ -32,6 +33,14 @@ export interface ApprovalLevel {
   /** 指定人员（uuid）与指定角色的并集是这一级的审批人集合 */
   users: string[];
   roles: Role[];
+  /**
+   * 级别裁决方式（#221 会签/票签）：any = 任一审批人裁决即定级（原行为，旧快照
+   * 无此字段落默认）；all = 会签，当前级审批人集合全员同意才过；quorum = 票签，
+   * 同意数达到 quorum 即过。驳回在任何模式下都是终态。
+   */
+  mode: "any" | "all" | "quorum";
+  /** mode="quorum" 的通过票数（2–50）；其他模式必须缺省（zod refine 收口） */
+  quorum?: number | undefined;
   /** 这级的「同意」是否要求电子签名（驳回不签：回到发起人是内部协作不是监管事实） */
   requireSignature: boolean;
   /** 签名含义（Part 11.50）：审批语境只有复核/批准两值 */
@@ -45,6 +54,8 @@ export const approvalLevelsSchema = z
         name: z.string().trim().min(1).max(100),
         users: z.array(z.uuid()).max(20).default([]),
         roles: z.array(roleSchema).max(14).default([]),
+        mode: z.enum(["any", "all", "quorum"]).default("any"),
+        quorum: z.number().int().min(2).max(50).optional(),
         requireSignature: z.boolean().default(false),
         signatureMeaning: z.enum(["reviewed", "approved"]).default("approved"),
       })
@@ -55,6 +66,12 @@ export const approvalLevelsSchema = z
       // 地板同一裁决——配置直接拒，不在运行时再判一遍）
       .refine((level) => !level.roles.includes("customer"), {
         message: "customer role cannot approve",
+      })
+      .refine((level) => level.mode !== "quorum" || level.quorum !== undefined, {
+        message: "quorum mode needs a quorum count",
+      })
+      .refine((level) => level.mode === "quorum" || level.quorum === undefined, {
+        message: "quorum count only applies to quorum mode",
       }),
   )
   .min(1)
@@ -86,6 +103,41 @@ async function resolveAdjudicatorIds(db: Pick<Db, "select">, level: ApprovalLeve
           .innerJoin(schema.userRole, eq(schema.userRole.userId, schema.authUser.id))
           .where(inArray(schema.userRole.role, eligible));
   return [...new Set([...level.users, ...holders.map((row) => row.id)])];
+}
+
+/**
+ * 一级通过所需的同意数（#221 会签/票签）：any 恒 1；quorum 按配置票数；all 按
+ * **裁决时刻**的审批人集合（点名 ∪ 角色持有者，活集合——角色持有者在飞期间
+ * 变化，以当下事实为准）。快照被外力改歪到 quorum 缺失时给不可能满足的天花板
+ * ——fail closed：写面 refine 已保证不可能，这里是防御性兜底不是正常路径。
+ */
+async function requiredApprovals(db: Pick<Db, "select">, level: ApprovalLevel): Promise<number> {
+  if (level.mode === "quorum") {
+    return level.quorum ?? Number.MAX_SAFE_INTEGER;
+  }
+  if (level.mode === "all") {
+    return (await resolveAdjudicatorIds(db, level)).length;
+  }
+  return 1;
+}
+
+/** 本级已收到的同意数（含本事务刚落的行——同一事务内可见） */
+async function countLevelApprovals(
+  db: Pick<Db, "select">,
+  requestId: string,
+  stepIndex: number,
+): Promise<number> {
+  const counted = await db
+    .select({ n: sql<number>`count(*)::int` })
+    .from(schema.approvalActions)
+    .where(
+      and(
+        eq(schema.approvalActions.requestId, requestId),
+        eq(schema.approvalActions.stepIndex, stepIndex),
+        eq(schema.approvalActions.decision, "approved"),
+      ),
+    );
+  return counted[0]?.n ?? 0;
 }
 
 export interface ApprovalFanoutFact {
@@ -384,6 +436,31 @@ export async function actOnApproval(
   let outcome: ActOutcome;
   try {
     outcome = await db.transaction(async (tx): Promise<ActOutcome> => {
+      // 请求行锁串行化同级裁决（#221 会签/票签）：一级多行之后，「最后一张同意
+      // 票推进」必须在锁内数票——并发表决各数各的票，谁都不满足，级永不推进。
+      // 锁内重读：外层读与拿锁之间世界可能已动——已终态按 request_closed 答
+      // （晚到读终态的同答，不变式是只有一个赢家），级别漂移按并发冲突答
+      // （外层的审批人/签名门是对着旧级检查的，不能拿去裁新级）。any 模式行为
+      // 不变：显式排队替代了原唯一约束的隐式串行化。
+      const locked = await tx
+        .select({
+          status: schema.approvalRequests.status,
+          currentStep: schema.approvalRequests.currentStep,
+        })
+        .from(schema.approvalRequests)
+        .where(eq(schema.approvalRequests.id, request.id))
+        .for("update")
+        .limit(1);
+      const live = locked[0];
+      if (live === undefined) {
+        throw new Error(`approval request ${request.id} vanished inside its own transaction`);
+      }
+      if (live.status !== "pending") {
+        return { status: "rejected", reason: "request_closed" };
+      }
+      if (live.currentStep !== request.currentStep) {
+        throw new ConcurrentConflict();
+      }
       const insertedAction = await tx
         .insert(schema.approvalActions)
         .values({
@@ -394,8 +471,15 @@ export async function actOnApproval(
           ...(note !== undefined && note !== "" ? { note } : {}),
           actorId: cmd.actorId,
         })
-        // 唯一约束先于 CAS 生效：同级的两个审批人在这里被串行化，输家按冲突拒绝
-        .onConflictDoNothing({ target: [schema.approvalActions.requestId, schema.approvalActions.stepIndex] })
+        // 一人一级一裁决：同一人对同级的第二次落行（会签里的双击/重试）在此被
+        // 拒——不是并发赛输，是「你已表决」；与 CAS 抢输同答 409
+        .onConflictDoNothing({
+          target: [
+            schema.approvalActions.requestId,
+            schema.approvalActions.stepIndex,
+            schema.approvalActions.actorId,
+          ],
+        })
         .returning({ id: schema.approvalActions.id });
       const action = insertedAction[0];
       if (action === undefined) {
@@ -424,28 +508,39 @@ export async function actOnApproval(
           throw new CeremonyRejected(sign.reason);
         }
       }
-      // 乐观并发推进：非末级同意 = 进入下一级；末级同意或任何驳回 = 终态
-      // （驳回后单据回到发起人，重新提交 = 新请求）
+      // 通过判定（#221 会签/票签）：同意数 ≥ 所需数才动状态；驳回在任何模式下
+      // 都是终态。未凑齐的同意照常落行、落审计，请求停在本级等剩余裁决人。
       const isLastStep = request.currentStep >= parsed.levels.length - 1;
+      let approvedCount = 0;
+      let neededApprovals = 1;
+      if (cmd.decision === "approved") {
+        neededApprovals = await requiredApprovals(tx, level);
+        approvedCount = await countLevelApprovals(tx, request.id, request.currentStep);
+      }
+      const satisfied = cmd.decision === "approved" && approvedCount >= neededApprovals;
       const nextStatus: "pending" | "approved" | "rejected" =
-        cmd.decision === "rejected" ? "rejected" : isLastStep ? "approved" : "pending";
-      const advanced = await tx
-        .update(schema.approvalRequests)
-        .set(
-          nextStatus === "pending"
-            ? { currentStep: request.currentStep + 1 }
-            : { status: nextStatus, completedAt: new Date() },
-        )
-        .where(
-          and(
-            eq(schema.approvalRequests.id, request.id),
-            eq(schema.approvalRequests.currentStep, request.currentStep),
-            eq(schema.approvalRequests.status, "pending"),
-          ),
-        )
-        .returning({ id: schema.approvalRequests.id });
-      if (advanced[0] === undefined) {
-        throw new ConcurrentConflict();
+        cmd.decision === "rejected" ? "rejected" : satisfied ? (isLastStep ? "approved" : "pending") : "pending";
+      // 推进/终态才写请求行：未凑齐本级原地不动（行锁已保证数票无竞态，CAS
+      // 条件保留作纵深防御）。驳回后单据回到发起人，重新提交 = 新请求。
+      if (cmd.decision === "rejected" || satisfied) {
+        const advanced = await tx
+          .update(schema.approvalRequests)
+          .set(
+            nextStatus === "pending"
+              ? { currentStep: request.currentStep + 1 }
+              : { status: nextStatus, completedAt: new Date() },
+          )
+          .where(
+            and(
+              eq(schema.approvalRequests.id, request.id),
+              eq(schema.approvalRequests.currentStep, request.currentStep),
+              eq(schema.approvalRequests.status, "pending"),
+            ),
+          )
+          .returning({ id: schema.approvalRequests.id });
+        if (advanced[0] === undefined) {
+          throw new ConcurrentConflict();
+        }
       }
       // 批准即生效（#221 切片 2）：终审批准的同一事务里调用属主域 outcome 处理器
       // （角色生效、折扣放开……）——业务效果与裁决要么全成要么全不算。处理器抛错
@@ -480,14 +575,19 @@ export async function actOnApproval(
           stepIndex: request.currentStep,
           level: level.name,
           decision: cmd.decision,
+          mode: level.mode,
+          ...(cmd.decision === "approved"
+            ? { approvedCount, neededApprovals, levelSatisfied: satisfied }
+            : {}),
           ...(note !== undefined && note !== "" ? { note } : {}),
           ...(needsSignature ? { signatureMeaning: level.signatureMeaning } : {}),
         },
       });
-      // 推进扇出（#221 多级通知扇出）：非末级同意 = 轮到下一级，下一级审批人
-      // 的通知与推进同一事务（推进回滚 = 通知不存在）；动作方自己不报信——
-      // 他可能是下一级点名的审批人（多角色兼任），铃铛里不该有自己批给自己的信
-      if (nextStatus === "pending") {
+      // 推进扇出（#221 多级通知扇出）：凑齐本级且非末级 = 轮到下一级，下一级
+      // 审批人的通知与推进同一事务（推进回滚 = 通知不存在）；动作方自己不报信。
+      // 未凑齐的本级不加信——剩余裁决人的 approval.pending 已在提交时落行，
+      // 停滞由催办说话，不逐票刷屏
+      if (cmd.decision === "approved" && satisfied && !isLastStep) {
         const nextLevel = parsed.levels[request.currentStep + 1];
         if (nextLevel === undefined) {
           throw new Error(`approval request ${request.id} next step out of range`);
@@ -532,7 +632,10 @@ export async function actOnApproval(
         actionId: action.id,
         decision: cmd.decision,
         requestStatus: nextStatus,
-        currentStep: nextStatus === "pending" ? request.currentStep + 1 : request.currentStep,
+        currentStep:
+          cmd.decision === "approved" && satisfied && !isLastStep
+            ? request.currentStep + 1
+            : request.currentStep,
       };
     });
   } catch (err) {
@@ -695,13 +798,22 @@ export interface ApprovalTodoRow {
    *  422 signature_required 仍是服务端底线，不是 UI 的发现路径 */
   requireSignature: boolean;
   signatureMeaning: Extract<EsignMeaning, "reviewed" | "approved">;
+  /** 级别裁决方式（#221 会签/票签）：any 任一即过 / all 会签 / quorum 票签 */
+  levelMode: "any" | "all" | "quorum";
+  /** 本级已收到的同意数（会签/票签的进度面；any 模式在首票前恒 0） */
+  approvedCount: number;
+  /** 本级通过所需同意数（any=1、all=裁决时刻审批人集合、quorum=配置票数） */
+  neededApprovals: number;
+  /** 本人已在当前级表决（会签/票签下等同伴；再裁同答 409——UI 据此收起裁决钮） */
+  viewerAlreadyActed: boolean;
 }
 
 /**
  * 「待我审批」（#232 §11 我的工作台的内核读法）：在飞请求里当前级点名我、或
  * 我的角色命中配置角色。角色匹配在内存里做——在飞请求是稀疏集（部分唯一索引
  * 保证），扫描便宜；不做单据可见性过滤：配置点名即授权，单据可见性是属主域
- * 在详情门里的事。
+ * 在详情门里的事。会签/票签行带进度与本人表决态：凑没凑齐、还差谁，行自己
+ * 说清楚（已表决的人不再亮裁决钮，而不是让他去撞 409 才知道）。
  */
 export async function approvalTodo(
   db: Db,
@@ -728,30 +840,53 @@ export async function approvalTodo(
     .where(eq(schema.approvalRequests.status, "pending"))
     .orderBy(asc(schema.approvalRequests.createdAt))
     .limit(limit);
-  return rows.flatMap((row) => {
+  const pendingIds = rows.map((row) => row.requestId);
+  // 本级裁决行的批量投影：同意计数与「我表决过没有」都在内存里对着当前级算
+  // （在飞请求稀疏，action 行更少——一次查询，不逐行问库）
+  const actionRows =
+    pendingIds.length === 0
+      ? []
+      : await db
+          .select({
+            requestId: schema.approvalActions.requestId,
+            stepIndex: schema.approvalActions.stepIndex,
+            actorId: schema.approvalActions.actorId,
+            decision: schema.approvalActions.decision,
+          })
+          .from(schema.approvalActions)
+          .where(inArray(schema.approvalActions.requestId, pendingIds));
+  const result: ApprovalTodoRow[] = [];
+  for (const row of rows) {
     const parsed = parseApprovalLevels(row.levels);
     const level = parsed.ok ? parsed.levels[row.currentStep] : undefined;
-    if (level === undefined) return [];
+    if (level === undefined) continue;
     const mine =
       level.users.includes(viewer.id) || level.roles.some((role) => viewer.roles.includes(role));
-    if (!mine) return [];
-    return [
-      {
-        requestId: row.requestId,
-        configKey: row.configKey,
-        configName: row.configName,
-        subjectType: row.subjectType,
-        subjectId: row.subjectId,
-        stepIndex: row.currentStep,
-        levelName: level.name,
-        submittedBy: row.submittedBy,
-        submittedAt: row.createdAt,
-        payload: row.payload ?? null,
-        requireSignature: level.requireSignature,
-        signatureMeaning: level.signatureMeaning,
-      },
-    ];
-  });
+    if (!mine) continue;
+    const levelActions = actionRows.filter(
+      (actionRow) => actionRow.requestId === row.requestId && actionRow.stepIndex === row.currentStep,
+    );
+    const approvedCount = levelActions.filter((actionRow) => actionRow.decision === "approved").length;
+    result.push({
+      requestId: row.requestId,
+      configKey: row.configKey,
+      configName: row.configName,
+      subjectType: row.subjectType,
+      subjectId: row.subjectId,
+      stepIndex: row.currentStep,
+      levelName: level.name,
+      submittedBy: row.submittedBy,
+      submittedAt: row.createdAt,
+      payload: row.payload ?? null,
+      requireSignature: level.requireSignature,
+      signatureMeaning: level.signatureMeaning,
+      levelMode: level.mode,
+      approvedCount,
+      neededApprovals: await requiredApprovals(db, level),
+      viewerAlreadyActed: levelActions.some((actionRow) => actionRow.actorId === viewer.id),
+    });
+  }
+  return result;
 }
 
 // ── esign 接缝（approval_action 作为可签名 subject）─────────────────────────
