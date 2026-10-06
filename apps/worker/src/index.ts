@@ -4,6 +4,7 @@ import { createMailer } from "@ally/mailer";
 import { PgBoss } from "pg-boss";
 import pino from "pino";
 import { automationJobs } from "./automations/index.ts";
+import { approvalJobs } from "./approval/index.ts";
 import { jobs } from "./jobs/index.ts";
 import { notificationsJobs } from "./notifications/index.ts";
 import { rulesJobs } from "./rules/index.ts";
@@ -45,6 +46,7 @@ await registerJobs(
   [
     ...jobs,
     ...automationJobs({ db, pool, boss, logger }),
+    ...approvalJobs({ db, pool, logger }),
     ...rulesJobs({ db, pool, logger }),
     ...notificationsJobs({ db, mailer, webAppUrl: env.WEB_APP_URL, logger }),
   ],

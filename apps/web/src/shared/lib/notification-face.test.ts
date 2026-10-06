@@ -118,8 +118,75 @@ describe("describeNotification (白名单类型：文案与深链在 TS 不在�
     expect(noActor.detail).toBe("");
   });
 
+  it("approval.pending：谁提交的、哪条线哪一级，去处是待办页（裁决发生地）", () => {
+    const face = describeNotification(
+      row({
+        eventType: "approval.pending",
+        aggregateType: "approval_request",
+        aggregateId: "req-1",
+        payload: {
+          configName: "Discount line",
+          configKey: "discount",
+          levelName: "lead review",
+          actorName: "Alice",
+        },
+      }),
+    );
+    expect(face.title).toBe("Alice sent Discount line for your approval");
+    expect(face.detail).toBe("lead review");
+    expect(face.href).toBe("/approvals");
+  });
+
+  it("approval.reminder：本级停满 24h 的催办，事实带等待时长", () => {
+    const face = describeNotification(
+      row({
+        eventType: "approval.reminder",
+        payload: {
+          configName: "Discount line",
+          levelName: "final sign-off",
+          waitingHours: 27,
+          detail: "Discount line · final sign-off",
+        },
+      }),
+    );
+    expect(face.title).toBe("Still waiting: Discount line needs a decision");
+    expect(face.detail).toBe("Discount line · final sign-off");
+    expect(face.href).toBe("/approvals");
+  });
+
+  it("审批事实缺位不撒谎：没有 configName 用泛称，没有 levelName 用 detail 兜底", () => {
+    const noConfig = describeNotification(row({ eventType: "approval.pending", payload: { actorName: "Alice" } }));
+    expect(noConfig.title).toBe("Alice sent a request for your approval");
+    expect(noConfig.detail).toBe("");
+    const noLevel = describeNotification(
+      row({ eventType: "approval.pending", payload: { detail: "Discount line · lead review" } }),
+    );
+    expect(noLevel.detail).toBe("Discount line · lead review");
+    const noHours = describeNotification(row({ eventType: "approval.reminder", payload: { levelName: "L1" } }));
+    expect(noHours.detail).toBe("L1");
+    expect(noHours.title).toBe("Still waiting: an approval needs a decision");
+  });
+
+  it("approval.completed / rejected 不在白名单：终态还没有承载页，兜底面亮类型 + detail 事实", () => {
+    for (const eventType of ["approval.completed", "approval.rejected"]) {
+      expect(NOTIFIED_EVENT_TYPES).not.toContain(eventType);
+      const face = describeNotification(
+        row({ eventType, payload: { configName: "Discount line", actorName: "Carol", detail: "Discount line" } }),
+      );
+      expect(face.title).toBe(eventType);
+      expect(face.detail).toBe("Discount line");
+      expect(face.href).toBeNull();
+    }
+  });
+
   it("白名单就是铃铛认得的全部：新生产者必须先进这张表", () => {
-    expect(NOTIFIED_EVENT_TYPES).toEqual(["task.assigned", "comment.mentioned", "comment.created"]);
+    expect(NOTIFIED_EVENT_TYPES).toEqual([
+      "task.assigned",
+      "comment.mentioned",
+      "comment.created",
+      "approval.pending",
+      "approval.reminder",
+    ]);
   });
 });
 

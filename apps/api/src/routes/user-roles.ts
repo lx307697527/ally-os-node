@@ -31,7 +31,13 @@ import type { AuthzStore } from "../authz/service.ts";
  *   缺位而放开）。
  * - 无变化的操作（已持有再授 / 本就没持有再撤）不进审批——没有可确认的变更。
  */
-export function userRolesRoutes(deps: { db: Db; authzStore: AuthzStore; logger: Logger }) {
+export function userRolesRoutes(deps: {
+  db: Db;
+  authzStore: AuthzStore;
+  logger: Logger;
+  /** 审批进线的实时「催」(#221 多级扇出)：202 建请求后让首级审批人的铃铛立刻重读 */
+  notifyUsers: (userIds: string[]) => Promise<void>;
+}) {
   const app = new Hono<AppEnv>();
 
   // 三个端点同属团队管理（#144 并入范围：「团队管理仅管理员可做」）；
@@ -90,13 +96,17 @@ export function userRolesRoutes(deps: { db: Db; authzStore: AuthzStore; logger: 
       );
       return c.json({ error: "forbidden", code: "owner_approval_required" }, 403);
     }
-    const outcome = await submitApprovalRequest(deps.db, {
-      subjectType: ROLE_APPROVAL_SUBJECT_TYPE,
-      subjectId: userId,
-      configKey: route.configKey,
-      submitterId: c.get("user").id,
-      payload: { action: "grant", role },
-    });
+    const outcome = await submitApprovalRequest(
+      deps.db,
+      {
+        subjectType: ROLE_APPROVAL_SUBJECT_TYPE,
+        subjectId: userId,
+        configKey: route.configKey,
+        submitterId: c.get("user").id,
+        payload: { action: "grant", role },
+      },
+      { notifyUsers: deps.notifyUsers },
+    );
     return approvalOutcomeResponse(c, deps, c.get("user").id, outcome, { role, granted: false }, "role grant");
   });
 
@@ -140,13 +150,17 @@ export function userRolesRoutes(deps: { db: Db; authzStore: AuthzStore; logger: 
       );
       return c.json({ error: "forbidden", code: "owner_approval_required" }, 403);
     }
-    const outcome = await submitApprovalRequest(deps.db, {
-      subjectType: ROLE_APPROVAL_SUBJECT_TYPE,
-      subjectId: userId,
-      configKey: route.configKey,
-      submitterId: c.get("user").id,
-      payload: { action: "revoke", role },
-    });
+    const outcome = await submitApprovalRequest(
+      deps.db,
+      {
+        subjectType: ROLE_APPROVAL_SUBJECT_TYPE,
+        subjectId: userId,
+        configKey: route.configKey,
+        submitterId: c.get("user").id,
+        payload: { action: "revoke", role },
+      },
+      { notifyUsers: deps.notifyUsers },
+    );
     return approvalOutcomeResponse(c, deps, c.get("user").id, outcome, { role, revoked: false }, "role revoke");
   });
 

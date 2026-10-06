@@ -24,6 +24,12 @@ export const NOTIFIED_EVENT_TYPES: readonly string[] = [
   "task.assigned",
   "comment.mentioned",
   "comment.created",
+  // 审批扇出与催办（#221）：去处是待办页——裁决就在那里发生。
+  // approval.completed / approval.rejected 刻意不在白名单：终态还没有承载页
+  // （「我发起的审批」随 phase-2 属主域进场），兜底面亮事件类型 + payload 的
+  // detail 事实、去处 null 是诚实的占位；有了承载页再进来。
+  "approval.pending",
+  "approval.reminder",
 ];
 
 /** API summary 的一行（zod 校验后的形状，camelCase）。 */
@@ -64,6 +70,12 @@ function actorOf(payload: Record<string, unknown>): string {
   return stringField(payload, "actorName") ?? "Someone";
 }
 
+/** 催办事实里的等待时长（小时，服务端落库时的整数）；缺了不硬凑 */
+function hoursWaiting(payload: Record<string, unknown>): string | null {
+  const hours = payload.waitingHours;
+  return typeof hours === "number" && Number.isFinite(hours) ? `${String(hours)}h waiting` : null;
+}
+
 /** 任务详情页的深链：聚合指向任务，带 comment 参数时落到那条评论上。 */
 function taskHref(aggregateId: string | null, commentId: string | null): string | null {
   if (aggregateId === null) return null;
@@ -90,6 +102,29 @@ export function describeNotification(row: NotificationRow): NotificationFace {
         title: `${actorOf(row.payload)} commented on a task you follow`,
         detail: stringField(row.payload, "excerpt") ?? stringField(row.payload, "taskTitle") ?? "",
         href: taskHref(row.aggregateId, stringField(row.payload, "commentId")),
+      };
+    case "approval.pending":
+      // 审批扇出（#221）：轮到你裁了。去处是待办页（裁决的发生地），不是详情——
+      // 裁决人不必先过单据可见性门，详情门在页面里各自说话
+      return {
+        title: `${actorOf(row.payload)} sent ${
+          stringField(row.payload, "configName") ?? "a request"
+        } for your approval`,
+        detail: stringField(row.payload, "levelName") ?? stringField(row.payload, "detail") ?? "",
+        href: "/approvals",
+      };
+    case "approval.reminder":
+      // 催办（#221）：本级停满 24h 没人裁，事实里带等了多少小时
+      return {
+        title: `Still waiting: ${
+          stringField(row.payload, "configName") ?? "an approval"
+        } needs a decision`,
+        detail:
+          stringField(row.payload, "detail") ??
+          [stringField(row.payload, "levelName"), hoursWaiting(row.payload)]
+            .filter((part): part is string => part !== null)
+            .join(" · "),
+        href: "/approvals",
       };
     default:
       return {
