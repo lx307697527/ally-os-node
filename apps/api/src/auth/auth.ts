@@ -6,8 +6,8 @@ import { and, eq, gt } from "drizzle-orm";
 import type { Db } from "@ally/db";
 import { schema } from "@ally/db";
 import type { Logger } from "pino";
-import type { Mailer } from "../mailer/mailer.ts";
-import { renderPasswordResetEmail, renderVerificationEmail } from "../mailer/mailer.ts";
+import type { Mailer } from "@ally/mailer";
+import { renderPasswordResetEmail, renderVerificationEmail } from "@ally/mailer";
 import { verifyLegacyPassword } from "./legacy-password.ts";
 import type { ResolveSession } from "./session.ts";
 

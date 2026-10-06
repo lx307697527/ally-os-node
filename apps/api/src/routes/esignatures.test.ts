@@ -9,7 +9,7 @@ import { SUBJECT_LOADERS } from "../subjects/registry.ts";
 import { createApp } from "../app.ts";
 import { createAuth, createSessionResolver } from "../auth/auth.ts";
 import { createAuthzStore } from "../authz/service.ts";
-import type { MailMessage } from "../mailer/mailer.ts";
+import type { MailMessage } from "@ally/mailer";
 
 // 集成测试（#219 验收：密码/2FA 拒签、签名后拒改、审计可查、离线补同步）。
 // 真实 Better Auth（密码哈希、TOTP）+ 真实 PostgreSQL；未设 DATABASE_URL 跳过。

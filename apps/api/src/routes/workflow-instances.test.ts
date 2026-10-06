@@ -7,7 +7,7 @@ import { createDb, runMigrations, schema } from "@ally/db";
 import { createApp } from "../app.ts";
 import { createAuth, createSessionResolver } from "../auth/auth.ts";
 import { createAuthzStore } from "../authz/service.ts";
-import type { MailMessage } from "../mailer/mailer.ts";
+import type { MailMessage } from "@ally/mailer";
 import { SUBJECT_LOADERS } from "../subjects/registry.ts";
 import { registerActionBlock, registerConditionBlock } from "../workflow/blocks.ts";
 import { registerWorkflowSubject } from "../workflow/registry.ts";

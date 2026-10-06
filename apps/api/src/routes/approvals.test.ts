@@ -12,7 +12,7 @@ import { startWorkflow } from "../workflow/service.ts";
 import { createApp } from "../app.ts";
 import { createAuth, createSessionResolver } from "../auth/auth.ts";
 import { createAuthzStore } from "../authz/service.ts";
-import type { MailMessage } from "../mailer/mailer.ts";
+import type { MailMessage } from "@ally/mailer";
 
 // 集成测试（#221 验收：满足条件的单据不批不放行、多级按序流转驳回回发起人、
 // 审批记录审计可查）。真实 Better Auth（密码哈希、TOTP）+ 真实 PostgreSQL；

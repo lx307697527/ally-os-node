@@ -8,7 +8,7 @@ import { createAuth, createSessionResolver } from "../auth/auth.ts";
 import { ROLE_APPROVAL_CONFIG_KEY, ROLE_APPROVAL_SUBJECT_TYPE } from "../authz/role-approval.ts";
 import { createAuthzStore } from "../authz/service.ts";
 import type { Role } from "../authz/permissions.ts";
-import type { MailMessage } from "../mailer/mailer.ts";
+import type { MailMessage } from "@ally/mailer";
 
 // 集成测试：需要真实 PostgreSQL（角色管理端点写 user_role + audit_events，R-16-6
 // 审批路径写 approval_*）。未设 DATABASE_URL 跳过。

@@ -6,7 +6,7 @@ import { createDb, runMigrations, schema } from "@ally/db";
 import { recordAudit } from "../audit/audit-log.ts";
 import { createApp } from "../app.ts";
 import { createAuth, createSessionResolver } from "../auth/auth.ts";
-import type { MailMessage } from "../mailer/mailer.ts";
+import type { MailMessage } from "@ally/mailer";
 import { createAuthzStore } from "../authz/service.ts";
 import { AUDIT_PAGE_MAX } from "./audit-events.ts";
 
