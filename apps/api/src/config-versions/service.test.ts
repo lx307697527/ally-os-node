@@ -19,12 +19,12 @@ describe("topLevelChanges", () => {
   it("summarizes top-level field drift as from/to pairs", () => {
     expect(
       topLevelChanges(
-        { name: "old", trigger: { action: "a" }, enabled: true },
-        { name: "new", trigger: { action: "b" }, enabled: true },
+        { name: "old", trigger: { kind: "event", action: "a" }, enabled: true },
+        { name: "new", trigger: { kind: "event", action: "b" }, enabled: true },
       ),
     ).toEqual({
       name: { from: "old", to: "new" },
-      trigger: { from: { action: "a" }, to: { action: "b" } },
+      trigger: { from: { kind: "event", action: "a" }, to: { kind: "event", action: "b" } },
     });
   });
 

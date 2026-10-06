@@ -21,12 +21,28 @@ pg_cron + pg_net 定时任务里（#32）：逻辑分散在 887 个迁移文件�
 | 执行器 | `apps/worker/src/automations/runner.ts` + `actions.ts` | `automation-run` 任务：顺序执行动作，**每动作一个事务 + run 行 SELECT … FOR UPDATE**（并发处理器在行锁上排队，动作不双跑）；动作失败不终结 run——进度带外写回后向上抛，pg-boss 重试 3 次（60s 指数退避）每次告警，重试只补失败的那个动作（action_results 是幂等闸：动作行存在 ⟺ 该动作已提交） |
 | 审计 | `docs/audit.md` 词表 | `automations.rule_created` / `rule_updated` / `rule_deleted`（配置面生命周期）。规则的**执行**不进审计——进 automation_runs；动作产物进各自域的词表（如 `task.created`，actor 带 `automation:<runId>` 前缀、detail.via = automation） |
 
+## 已落地：due 触发（#224 切片 2，「日期字段 × 偏移」+ 独立到期扫描器）
+
+| 部分 | 位置 | 说明 |
+| --- | --- | --- |
+| 触发形状 | `packages/automations/src/index.ts` | trigger 起为判别联合（`kind` 区分）：`event`（切片 1，审计 action 命中）与 `due`（`subjectType` + `anchorField` + `direction` before/after + `offsetMinutes` 5..129600，即「锚点日期前/后 N 分钟」，Odoo 的 based-on-date-field 触发）。两种触发同表同动作同执行日志，差别只在「谁发现它该跑了」。切片 1 的无 kind 旧形状不再收（规则是上线前数据，不留双形状） |
+| due subject 注册表 | `apps/worker/src/automations/due-registry.ts` | 「哪张表、哪个日期列找到期时刻」只有属主域知道——与可签名 subject、评论可见性门同一裁法：内核接缝 + 属主域注册。`anchorFields` 是声明式白名单。第一个成员 **task（锚点 dueAt）**：只扫 open 任务、排除自动化自建任务（防环）。预约/会议（#207）进场时注册自己的成员 |
+| 到期扫描器 | `apps/worker/src/automations/due-scanner.ts` | `automation-due-scan` 任务（每分钟）：due 触发的启用规则 × 「锚点 ± 偏移落在 [now-90s, now] 带」的 subject 行 → 条件求值（语境 = 注册方投影的行字段，包一层 `dueEventContext`，与审计事件同形状）→ 插 run 行（同唯一约束去重、同 `automation-run` 执行器）。fail closed：spec 坏 / subject 未注册 / 字段未声明 = 跳过并告警，不拖垮扫描 |
+| 防环 | `apps/worker/src/automations/actions.ts` + due-registry | 自动化 `create_task` 产出的任务附着在规则行上（`subject_type='automation_rule'`，观测面「这条规则 spawn 过哪些任务」同源），task 成员不扫这类任务——「due 触发 → create_task(dueInHours)」若不设防会每 ≥5 分钟自增一条任务；同规则与跨规则链式自触发一并挡住，人工建的任务入口不受影响 |
+
+### due 触发的关键裁决
+
+- **(规则, 行) 一次性**：去重键 = `(rule_id, source_event_id)`（source_event_id = subject 行 id）。到期提醒对一条任务只响一次；**锚点改期不重报**（要支持需把锚点值纳入去重键，等真实域需求进场再议）。
+- **不追停摆缺口**：到期时刻落在扫描带（90 秒）之外的不补——停摆期间错过的到期，恢复后不补发（与事件扫描器同一裁决；现在没有生产规则，追平机制是空转的复杂度）。
+- **语境不写审计**：`task.due` 这类合成语境只活在 run 行与条件求值里——「到期时刻到了」不是一次业务变更（docs/audit.md 的纪律），执行日志在 automation_runs。
+- **纯 wall-clock 触发刻意不做**：「每周一 9 点建盘点任务」这类无记录锚点的定时需求，归属是域定时任务（#32 对照表逐域登记 pg-boss cron）与 #225 Superset 的定时报表——自动化规则没有记录语境时条件无事可做，做了只是第二套 cron。等出现真实的无记录周期需求再议。
+
 ## 关键裁决
 
-- **触发统一为「审计事件 action 精确命中」**：新建（`task.created`）、字段变化
-  （域事件 detail 带 from/to，条件对 `detail.to` 断言）、进入阶段
-  （`workflow.state_changed` + 条件 `detail.to`）在切片 1 是同一种触发；定时与
-  相对时间触发（预约前 N 小时）是独立的扫描器形态，随后续切片进场。
+- **触发统一为「审计事件 action 精确命中」（event）/「日期字段 × 偏移」（due，
+  切片 2）**：新建（`task.created`）、字段变化（域事件 detail 带 from/to，条件对
+  `detail.to` 断言）、进入阶段（`workflow.state_changed` + 条件 `detail.to`）在
+  event 触发下是同一种触发；due 触发见上节。
 - **事件源 = 审计流（#29 audit_events）**：审计流是「一次业务变更一行」的既成
   事实（活动流 #264 是它的第二个读者，自动化是第三个），不为自动化再造事件
   总线。含义：**域逻辑要触发自动化，就必须写审计**——这本来就是 docs/audit.md
@@ -49,21 +65,24 @@ pg_cron + pg_net 定时任务里（#32）：逻辑分散在 887 个迁移文件�
 ## 验收对照（#224）
 
 - [ ] #134 中需要移到应用层的逻辑都用规则实现，并有测试 —— **后续切片**（逐域
-      迁移；触发/条件/动作的形状已备好，相对时间触发待进场）
+      迁移；event/due 两种触发、条件、动作的形状已备好，预约 #207 进场时注册
+      due subject 即得「会前 N 小时提醒」）
 - [x] 每条规则的执行记录可在后台查看（runs 读面 + automation_runs 全量留痕），
       失败会重试（pg-boss 3 次指数退避）并告警（每次失败尝试都进 runner.ts 的
       告警通道；重试耗尽由扫描器终判 failed）
 - [x] 不改代码即可新增一条「进入阶段 → 建任务 + 发通知」的规则并生效（API 建
       规则 → `workflow.state_changed` + 条件 `detail.to` → 扫描命中 → 建任务 +
-      双通知，worker 测试端到端覆盖）
+      双通知，worker 测试端到端覆盖）；due 触发同理（「任务到期前 1 小时 →
+      通知」，due-scanner.test.ts 端到端覆盖）
 
 ## 剩余项（#224 保持 open）
 
-1. 定时与相对时间触发（预约前 N 小时）——扫描器加「日期字段 × 偏移」形态
-2. 动作类型扩展：发邮件/事务短信（随 #116 统一通道）、改字段、报名序列、
+1. 动作类型扩展：发邮件/事务短信（随 #116 统一通道）、改字段、报名序列、
    AI 步骤、webhook
-3. 条件积木复用 workflow 的注册表形态（跨对象条件、自定义字段条件——
+2. 条件积木复用 workflow 的注册表形态（跨对象条件、自定义字段条件——
    custom_field_values 按字段键查询已备好）
-4. 规则效果度量（触发/例外/越过计数，§4.8 周报）与 #233 规则注册表的接驳
-5. #226 配置版本化：台账与草稿发布已进场（每次真实变更记一版、可回滚、可存
+3. 规则效果度量（触发/例外/越过计数，§4.8 周报）与 #233 规则注册表的接驳
+4. #226 配置版本化：台账与草稿发布已进场（每次真实变更记一版、可回滚、可存
    草稿一键发布，见 docs/config-versions.md）；规则配置 UI（配置工作室）仍在后头
+5. due 触发的后续深化（等真实域需求）：锚点改期重报、通知收件人按行字段
+   解析（如「提醒经办人」）、更多域注册 due subject
