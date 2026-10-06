@@ -1,0 +1,739 @@
+import { randomUUID } from "node:crypto";
+import { symmetricDecrypt } from "better-auth/crypto";
+import { and, eq, sql } from "drizzle-orm";
+import pino from "pino";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { createDb, runMigrations, schema } from "@ally/db";
+import { SUBJECT_LOADERS } from "../subjects/registry.ts";
+import { registerWorkflowSubject } from "../workflow/registry.ts";
+import { startWorkflow } from "../workflow/service.ts";
+import { createApp } from "../app.ts";
+import { createAuth, createSessionResolver } from "../auth/auth.ts";
+import { createAuthzStore } from "../authz/service.ts";
+import type { MailMessage } from "../mailer/mailer.ts";
+
+// 集成测试（#221 验收：满足条件的单据不批不放行、多级按序流转驳回回发起人、
+// 审批记录审计可查）。真实 Better Auth（密码哈希、TOTP）+ 真实 PostgreSQL；
+// 未设 DATABASE_URL 跳过。
+//
+// 本文件用**独立的临时库**（每次运行新建、跑完 drop）：断言审计行与通知行的
+// 精确数量，共享库上并行文件的 TRUNCATE 会让它随机红（纪律见 docs/audit.md
+// 「测试清库的唯一通道」）。
+const databaseUrl = process.env.DATABASE_URL;
+
+const logger = pino({ level: "silent" });
+const SECRET = "test-secret-0123456789abcdef0123456789abcdef";
+const PASSWORD = "correct-horse-battery";
+
+function must<T>(value: T | undefined | null): T {
+  if (value === undefined || value === null) throw new Error("unexpected missing value in test");
+  return value;
+}
+
+function spyMailer() {
+  const sent: MailMessage[] = [];
+  return {
+    sent,
+    async send(message: MailMessage): Promise<void> {
+      await Promise.resolve();
+      sent.push(message);
+    },
+  };
+}
+
+// 夹具单据域：无表，存在性与可见者集合都在内存里（审批内核对单据域的唯一
+// 依赖是可见性门 subjects/registry.ts——与生产属主域同一扇门）。同时注册进
+// 可挂流程注册表：门槛积木测试要从这条单据起步一个流程实例。
+const docs = new Map<string, { title: string; viewerIds: string[] }>();
+const userNameById = new Map<string, string>();
+
+SUBJECT_LOADERS["approval-doc"] = (_db, subjectId) => {
+  const doc = docs.get(subjectId);
+  if (doc === undefined) return Promise.resolve(null);
+  return Promise.resolve({
+    id: subjectId,
+    title: doc.title,
+    viewers: doc.viewerIds.map((id) => ({ id, name: userNameById.get(id) ?? id })),
+  });
+};
+
+registerWorkflowSubject("approval-doc", {
+  load: (_db, subjectId) => Promise.resolve(docs.has(subjectId) ? { productType: null } : null),
+});
+
+describe.skipIf(!databaseUrl)("approvals route (#221, integration)", () => {
+  // 管理连接连 maintenance 库建删临时库；测试连接指向本文件专属临时库
+  const dbName = `approvals_test_${String(Date.now())}_${String(process.pid)}`;
+  const admin = createDb(adminUrl(databaseUrl));
+  const scopedUrl =
+    databaseUrl === undefined
+      ? ""
+      : (() => {
+          const url = new URL(databaseUrl);
+          url.pathname = `/${dbName}`;
+          return url.toString();
+        })();
+  const { db, pool } = createDb(scopedUrl);
+
+  const mailer = spyMailer();
+  const auth = createAuth({
+    db,
+    secret: SECRET,
+    trustedOrigins: ["http://localhost:5173"],
+    baseURL: undefined,
+    webAppUrl: "https://admin.example",
+    googleOAuth: undefined,
+    mailer,
+    logger,
+  });
+  const app = createApp({
+    logger,
+    db,
+    corsOrigins: ["http://localhost:5173"],
+    checkDatabase: async () => {
+      await pool.query("select 1");
+    },
+    authHandler: (request) => auth.handler(request),
+    resolveSession: createSessionResolver(auth),
+    socialProviders: [],
+    authzStore: createAuthzStore(db),
+    notifyUsers: async () => {},
+  });
+
+  // owner（配置管理 + 审计读法 + 流程模板，无需 2FA：强制门只盯 admin）/
+  // alice（发起人）/ bob、carol（点名审批人）/ dave（sales_lead 角色审批人）/
+  // erin（签名审批人，绑 2FA）/ mallory（无角色无权限）
+  let ownerId: string;
+  let aliceId: string;
+  let bobId: string;
+  let carolId: string;
+  let daveId: string;
+  let erinId: string;
+  let malloryId: string;
+  const session = new Map<string, string>();
+  const emails = new Map<string, string>();
+
+  beforeAll(async () => {
+    if (!databaseUrl) throw new Error("unreachable: suite is skipped without DATABASE_URL");
+    await admin.pool.query(`create database "${dbName}"`);
+    await runMigrations(db);
+    ownerId = (await makeUser("owner")).userId;
+    aliceId = (await makeUser("alice")).userId;
+    bobId = (await makeUser("bob")).userId;
+    carolId = (await makeUser("carol")).userId;
+    daveId = (await makeUser("dave")).userId;
+    erinId = (await makeUser("erin")).userId;
+    malloryId = (await makeUser("mallory")).userId;
+    await db.insert(schema.userRole).values([
+      { userId: ownerId, role: "owner" },
+      { userId: daveId, role: "sales_lead" },
+    ]);
+    // erin 绑 2FA（要求签名的级别：Part 11 的签名用户必须双因素）
+    session.set("erin", await enrollTotp(erinId, must(emails.get("erin")), "erin"));
+  });
+
+  beforeEach(async () => {
+    // 每条测试从空表开始（用户行与角色授予不清——临时库整体生灭；单据夹具在内存）
+    await db.execute(
+      sql`truncate table ${schema.approvalConfigs}, ${schema.approvalRequests}, ${schema.approvalActions}, ${schema.esignSignatures}, ${schema.auditEvents}, ${schema.notifications}, ${schema.workflowTemplates}, ${schema.workflowInstances}, ${schema.workflowTransitions} cascade`,
+    );
+    docs.clear();
+  });
+
+  afterAll(async () => {
+    await pool.end();
+    await admin.pool.query(`drop database if exists "${dbName}" with (force)`);
+    await admin.pool.end();
+  });
+
+  async function makeUser(name: string): Promise<{ userId: string; email: string }> {
+    const email = `${name}-${randomUUID()}@example.com`;
+    const res = await app.request("/api/auth/sign-up/email", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ email, password: PASSWORD, name: `User ${name}` }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { user?: { id?: string } };
+    const userId = must(body.user?.id);
+    const message = must(mailer.sent[mailer.sent.length - 1]);
+    const token = must(/token=([^"&\s<]+)/.exec(message.html)?.[1]);
+    const confirm = await app.request(`/api/auth/verify-email?token=${encodeURIComponent(token)}`);
+    expect(confirm.status).toBe(200);
+    const signInRes = await app.request("/api/auth/sign-in/email", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ email, password: PASSWORD }),
+    });
+    expect(signInRes.status).toBe(200);
+    const cookie = must(
+      signInRes.headers
+        .getSetCookie()
+        .filter((c) => c.startsWith("better-auth.session_token="))
+        .map((c) => must(c.split(";")[0]))[0],
+    );
+    session.set(name, cookie);
+    userNameById.set(userId, `User ${name}`);
+    emails.set(name, email);
+    return { userId, email };
+  }
+
+  /** 给已验证用户绑 2FA（与 two-factor.test.ts 同一条路径），返回换发后的会话 */
+  async function enrollTotp(userId: string, email: string, name: string): Promise<string> {
+    const signInRes = await app.request("/api/auth/sign-in/email", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ email, password: PASSWORD }),
+    });
+    expect(signInRes.status).toBe(200);
+    const cookie = must(
+      signInRes.headers
+        .getSetCookie()
+        .filter((c) => c.startsWith("better-auth.session_token="))
+        .map((c) => must(c.split(";")[0]))[0],
+    );
+    const enable = await app.request("/api/auth/two-factor/enable", {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie },
+      body: JSON.stringify({ password: PASSWORD, method: "totp" }),
+    });
+    expect(enable.status).toBe(200);
+    const rows = await db.select().from(schema.authTwoFactor).where(eq(schema.authTwoFactor.userId, userId));
+    const secret = await symmetricDecrypt({ key: SECRET, data: must(rows[0]?.secret) });
+    const code = must((await auth.api.generateTOTP({ body: { secret } })).code);
+    const verify = await app.request("/api/auth/two-factor/verify-totp", {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie },
+      body: JSON.stringify({ code }),
+    });
+    expect(verify.status).toBe(200);
+    const rotated = verify.headers
+      .getSetCookie()
+      .filter((c) => c.startsWith("better-auth.session_token="))
+      .map((c) => must(c.split(";")[0]))[0];
+    session.set(name, rotated ?? cookie);
+    return must(session.get(name));
+  }
+
+  function makeDoc(viewerIds: string[]): string {
+    const id = randomUUID();
+    docs.set(id, { title: "Doc fixture", viewerIds });
+    return id;
+  }
+
+  interface LevelSpec {
+    name: string;
+    users?: string[];
+    roles?: string[];
+    requireSignature?: boolean;
+    signatureMeaning?: "reviewed" | "approved";
+  }
+
+  async function createConfig(
+    configKey: string,
+    levels: LevelSpec[],
+    subjectType = "approval-doc",
+  ): Promise<string> {
+    const res = await app.request("/api/approval-configs", {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie: must(session.get("owner")) },
+      body: JSON.stringify({ subjectType, configKey, name: `Config ${configKey}`, levels }),
+    });
+    expect(res.status).toBe(201);
+    const body = (await res.json()) as { id?: string };
+    return must(body.id);
+  }
+
+  async function submit(docId: string, configKey: string, who = "alice"): Promise<Response> {
+    return app.request("/api/approval-requests", {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie: must(session.get(who)) },
+      body: JSON.stringify({ subjectType: "approval-doc", subjectId: docId, configKey }),
+    });
+  }
+
+  async function act(
+    requestId: string,
+    who: string,
+    body: Record<string, unknown>,
+  ): Promise<Response> {
+    return app.request(`/api/approval-requests/${requestId}/actions`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie: must(session.get(who)) },
+      body: JSON.stringify(body),
+    });
+  }
+
+  // ── 配置面 ──────────────────────────────────────────────────────────────
+
+  it("creates an approval config and lists it by subject type", async () => {
+    const configId = await createConfig("doc_release", [
+      { name: "lead review", users: [bobId] },
+      { name: "final sign-off", users: [carolId], requireSignature: true, signatureMeaning: "reviewed" },
+    ]);
+    const res = await app.request("/api/approval-configs?subjectType=approval-doc", {
+      headers: { cookie: must(session.get("owner")) },
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      configs: { id: string; configKey: string; levels: LevelSpec[]; version: number }[];
+    };
+    const config = body.configs.find((c) => c.id === configId);
+    expect(config).toBeDefined();
+    expect(must(config).configKey).toBe("doc_release");
+    expect(must(config).levels).toHaveLength(2);
+    expect(must(config).levels[0]).toMatchObject({ name: "lead review", users: [bobId] });
+    expect(must(config).levels[1]).toMatchObject({ requireSignature: true, signatureMeaning: "reviewed" });
+  });
+
+  it("rejects config management without approval.configure", async () => {
+    const res = await app.request("/api/approval-configs", {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie: must(session.get("mallory")) },
+      body: JSON.stringify({
+        subjectType: "approval-doc",
+        configKey: "nope",
+        name: "Nope",
+        levels: [{ name: "only", users: [malloryId] }],
+      }),
+    });
+    expect(res.status).toBe(403);
+    const list = await app.request("/api/approval-configs", {
+      headers: { cookie: must(session.get("mallory")) },
+    });
+    expect(list.status).toBe(403);
+  });
+
+  it("rejects invalid levels and duplicate keys at save time", async () => {
+    const ownerCookie = must(session.get("owner"));
+    const post = (body: Record<string, unknown>) =>
+      app.request("/api/approval-configs", {
+        method: "POST",
+        headers: { "content-type": "application/json", cookie: ownerCookie },
+        body: JSON.stringify(body),
+      });
+    const noApprover = await post({
+      subjectType: "approval-doc",
+      configKey: "empty_line",
+      name: "Empty",
+      levels: [{ name: "only", users: [], roles: [] }],
+    });
+    expect(noApprover.status).toBe(422);
+    const customerApprover = await post({
+      subjectType: "approval-doc",
+      configKey: "customer_line",
+      name: "Customer",
+      levels: [{ name: "only", users: [], roles: ["customer"] }],
+    });
+    expect(customerApprover.status).toBe(422);
+    const badKey = await post({
+      subjectType: "approval-doc",
+      configKey: "Bad-Key",
+      name: "Bad",
+      levels: [{ name: "only", users: [bobId] }],
+    });
+    expect(badKey.status).toBe(400);
+    await createConfig("twice", [{ name: "only", users: [bobId] }]);
+    const duplicate = await post({
+      subjectType: "approval-doc",
+      configKey: "twice",
+      name: "Twice",
+      levels: [{ name: "only", users: [carolId] }],
+    });
+    expect(duplicate.status).toBe(409);
+    const body = (await duplicate.json()) as { error?: string };
+    expect(body.error).toBe("config_exists");
+  });
+
+  // ── 提交 ────────────────────────────────────────────────────────────────
+
+  it("gates submission on subject visibility and records approval.requested", async () => {
+    await createConfig("doc_release", [{ name: "only", users: [bobId] }]);
+    const docId = makeDoc([aliceId, bobId, carolId]);
+    const unregistered = await app.request("/api/approval-requests", {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie: must(session.get("alice")) },
+      body: JSON.stringify({ subjectType: "not-a-thing", subjectId: docId, configKey: "doc_release" }),
+    });
+    expect(unregistered.status).toBe(400);
+    expect(((await unregistered.json()) as { error: string }).error).toBe("invalid_subject");
+    const invisible = await app.request("/api/approval-requests", {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie: must(session.get("mallory")) },
+      body: JSON.stringify({ subjectType: "approval-doc", subjectId: docId, configKey: "doc_release" }),
+    });
+    expect(invisible.status).toBe(404);
+    const unknownKey = await submit(docId, "no_such_line");
+    expect(unknownKey.status).toBe(404);
+    const created = await submit(docId, "doc_release");
+    expect(created.status).toBe(201);
+    const audits = await db
+      .select()
+      .from(schema.auditEvents)
+      .where(eq(schema.auditEvents.action, "approval.requested"));
+    expect(audits).toHaveLength(1);
+    expect(must(audits[0]).actor).toBe(aliceId);
+    expect(must(audits[0]).detail).toMatchObject({ configKey: "doc_release", subjectId: docId });
+  });
+
+  it("refuses a second pending request and allows resubmit after rejection", async () => {
+    await createConfig("doc_release", [{ name: "only", users: [bobId] }]);
+    const docId = makeDoc([aliceId, bobId]);
+    const first = await submit(docId, "doc_release");
+    expect(first.status).toBe(201);
+    const firstId = ((await first.json()) as { requestId: string }).requestId;
+    const second = await submit(docId, "doc_release");
+    expect(second.status).toBe(409);
+    const secondBody = (await second.json()) as { error: string; requestId: string };
+    expect(secondBody.error).toBe("already_pending");
+    expect(secondBody.requestId).toBe(firstId);
+    // 驳回后单据回到发起人：重新提交 = 新请求
+    const rejected = await act(firstId, "bob", { decision: "rejected", note: "not ready" });
+    expect(rejected.status).toBe(200);
+    const again = await submit(docId, "doc_release");
+    expect(again.status).toBe(201);
+    const againId = ((await again.json()) as { requestId: string }).requestId;
+    expect(againId).not.toBe(firstId);
+  });
+
+  // ── 多级流转 ────────────────────────────────────────────────────────────
+
+  it("routes a two-level approval in order and refuses out-of-turn approvers", async () => {
+    await createConfig("doc_release", [
+      { name: "lead review", users: [bobId] },
+      { name: "final sign-off", users: [carolId] },
+    ]);
+    const docId = makeDoc([aliceId, bobId, carolId]);
+    const requestId = ((await (await submit(docId, "doc_release")).json()) as { requestId: string }).requestId;
+
+    const outOfTurn = await act(requestId, "carol", { decision: "approved" });
+    expect(outOfTurn.status).toBe(403);
+    expect(((await outOfTurn.json()) as { error: string }).error).toBe("not_approver");
+
+    const step1 = await act(requestId, "bob", { decision: "approved" });
+    expect(step1.status).toBe(200);
+    const step1Body = (await step1.json()) as { requestStatus: string; currentStep: number };
+    expect(step1Body.requestStatus).toBe("pending");
+    expect(step1Body.currentStep).toBe(1);
+
+    const stillWrong = await act(requestId, "bob", { decision: "approved" });
+    expect(stillWrong.status).toBe(403);
+
+    const step2 = await act(requestId, "carol", { decision: "approved" });
+    expect(step2.status).toBe(200);
+    expect(((await step2.json()) as { requestStatus: string }).requestStatus).toBe("approved");
+
+    const view = await app.request(`/api/approval-requests/${requestId}`, {
+      headers: { cookie: must(session.get("alice")) },
+    });
+    expect(view.status).toBe(200);
+    const viewBody = (await view.json()) as {
+      request: {
+        status: string;
+        completedAt: string | null;
+        currentLevel: unknown;
+        actions: { decision: string; actor: { id: string } }[];
+      };
+    };
+    expect(viewBody.request.status).toBe("approved");
+    expect(viewBody.request.completedAt).not.toBeNull();
+    expect(viewBody.request.currentLevel).toBeNull();
+    expect(viewBody.request.actions.map((a) => a.actor.id)).toEqual([bobId, carolId]);
+
+    // 终态再裁决：请求已关
+    const closed = await act(requestId, "carol", { decision: "approved" });
+    expect(closed.status).toBe(409);
+    expect(((await closed.json()) as { error: string }).error).toBe("request_closed");
+  });
+
+  it("todo lists only requests waiting on the caller — named and by role", async () => {
+    await createConfig("named_line", [{ name: "only", users: [bobId] }]);
+    await createConfig("role_line", [{ name: "only", roles: ["sales_lead"] }]);
+    const docA = makeDoc([aliceId, bobId]);
+    const docB = makeDoc([aliceId, daveId]);
+    const requestA = ((await (await submit(docA, "named_line")).json()) as { requestId: string }).requestId;
+    const requestB = ((await (await submit(docB, "role_line")).json()) as { requestId: string }).requestId;
+
+    const bobTodo = await app.request("/api/approval-requests/todo", {
+      headers: { cookie: must(session.get("bob")) },
+    });
+    const bobBody = (await bobTodo.json()) as { requests: { requestId: string }[] };
+    expect(bobBody.requests.map((r) => r.requestId)).toEqual([requestA]);
+
+    const carolTodo = await app.request("/api/approval-requests/todo", {
+      headers: { cookie: must(session.get("carol")) },
+    });
+    expect(((await carolTodo.json()) as { requests: unknown[] }).requests).toHaveLength(0);
+
+    const daveTodo = await app.request("/api/approval-requests/todo", {
+      headers: { cookie: must(session.get("dave")) },
+    });
+    const daveBody = (await daveTodo.json()) as { requests: { requestId: string }[] };
+    expect(daveBody.requests.map((r) => r.requestId)).toEqual([requestB]);
+
+    await act(requestA, "bob", { decision: "approved" });
+    const bobTodoAfter = await app.request("/api/approval-requests/todo", {
+      headers: { cookie: must(session.get("bob")) },
+    });
+    expect(((await bobTodoAfter.json()) as { requests: unknown[] }).requests).toHaveLength(0);
+  });
+
+  it("rejection closes the request, notifies the submitter, and allows a fresh submit", async () => {
+    await createConfig("doc_release", [{ name: "only", users: [bobId] }]);
+    const docId = makeDoc([aliceId, bobId]);
+    const requestId = ((await (await submit(docId, "doc_release")).json()) as { requestId: string }).requestId;
+
+    const rejected = await act(requestId, "bob", { decision: "rejected", note: "numbers look wrong" });
+    expect(rejected.status).toBe(200);
+    expect(((await rejected.json()) as { requestStatus: string }).requestStatus).toBe("rejected");
+
+    const notifications = await db
+      .select()
+      .from(schema.notifications)
+      .where(eq(schema.notifications.userId, aliceId));
+    expect(notifications).toHaveLength(1);
+    expect(must(notifications[0]).eventType).toBe("approval.rejected");
+    expect(must(notifications[0]).aggregateId).toBe(requestId);
+
+    const view = await app.request(`/api/approval-requests/${requestId}`, {
+      headers: { cookie: must(session.get("alice")) },
+    });
+    expect(view.status).toBe(200);
+    const viewBody = (await view.json()) as {
+      request: { status: string; actions: { decision: string; note: string | null }[] };
+    };
+    expect(viewBody.request.status).toBe("rejected");
+    expect(viewBody.request.actions[0]).toMatchObject({ decision: "rejected", note: "numbers look wrong" });
+  });
+
+  // ── 签名仪式 ────────────────────────────────────────────────────────────
+
+  it("enforces the signature ceremony on signature levels and rolls back on refusal", async () => {
+    await createConfig("sig_release", [
+      { name: "sign-off", users: [erinId, bobId], requireSignature: true, signatureMeaning: "reviewed" },
+    ]);
+    const docId = makeDoc([aliceId, erinId, bobId]);
+    const requestId = ((await (await submit(docId, "sig_release")).json()) as { requestId: string }).requestId;
+
+    // 缺仪式输入：422 signature_required
+    const missing = await act(requestId, "erin", { decision: "approved" });
+    expect(missing.status).toBe(422);
+    expect(((await missing.json()) as { error: string }).error).toBe("signature_required");
+
+    // 未绑 2FA 的审批人：403 先于密码判定（连「密码对不对」都探不到）
+    const noTotp = await act(requestId, "bob", {
+      decision: "approved",
+      password: PASSWORD,
+      clientToken: randomUUID(),
+    });
+    expect(noTotp.status).toBe(403);
+    expect(((await noTotp.json()) as { error: string }).error).toBe("two_factor_required");
+
+    // 密码错：401 且整包回滚——裁决行、签名行、推进全都不存在
+    const wrongPassword = await act(requestId, "erin", {
+      decision: "approved",
+      password: "not-my-password",
+      clientToken: randomUUID(),
+    });
+    expect(wrongPassword.status).toBe(401);
+    expect(((await wrongPassword.json()) as { error: string }).error).toBe("invalid_credentials");
+    const actionsAfterFailure = await db.select().from(schema.approvalActions);
+    expect(actionsAfterFailure).toHaveLength(0);
+    const requestRows = await db.select().from(schema.approvalRequests).where(eq(schema.approvalRequests.id, requestId));
+    expect(must(requestRows[0]).status).toBe("pending");
+    expect(must(requestRows[0]).currentStep).toBe(0);
+
+    // 正确仪式：批准 + 签名（meaning 来自配置）落 esign_signatures，绑定裁决行
+    const signed = await act(requestId, "erin", {
+      decision: "approved",
+      password: PASSWORD,
+      clientToken: randomUUID(),
+    });
+    expect(signed.status).toBe(200);
+    const signedBody = (await signed.json()) as { actionId: string; requestStatus: string };
+    expect(signedBody.requestStatus).toBe("approved");
+
+    const signatures = await db
+      .select()
+      .from(schema.esignSignatures)
+      .where(
+        and(eq(schema.esignSignatures.subjectType, "approval_action"), eq(schema.esignSignatures.subjectId, signedBody.actionId)),
+      );
+    expect(signatures).toHaveLength(1);
+    expect(must(signatures[0]).meaning).toBe("reviewed");
+    expect(must(signatures[0]).signerId).toBe(erinId);
+
+    // 签名墙经 approval_action 的可见性门可读（参与者看得到）
+    const wall = await app.request(
+      `/api/esignatures?subjectType=approval_action&subjectId=${signedBody.actionId}`,
+      { headers: { cookie: must(session.get("erin")) } },
+    );
+    expect(wall.status).toBe(200);
+    const wallBody = (await wall.json()) as { signatures: { meaning: string }[] };
+    expect(wallBody.signatures.map((s) => s.meaning)).toEqual(["reviewed"]);
+  });
+
+  it("rejects a half-specified ceremony input", async () => {
+    await createConfig("sig_release", [{ name: "sign-off", users: [erinId], requireSignature: true }]);
+    const docId = makeDoc([aliceId, erinId]);
+    const requestId = ((await (await submit(docId, "sig_release")).json()) as { requestId: string }).requestId;
+    const half = await act(requestId, "erin", { decision: "approved", password: PASSWORD });
+    expect(half.status).toBe(400);
+  });
+
+  // ── 工作流门槛（approval.passed 积木）───────────────────────────────────
+
+  it("gate block approval.passed holds the transition until the approval completes", async () => {
+    await createConfig("doc_release", [
+      { name: "lead review", users: [bobId] },
+      { name: "final sign-off", users: [carolId] },
+    ]);
+    const templateRes = await app.request("/api/workflow-templates", {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie: must(session.get("owner")) },
+      body: JSON.stringify({
+        subjectType: "approval-doc",
+        templateKey: "doc_flow",
+        isDefault: true,
+        definition: {
+          initial: "draft",
+          states: {
+            draft: {
+              on: {
+                RELEASE: {
+                  target: "released",
+                  gates: [{ name: "approval.passed", config: { key: "doc_release" } }],
+                },
+              },
+            },
+            released: {},
+          },
+        },
+      }),
+    });
+    expect(templateRes.status).toBe(201);
+
+    const docId = makeDoc([aliceId, bobId, carolId, ownerId]);
+    const started = await startWorkflow(db, {
+      subjectType: "approval-doc",
+      subjectId: docId,
+      startedById: ownerId,
+    });
+    expect(started.status).toBe("started");
+    const requestId = ((await (await submit(docId, "doc_release")).json()) as { requestId: string }).requestId;
+
+    // 未批：门槛不过（422 gate_failed 带积木名）
+    const blocked = await app.request(`/api/workflow-instances/approval-doc/${docId}/transitions`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie: must(session.get("owner")) },
+      body: JSON.stringify({ event: "RELEASE" }),
+    });
+    expect(blocked.status).toBe(422);
+    expect((await blocked.json()) as { error: string; gate: string }).toMatchObject({
+      error: "gate_failed",
+      gate: "approval.passed",
+    });
+
+    // 驳回也不过门（fail closed：没有 approved 就没有 RELEASE）
+    await act(requestId, "bob", { decision: "rejected" });
+    const stillBlocked = await app.request(`/api/workflow-instances/approval-doc/${docId}/transitions`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie: must(session.get("owner")) },
+      body: JSON.stringify({ event: "RELEASE" }),
+    });
+    expect(stillBlocked.status).toBe(422);
+
+    // 重新提交并通过两级审批 → 门槛放行
+    const retryId = ((await (await submit(docId, "doc_release")).json()) as { requestId: string }).requestId;
+    expect((await act(retryId, "bob", { decision: "approved" })).status).toBe(200);
+    expect((await act(retryId, "carol", { decision: "approved" })).status).toBe(200);
+    const released = await app.request(`/api/workflow-instances/approval-doc/${docId}/transitions`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie: must(session.get("owner")) },
+      body: JSON.stringify({ event: "RELEASE" }),
+    });
+    expect(released.status).toBe(200);
+    expect((await released.json()) as { to: string }).toMatchObject({ to: "released" });
+  });
+
+  // ── 并发 ────────────────────────────────────────────────────────────────
+
+  it("serializes concurrent approvals of the same step to a single winner", async () => {
+    await createConfig("anyof_line", [{ name: "any of two", users: [bobId, carolId] }]);
+    const docId = makeDoc([aliceId, bobId, carolId]);
+    const requestId = ((await (await submit(docId, "anyof_line")).json()) as { requestId: string }).requestId;
+
+    const [first, second] = await Promise.all([
+      act(requestId, "bob", { decision: "approved" }),
+      act(requestId, "carol", { decision: "approved" }),
+    ]);
+    const outcomes = [first.status, second.status].sort();
+    expect(outcomes).toEqual([200, 409]);
+    // 输家的 409 有两种合法语义：真撞车（concurrent_conflict）或晚到读到终态
+    // （request_closed）——不变式是只有一个赢家，不是拒绝理由的唯一性
+    const loser = first.status === 409 ? first : second;
+    const loserBody = (await loser.json()) as { error: string };
+    expect(["concurrent_conflict", "request_closed"]).toContain(loserBody.error);
+    // 恰好一行裁决：输家不落行、不推进、不落审计
+    const actions = await db.select().from(schema.approvalActions);
+    expect(actions).toHaveLength(1);
+    const requestRows = await db.select().from(schema.approvalRequests).where(eq(schema.approvalRequests.id, requestId));
+    expect(must(requestRows[0]).status).toBe("approved");
+  });
+
+  // ── 审计验收 ────────────────────────────────────────────────────────────
+
+  it("audit log records approver, decision and signature meaning for every action (#221 acceptance 3)", async () => {
+    await createConfig("mixed_line", [
+      { name: "review", users: [bobId] },
+      { name: "approve", users: [erinId], requireSignature: true },
+    ]);
+    const docId = makeDoc([aliceId, bobId, erinId]);
+    const requestId = ((await (await submit(docId, "mixed_line")).json()) as { requestId: string }).requestId;
+    expect((await act(requestId, "bob", { decision: "approved", note: "checked" })).status).toBe(200);
+    expect(
+      (await act(requestId, "erin", { decision: "approved", password: PASSWORD, clientToken: randomUUID() })).status,
+    ).toBe(200);
+
+    const res = await app.request("/api/audit-events?action=approval.action_recorded", {
+      headers: { cookie: must(session.get("owner")) },
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      events: { actor: string | null; detail: Record<string, unknown> | null }[];
+    };
+    const review = body.events.find((e) => e.detail?.level === "review");
+    const approve = body.events.find((e) => e.detail?.level === "approve");
+    expect(review).toBeDefined();
+    expect(must(review).actor).toBe(bobId);
+    expect(must(review).detail).toMatchObject({
+      requestId,
+      decision: "approved",
+      stepIndex: 0,
+      note: "checked",
+    });
+    expect(must(review).detail).not.toHaveProperty("signatureMeaning");
+    expect(approve).toBeDefined();
+    expect(must(approve).actor).toBe(erinId);
+    expect(must(approve).detail).toMatchObject({
+      requestId,
+      decision: "approved",
+      stepIndex: 1,
+      signatureMeaning: "approved",
+    });
+    // 请求级事件也在：发起 + 完成
+    const lifecycle = await db
+      .select({ action: schema.auditEvents.action })
+      .from(schema.auditEvents)
+      .where(eq(schema.auditEvents.target, requestId));
+    expect(lifecycle.map((row) => row.action)).toContain("approval.requested");
+    expect(lifecycle.map((row) => row.action)).toContain("approval.completed");
+  });
+});
+
+function adminUrl(databaseUrl: string | undefined): string {
+  if (databaseUrl === undefined) return "";
+  const url = new URL(databaseUrl);
+  url.pathname = "/postgres";
+  return url.toString();
+}

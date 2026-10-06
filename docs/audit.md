@@ -61,7 +61,19 @@
   `subjectType`/`subjectId`/`templateKey`/`from`——起点即初始状态）、
   `workflow.state_changed`（流程推进 #220；target = 实例行 id，detail 记
   `subjectType`/`subjectId`/`event`/`from`/`to` 与人工推进时的 `note`——
-  流转历史表之外的第二份权威读法，历史表 append-only、审计不可删除）；
+  流转历史表之外的第二份权威读法，历史表 append-only、审计不可删除）、
+  `approval.config_created`（审批线 #221；target = 配置行 id，detail 记
+  `subjectType`/`configKey`/`name`/`steps`——配了几级审批一眼可查）、
+  `approval.requested`（审批提交 #221；target = 请求行 id，detail 记
+  `subjectType`/`subjectId`/`configKey`/`steps`——subject 引用在 detail，
+  进单据的活动流时间线）、
+  `approval.action_recorded`（审批裁决 #221；target = 裁决行 id，detail 记
+  `requestId`/`subjectType`/`subjectId`/`configKey`/`stepIndex`/`level`/
+  `decision` 与可选的 `note`、`signatureMeaning`——#221 验收「谁、何时、
+  同意或驳回、意见、签名含义」的查询面；裁决行本身 append-only（0014））、
+  `approval.completed`/`approval.rejected`（请求终态 #221；target = 请求行
+  id，detail 记 `subjectType`/`subjectId`/`configKey`/`decision`/`finalStep`
+  ——终态同时给发起人落一条站内通知，#110 通知内核）；
   状态变更类动作在 detail 里带 `from`/`to`（如
   `{ from: "new", to: "contacted" }`），日志页详情列原样展示。
 - detail 放变更细节（授予/撤销了什么、从哪到哪、审批裁决等），不放大对象全文

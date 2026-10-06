@@ -20,7 +20,7 @@ qualified/disqualified/waitlisted 强制带理由）、生产 12 相位
 | --- | --- | --- |
 | 数据模型 | `packages/db/src/schema.ts`（migration `0013`） | `workflow_templates`（subject 开集 text + templateKey 唯一 + productType/isDefault 选择维度 + definition jsonb + version 预埋 #226）、`workflow_instances`（一对象一实例唯一索引 + **definition 启动时刻快照** + currentState/stateEnteredAt/stateDueAt）、`workflow_transitions`（历史，**append-only 触发器**，与 audit_events/esign_signatures 同一裁决） |
 | 引擎 | `apps/api/src/workflow/engine.ts` | zod 模板 schema（流转收 XState 字符串简写与对象两种形态）→ 拓扑语义校验（initial/target/自环）→ XState 结构校验 → @xstate/graph 可达性；`applyWorkflowEvent` 用无驻留 actor 算「当前状态 + 事件 → 下一状态」；超时 `timeoutAfterHours` 在进入状态时一次算成 stateDueAt |
-| 积木注册表 | `apps/api/src/workflow/blocks.ts` | `registerConditionBlock`（门槛）/`registerActionBlock`（进入后动作）——属主域切片注册，**本切片注册表为空**（第一个业务域进场注册第一批）；模板保存时对注册表做存在性校验，运行时门槛缺失 fail closed（422 gate_unavailable） |
+| 积木注册表 | `apps/api/src/workflow/blocks.ts` | `registerConditionBlock`（门槛）/`registerActionBlock`（进入后动作）——属主域切片注册；#220 切片注册表为空，第一个成员 `approval.passed` 随 #221 进场（审批作为流程门槛）；模板保存时对注册表做存在性校验，运行时门槛缺失 fail closed（422 gate_unavailable） |
 | subject 注册表 | `apps/api/src/workflow/registry.ts` | `registerWorkflowSubject(type, { load })`——属主域给出「记录存在吗 + 产品类型」；线索/商机/订单履约/偏差都在 phase-2+，第一个属主域进场注册 |
 | 服务 | `apps/api/src/workflow/service.ts` | `startWorkflow`（模板解析：产品类型精确命中 → 默认模板 → 409 无模板；并发双启动按唯一索引幂等）、`applyTransition`（角色 → 理由 → 门槛 → **乐观并发控制**（CAS 当前状态）→ 历史行 + 审计行同事务；进入后动作提交后执行、失败不回滚流转）、`findDueInstances`（超时扫描的内核半边） |
 | 路由 | `routes/workflow-templates.ts`、`routes/workflow-instances.ts` | 模板三端点在 `workflow.configure` 权限点后（owner/admin 默认）；实例读/推/历史在可见性门后（subjects/registry.ts，与评论同扇）。**实例启动不开 HTTP 面**——它是属主域创建业务记录时的进程内调用 |
