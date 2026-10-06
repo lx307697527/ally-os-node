@@ -74,10 +74,34 @@ source='created' 的 v1，使「行.version = 台账最新版」从第一行成�
   `system:rules-registry`（非 uuid actor 的先例是 `automation:<runId>`）——系统
   行为不署名给任何用户。任务/通知文案英文（RULE-010）。
 
+## 决策表值类型（#233 × #221，审批路线首个消费域）
+
+- **形状**（`apps/api/src/rules/decision-table-schema.ts`）：值 = 一张 GoRules ZEN
+  v2 决策表（引擎 `@gorules/zen-engine` 锁主版本 ^2，§4.9 选型）——`hitPolicy`
+  （first/collect）+ 列定义（`inputs`/`outputs`，各带 `id`/`field`）+ `rules`
+  （每行是「列 id → 单元格表达式」的 map，`_id` 行标识必填）。输入单元格是 unary
+  测试（`== 'grant'`、`> 100`，空串 = 恒真），输出单元格是标准表达式（字符串
+  字面量带引号）。空 `rules` 合法 = 什么都不命中（路由语义：临时全部 fail closed）。
+- **写面两道门**：zod 形状（`changeRuleValue` 的 valueType 收口，形状错
+  `invalid_value` 400）+ **编译探针**（`assertDecisionTableCompiles`——ZEN 引擎对
+  解析不了的单元格是**静默不命中**，一张带错字的表不报错、只是永远走不到那一行；
+  探针逐单元格跑 unary/标准表达式编译，只拒 parserError，类型不匹配留给运行期）。
+  立即与定时变更过同一扇门。回滚走 #226 台账（快照 value 透传，回滚后的表原样生效）。
+- **求值**（`evaluateDecisionTableRule`）：注册表值 → 单节点 JDM 图（input →
+  decisionTableNode → output）→ 输出 map（按输出列 field 键）。无命中 = 空对象
+  （不是错误——路由语义由消费域裁决）；键不存在/值未设/形状不符 = 注册表内核三错，
+  引擎失败包 `DecisionTableEvaluationError`——**坏表 fail loud，绝不伪装成无命中**。
+- **首个消费域 = 审批路线**（#221 v2.2）：种子规则 `approval.routing.user_role`
+  （gate 类别，0023），路由表 `{action} → configKey`，种子语义与 #221 切片 2 的
+  硬编码行为逐条等价（grant/revoke → `role_grant` 线）。属主域调
+  `resolveApprovalRoute(db, subjectType, facts)`（`apps/api/src/approval/routing.ts`）
+  拿「进哪条线」；unmatched 六因（表缺失/未设/坏表/求值失败/无命中/输出不是
+  configKey 单值）由调用方 fail closed。输出列 field 必须叫 `configKey`。
+
 ## 刻意不在这切片里的（#233 保持 open）
 
-- **决策表值类型**（GoRules ZEN，§4.9）：随首个消费域进场（#221 审批路线 /
-  #223 费率分档），valueType 届时加 `decision_table`。
+- ~~**决策表值类型**（GoRules ZEN，§4.9）~~：已随首个消费域 #221 审批路线进场
+  （0023，见上节）；后续消费域（#223 费率分档等）按同一形态各落自己的路由/分档表。
 - **gate 类别的种子与条件积木**：category 枚举已留 `gate`，门槛条件随 #220 的
   条件积木消费域进场；首个流程门槛落地时把 §4.3 的默认条件登记进来。
 - **定时生效的 cron 接线**：`applyDueRuleChanges` 内核已测；worker 侧 JobDefinition

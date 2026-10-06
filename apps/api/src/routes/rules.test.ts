@@ -27,7 +27,7 @@ import {
 // DATABASE_URL 时跳过。
 //
 // 独立临时库（每次运行新建、跑完 drop，纪律同 config-drafts.test.ts）。与其它
-// 套件不同，这里**不做 beforeEach 清库**：57 条种子规则与它们的 v1 台账行是断言
+// 套件不同，这里**不做 beforeEach 清库**：58 条种子规则与它们的 v1 台账行是断言
 // 面（回滚测试依赖种子建的 v1 快照），清了就得重放种子 SQL。隔离靠「每个测试动
 // 自己的那条规则」+ 按规则 id / key 限定断言（台账与审计是追加型表，行数本身
 // 不是断言面）。
@@ -206,7 +206,7 @@ describe.skipIf(!databaseUrl)("rule registry: adjudication as configuration (#23
     const res = await app.request("/api/rules", { headers: sageHeaders });
     expect(res.status).toBe(200);
     const parsed = (await res.json()) as { rules: RuleView[] };
-    expect(parsed.rules).toHaveLength(57);
+    expect(parsed.rules).toHaveLength(58);
     const keys = new Set(parsed.rules.map((r) => r.key));
     // 参数默认值来自裁决
     const waste = must(parsed.rules.find((r) => r.key === "pricing.waste_rate_pct"));
@@ -228,6 +228,22 @@ describe.skipIf(!databaseUrl)("rule registry: adjudication as configuration (#23
     expect(undercost.riskNote).not.toBeNull();
     const sop = must(parsed.rules.find((r) => r.key === "modules.sop_enabled"));
     expect(sop.value).toBe(false);
+    // 决策表首种子（#221 审批路线）：gate 类别、decision_table 值、grant/revoke →
+    // role_grant（与 #221 切片 2 的硬编码行为逐条等价——「进哪条线」从代码搬进配置）
+    const routing = must(parsed.rules.find((r) => r.key === "approval.routing.user_role"));
+    expect(routing.category).toBe("gate");
+    expect(routing.valueType).toBe("decision_table");
+    expect(routing.value).toEqual({
+      hitPolicy: "first",
+      inputs: [{ id: "in_action", field: "action", name: "Action" }],
+      outputs: [{ id: "out_config", field: "configKey", name: "Approval line" }],
+      rules: [
+        { _id: "r-grant", in_action: "== 'grant'", out_config: "'role_grant'" },
+        { _id: "r-revoke", in_action: "== 'revoke'", out_config: "'role_grant'" },
+      ],
+    });
+    expect(routing.changeableBy).toEqual(["admin"]);
+    expect(routing.adjudicationRefs).toEqual(["R-16-6"]);
     // 待填规则 value = null
     const refund = must(parsed.rules.find((r) => r.key === "refunds.owner_approval_threshold_usd"));
     expect(refund.value).toBeNull();
@@ -345,6 +361,86 @@ describe.skipIf(!databaseUrl)("rule registry: adjudication as configuration (#23
       adminHeaders,
     );
     expect(nullOnSwitch.status).toBe(400);
+  });
+
+  it("patches a decision table by ruling and rejects syntax-broken cells at the write face (#233)", async () => {
+    const repointed = {
+      hitPolicy: "first",
+      inputs: [{ id: "in_action", field: "action", name: "Action" }],
+      outputs: [{ id: "out_config", field: "configKey", name: "Approval line" }],
+      rules: [
+        { _id: "r-grant", in_action: "== 'grant'", out_config: "'role_grant'" },
+        { _id: "r-revoke", in_action: "== 'revoke'", out_config: "'escrow_line'" },
+      ],
+    };
+    const ok = await patch(
+      "approval.routing.user_role",
+      { value: repointed, rationale: { refs: ["R-16-6"], note: "revoke routed to escrow" } },
+      adminHeaders,
+    );
+    expect(ok.status).toBe(200);
+    const parsed = (await ok.json() as { changed: boolean; mode: string; rule: RuleView });
+    expect(parsed.changed).toBe(true);
+    expect(parsed.rule.value).toEqual(repointed);
+    expect(parsed.rule.version).toBe(2);
+
+    // 形状错（未知列/未知键/非字符串单元格）与语法错都在 400，进不了注册表
+    const badCell = await patch(
+      "approval.routing.user_role",
+      {
+        value: { ...repointed, rules: [{ _id: "r", in_action: "(((", out_config: "'x'" }] },
+        rationale: { refs: ["R-16-6"] },
+      },
+      adminHeaders,
+    );
+    expect(badCell.status).toBe(400);
+    expect(await badCell.json()).toMatchObject({ error: "invalid_value" });
+    const badShape = await patch(
+      "approval.routing.user_role",
+      { value: { nonsense: true }, rationale: { refs: ["R-16-6"] } },
+      adminHeaders,
+    );
+    expect(badShape.status).toBe(400);
+    // 定时变更过同一扇编译门（输出单元格语法错——裸词能解析成 null 会被放行，
+    // 静默空输出由消费域的 fail closed 兜底；这里钉的是真语法错）
+    const scheduledBad = await patch(
+      "approval.routing.user_role",
+      {
+        value: { ...repointed, rules: [{ _id: "r", in_action: "== 'x'", out_config: "(((" }] },
+        rationale: { refs: ["R-16-6"] },
+        effectiveAt: new Date(Date.now() + 86_400_000).toISOString(),
+      },
+      adminHeaders,
+    );
+    expect(scheduledBad.status).toBe(400);
+    // 库里的生效值未被失败的请求动过
+    expect((await getRuleView("approval.routing.user_role")).version).toBe(2);
+  });
+
+  it("rolls a decision-table rule back through the ledger to the seeded table (#233)", async () => {
+    const routing = await getRuleView("approval.routing.user_role");
+    const rollback = await app.request(
+      `/api/config-versions/registry_rule/${routing.id}/rollback`,
+      {
+        method: "POST",
+        headers: { ...jsonHeaders, ...adminHeaders },
+        body: JSON.stringify({ toVersion: 1, reason: "restore seeded routing" }),
+      },
+    );
+    expect(rollback.status).toBe(200);
+    const after = await getRuleView("approval.routing.user_role");
+    expect(after.version).toBe(3);
+    expect(after.value).toEqual({
+      hitPolicy: "first",
+      inputs: [{ id: "in_action", field: "action", name: "Action" }],
+      outputs: [{ id: "out_config", field: "configKey", name: "Approval line" }],
+      rules: [
+        { _id: "r-grant", in_action: "== 'grant'", out_config: "'role_grant'" },
+        { _id: "r-revoke", in_action: "== 'revoke'", out_config: "'role_grant'" },
+      ],
+    });
+    const rows = await revisionRows(routing.id);
+    expect(rows.map((r) => r.source)).toEqual(["created", "updated", "rolled_back"]);
   });
 
   it("applies an immediate change with ledger revision and audit", async () => {

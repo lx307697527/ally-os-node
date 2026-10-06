@@ -162,6 +162,20 @@
       "when": 1791300869688,
       "tag": "0022_cold_lily_hollister",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1791307679641,
+      "tag": "0023_hard_the_renegades",
+      "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1791308548053,
+      "tag": "0024_approval-routing-seed",
+      "breakpoints": true
     }
   ]
 }

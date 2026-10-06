@@ -13,6 +13,7 @@ import {
   ScheduledTimeInPastError,
   type RuleRow,
 } from "../rules/service.ts";
+import { InvalidDecisionTableError } from "../rules/decision-table-schema.ts";
 
 /**
  * 规则注册表 HTTP 面（#233 切片 1）。
@@ -142,6 +143,11 @@ export function rulesRoutes(deps: { db: Db; logger: Logger }) {
       }
       if (err instanceof InvalidRuleValueError) {
         return c.json({ error: "invalid_value", issues: err.issues }, 400);
+      }
+      if (err instanceof InvalidDecisionTableError) {
+        // 决策表表达式语法错：形状错误的注册表变体（ZEN 对坏单元格静默不命中，
+        // 所以编译错必须在写面 400，不能等求值时变成「永远不触发的规则」）
+        return c.json({ error: "invalid_value", issues: [err.message] }, 400);
       }
       if (err instanceof ScheduledTimeInPastError) {
         return c.json({ error: "invalid_effective_time" }, 400);

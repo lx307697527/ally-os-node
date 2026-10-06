@@ -996,12 +996,14 @@ export const configDrafts = pgTable(
 // 谁能改、风险标记、运行数据；修改必填新依据，经 #226 台账记版可回滚。三类值
 // （§4.3）：param（数字和清单，改完立即生效，不影响已发出的单据——单据记录当时
 // 的规则版本）、switch（已认可但暂不启用，关着时相关数据照样记录）、gate（流程
-// 推进的前提条件，条件积木随 #220 消费域进场，本切片只留类别枚举不落 gate 种子）。
+// 推进的前提条件；#220 条件积木进场前，gate 行随各自的消费域逐条登记，首个是
+// #221 审批路线 approval.routing.user_role）。
 //
 // 硬底线不进注册表（§4.5）：不发营销短信、STOP、一键退订、Part 11 签名、质量
 // 放行职责分离、数据隔离、计算结构——写在代码里，任何配置都关不掉；本表没有
-// 也不允许有对应行（测试钉住）。决策表值类型（GoRules JSON，§4.9）随首个消费
-// 域（#221 审批路线 / #223 费率分档）进场。
+// 也不允许有对应行（测试钉住）。决策表值类型（GoRules ZEN JSON，§4.9）已随首个
+// 消费域 #221 审批路线进场（0023）：引擎锁主版本 ^2，写面形状与表达式编译校验见
+// rules/decision-table.ts，求值入口 evaluateDecisionTableRule。
 export const ruleCategory = pgEnum("rule_category", ["param", "switch", "gate"]);
 
 export const ruleValueType = pgEnum("rule_value_type", [
@@ -1011,6 +1013,7 @@ export const ruleValueType = pgEnum("rule_value_type", [
   "string_list",
   "number_list",
   "json",
+  "decision_table",
 ]);
 
 export const registryRules = pgTable(

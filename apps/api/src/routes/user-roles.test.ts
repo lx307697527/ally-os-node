@@ -576,6 +576,101 @@ describe.skipIf(!databaseUrl)("user roles routes (#23, #221 slice 2, integration
     expect(await auditRows(f.target.userId)).toEqual([]);
   });
 
+  // ── 审批路线决策表（#221 决策表进线 × #233 decision_table）─────────────────────
+  // 「进哪条线」由注册表 approval.routing.user_role（0023 种子：grant/revoke →
+  // role_grant）裁决。这里直写注册表行来改路线（写面 PATCH 契约在 rules.test.ts）。
+  const seededRoutingTable = {
+    hitPolicy: "first",
+    inputs: [{ id: "in_action", field: "action", name: "Action" }],
+    outputs: [{ id: "out_config", field: "configKey", name: "Approval line" }],
+    rules: [
+      { _id: "r-grant", in_action: "== 'grant'", out_config: "'role_grant'" },
+      { _id: "r-revoke", in_action: "== 'revoke'", out_config: "'role_grant'" },
+    ],
+  } as const;
+
+  async function setRoutingTable(value: unknown): Promise<void> {
+    await db
+      .update(schema.registryRules)
+      .set({ value, scheduledValue: null, scheduledEffectiveAt: null })
+      .where(eq(schema.registryRules.key, "approval.routing.user_role"));
+  }
+
+  it("seeded routing table sends revokes to the same line as grants (seed ≡ pre-table behavior)", async () => {
+    const f = await fixture();
+    await seedRole(f.target.userId, "finance");
+    await ensureRoleApprovalLine();
+    const res = await app.request(`/api/users/${f.target.userId}/roles/finance`, {
+      method: "DELETE",
+      headers: { cookie: await f.cookieFor(f.admin) },
+    });
+    expect(res.status).toBe(202);
+    expect(await res.json()).toMatchObject({ role: "finance", revoked: false });
+    expect(await pendingRequestFor(f.target.userId)).toMatchObject({
+      status: "pending",
+      payload: { action: "revoke", role: "finance" },
+    });
+    // 撤销回到原样 = 无可确认变更，不进线
+  });
+
+  it("the routing table decides which line a change enters; unrouted lines fail closed (#233)", async () => {
+    const f = await fixture();
+    await ensureRoleApprovalLine();
+    await seedRole(f.target.userId, "finance");
+    // 撤销改道到一条不存在的线：路由命中 ≠ 放行——线不存在仍是 403（与线缺失
+    // 同一落点），且不产生审批请求
+    await setRoutingTable({
+      ...seededRoutingTable,
+      rules: [
+        { _id: "r-grant", in_action: "== 'grant'", out_config: "'role_grant'" },
+        { _id: "r-revoke", in_action: "== 'revoke'", out_config: "'escrow_line'" },
+      ],
+    });
+    const denied = await app.request(`/api/users/${f.target.userId}/roles/finance`, {
+      method: "DELETE",
+      headers: { cookie: await f.cookieFor(f.admin) },
+    });
+    expect(denied.status).toBe(403);
+    expect(await denied.json()).toEqual({ error: "forbidden", code: "owner_approval_required" });
+    expect(await authzStore.getRoles(f.target.userId)).toEqual(["finance"]);
+    expect(await pendingRequestFor(f.target.userId)).toBeUndefined();
+    expect(await auditRows(f.target.userId)).toEqual([]);
+    // 授予仍走种子线：同一条路由表逐行动裁（admin 是目标未持有的高权角色）
+    const granted = await app.request(`/api/users/${f.target.userId}/roles`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie: await f.cookieFor(f.admin) },
+      body: JSON.stringify({ role: "admin" }),
+    });
+    expect(granted.status).toBe(202);
+    const rows = await db
+      .select({ payload: schema.approvalRequests.payload })
+      .from(schema.approvalRequests)
+      .where(eq(schema.approvalRequests.subjectId, f.target.userId));
+    expect(must(rows[0]).payload).toEqual({ action: "grant", role: "admin" });
+  });
+
+  it("an emptied routing table fails closed for non-owners while the owner stays direct (#233)", async () => {
+    const f = await fixture();
+    await ensureRoleApprovalLine();
+    await setRoutingTable({ ...seededRoutingTable, rules: [] });
+    const denied = await app.request(`/api/users/${f.target.userId}/roles`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie: await f.cookieFor(f.admin) },
+      body: JSON.stringify({ role: "finance" }),
+    });
+    expect(denied.status).toBe(403);
+    expect(await pendingRequestFor(f.target.userId)).toBeUndefined();
+    expect(await auditRows(f.target.userId)).toEqual([]);
+    // owner 直通不查路由表（R-16-5）：空表只关非 owner 的门
+    const direct = await app.request(`/api/users/${f.target.userId}/roles`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie: await f.cookieFor(f.owner) },
+      body: JSON.stringify({ role: "finance" }),
+    });
+    expect(direct.status).toBe(201);
+    expect(await authzStore.getRoles(f.target.userId)).toEqual(["finance"]);
+  });
+
   it("the generic approval submit endpoint refuses payload-less requests on outcome subjects", async () => {
     const f = await fixture();
     await ensureRoleApprovalLine();
