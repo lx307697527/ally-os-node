@@ -16,6 +16,7 @@ import { authProvidersRoutes } from "./routes/auth-providers.ts";
 import { auditEventsRoutes } from "./routes/audit-events.ts";
 import { automationsRoutes } from "./routes/automations.ts";
 import { commentsRoutes } from "./routes/comments.ts";
+import { configDraftsRoutes } from "./routes/config-drafts.ts";
 import { configVersionsRoutes } from "./routes/config-versions.ts";
 import { customFieldsRoutes } from "./routes/custom-fields.ts";
 import { esignaturesRoutes } from "./routes/esignatures.ts";
@@ -138,9 +139,12 @@ export function createApp(deps: AppDeps) {
   // 审计日志查询（#29）：audit.read 权限点门（owner/admin 默认）
   app.route("/", auditEventsRoutes(deps));
   // 配置版本台账（#226 切片 1）：五族配置的版本史/差异/回滚读面，回滚 = 写操作。
-  // 权限按族动态裁决（= 各族配置面的同一权限点）；测试/生产环境的 draft→发布
-  // 流与受监管变更控制门是 #226 后续切片
+  // 权限按族动态裁决（= 各族配置面的同一权限点）；受监管变更控制门是 #226
+  // 后续切片（随 #206 进场）
   app.route("/", configVersionsRoutes(deps));
+  // 配置草稿与一键发布（#226 切片 2）：先在测试环境试（草稿 overlay，发布前
+  // 活配置读路径看不见），一键发布 = 前滚 published 新版本 + 审计。同一扇族门
+  app.route("/", configDraftsRoutes(deps));
 
   return app;
 }

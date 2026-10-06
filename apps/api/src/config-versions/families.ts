@@ -1,11 +1,14 @@
 import { eq } from "drizzle-orm";
 import { z } from "zod";
 import { schema } from "@ally/db";
+import { ruleSpecSchema } from "@ally/automations";
 import { NUMBERING_DATE_FORMATS } from "../numbering/service.ts";
+import { roleSchema } from "../authz/permissions.ts";
 import { registerConfigSubject, type ConfigSubjectSpec } from "./registry.ts";
 
 /**
- * 五族配置的台账契约（#226 切片 1）：快照形状、回滚落列、注册。
+ * 五族配置的台账契约（#226 切片 1）：快照形状、回滚落列、注册；切片 2 加草稿
+ * 内容契约（draftContentSchema，draft → publish 的保存面校验）。
  *
  * 本文件是「快照长什么样」的唯一事实来源：配置面写入时用这里的 snapshotXxx
  * 建快照（0019 迁移的存量补账 SQL 与这些形状逐一同构），回滚时用同一形状的
@@ -17,6 +20,10 @@ import { registerConfigSubject, type ConfigSubjectSpec } from "./registry.ts";
  * 回滚能力随内容改写路径走：workflow / approval 本切片没有定义改写端点（行
  * 内容恒等于 v1，无可回滚的差异），注册时不带 applyRevision，回滚端点对其答
  * 409——定义改写端点进场（#226 后续切片）时同步补 applyRevision。
+ *
+ * 草稿内容契约（切片 2）只随 applyRevision 走：草稿校验对齐各族配置面的
+ * **业务**校验（strict + select 选项规则 + ruleSpecSchema），存进去的必须是
+ * 「发布后能直接生效」的内容——发布面不做比保存面更弱的第二次放行。
  */
 
 // ── 流程模板（#220）────────────────────────────────────────────────────────
@@ -74,6 +81,33 @@ export function customFieldDefSnapshot(row: {
   };
 }
 
+// 草稿内容 = 行内容形状（options 按行规则存：select 是数组、其余类型是 null），
+// 校验强度对齐配置写入面：strict + roleSchema + 「select 必须带非空、无重复选项，
+// 其余类型不带选项」——不带病入库的同一裁决（值校验的 z.enum 依赖选项存在）
+export const customFieldDefDraftContentSchema = z
+  .object({
+    label: z.string().trim().min(1).max(200),
+    fieldType: z.enum(schema.customFieldType.enumValues),
+    options: z.array(z.string().trim().min(1).max(100)).max(100).nullable(),
+    required: z.boolean(),
+    viewableBy: z.array(roleSchema).max(20),
+    editableBy: z.array(roleSchema).max(20),
+    active: z.boolean(),
+  })
+  .strict()
+  .refine(
+    (content) =>
+      content.fieldType === "select"
+        ? content.options !== null &&
+          content.options.length > 0 &&
+          new Set(content.options).size === content.options.length
+        : content.options === null,
+    {
+      message:
+        "select fields require non-empty unique options; other field types require no options",
+    },
+  );
+
 // ── 自动化规则（#224）──────────────────────────────────────────────────────
 // trigger/conditions/actions 在写入面已过 @ally/automations 的 ruleSpecSchema；
 // 这里的收口是 JSONB 边界的结构形状（回滚要把同一份字节写回去，业务语义复核
@@ -105,6 +139,19 @@ export function automationRuleSnapshot(row: {
   };
 }
 
+// 草稿内容与配置面同一业务校验（ruleSpecSchema 的 trigger/conditions/actions）：
+// 草稿发布后要直接被 worker 执行，语义不合格的内容不能借草稿面绕过 PATCH 的校验
+export const automationRuleDraftContentSchema = z
+  .object({
+    name: z.string().trim().min(1).max(200),
+    description: z.string().trim().max(2000).nullable(),
+    trigger: ruleSpecSchema.shape.trigger,
+    conditions: ruleSpecSchema.shape.conditions,
+    actions: ruleSpecSchema.shape.actions,
+    enabled: z.boolean(),
+  })
+  .strict();
+
 // ── 编号规则（#225）────────────────────────────────────────────────────────
 const numberingRuleSnapshotSchema = z.object({
   label: z.string().min(1).max(200),
@@ -130,6 +177,17 @@ export function numberingRuleSnapshot(row: {
   };
 }
 
+// 草稿内容 = 就地可改的格式字段（同 PATCH 面：起始号不在内容契约里）
+export const numberingRuleDraftContentSchema = z
+  .object({
+    label: z.string().trim().min(1).max(200),
+    prefix: z.string().trim().max(16),
+    dateFormat: z.enum(NUMBERING_DATE_FORMATS).nullable(),
+    padding: z.number().int().min(0).max(10),
+    active: z.boolean(),
+  })
+  .strict();
+
 // ── 回滚落列 ───────────────────────────────────────────────────────────────
 // 快照过不了族 schema = 台账内容被绕过写入面动过（或跨版本形状漂移），当场炸
 // 成 500 让人来看，绝不静默把不可信形状写进配置行。返回 false = 配置行已不存在
@@ -152,6 +210,7 @@ function parseSnapshotOrThrow<S extends z.ZodType>(
 const customFieldDefSpec: ConfigSubjectSpec = {
   label: "自定义字段",
   configurePermission: "custom_fields.configure",
+  draftContentSchema: customFieldDefDraftContentSchema,
   applyRevision: async (tx, subjectId, snapshot, version) => {
     const data = parseSnapshotOrThrow("custom_field_def", customFieldDefSnapshotSchema, snapshot);
     const updated = await tx
@@ -175,6 +234,7 @@ const customFieldDefSpec: ConfigSubjectSpec = {
 const automationRuleSpec: ConfigSubjectSpec = {
   label: "自动化规则",
   configurePermission: "automations.configure",
+  draftContentSchema: automationRuleDraftContentSchema,
   applyRevision: async (tx, subjectId, snapshot, version) => {
     const data = parseSnapshotOrThrow("automation_rule", automationRuleSnapshotSchema, snapshot);
     const updated = await tx
@@ -198,6 +258,7 @@ const automationRuleSpec: ConfigSubjectSpec = {
 const numberingRuleSpec: ConfigSubjectSpec = {
   label: "编号规则",
   configurePermission: "numbering.configure",
+  draftContentSchema: numberingRuleDraftContentSchema,
   applyRevision: async (tx, subjectId, snapshot, version) => {
     const data = parseSnapshotOrThrow("numbering_rule", numberingRuleSnapshotSchema, snapshot);
     const updated = await tx
@@ -217,8 +278,9 @@ const numberingRuleSpec: ConfigSubjectSpec = {
   },
 };
 
-// workflow / approval：本切片没有定义改写路径，行内容恒等于 v1，回滚无意义
-// （409 rollback_unsupported）；快照照记（创建即第一版事实），史与差异可读。
+// workflow / approval：本切片没有定义改写路径，行内容恒等于 v1，回滚与草稿均
+// 无意义（409 rollback_unsupported / publish_unsupported）；快照照记（创建即
+// 第一版事实），史与差异可读。定义改写端点进场时同步补 applyRevision 与草稿契约。
 const workflowTemplateSpec: ConfigSubjectSpec = {
   label: "流程模板",
   configurePermission: "workflow.configure",

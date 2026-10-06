@@ -3,13 +3,12 @@ import type { Logger } from "pino";
 import { z } from "zod";
 import type { Db } from "@ally/db";
 import type { AppEnv } from "../auth/session.ts";
-import type { AuthzContext } from "../authz/middleware.ts";
 import { recordAudit } from "../audit/audit-log.ts";
 import {
   configSubjectSpec,
   registeredConfigSubjects,
-  type ConfigSubjectSpec,
 } from "../config-versions/registry.ts";
+import { permissionFailure } from "../config-versions/http.ts";
 import {
   ConfigRevisionNotFoundError,
   ConfigSubjectNotFoundError,
@@ -50,12 +49,6 @@ const rollbackBody = z
     reason: z.string().trim().min(1).max(500).optional(),
   })
   .strict();
-
-/** 族内动态权限检查（形状与 authz/requirePermission 的 403 逐字段同形） */
-function permissionFailure(authz: AuthzContext, spec: ConfigSubjectSpec) {
-  if (authz.permissions.has(spec.configurePermission)) return undefined;
-  return { error: "forbidden", code: "permission_required", permission: spec.configurePermission };
-}
 
 /** 回滚内核的领域错误 → HTTP 语义（不在事务闭包里碰 Response，保持内核无 HTTP 面） */
 function rollbackErrorStatus(err: unknown): { status: 404 | 409; error: string } | undefined {

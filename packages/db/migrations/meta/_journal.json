@@ -141,6 +141,13 @@
       "when": 1791288780847,
       "tag": "0019_bizarre_micromacro",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1791292331513,
+      "tag": "0020_curious_miss_america",
+      "breakpoints": true
     }
   ]
 }
