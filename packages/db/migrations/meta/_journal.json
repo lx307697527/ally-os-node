@@ -124,8 +124,15 @@
     {
       "idx": 17,
       "version": "7",
-      "when": 1791285253090,
-      "tag": "0017_opposite_domino",
+      "when": 1791282112590,
+      "tag": "0017_goofy_shinko_yamashiro",
+      "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1791286805952,
+      "tag": "0018_heavy_ultragirl",
       "breakpoints": true
     }
   ]

@@ -8,6 +8,7 @@
     "typecheck": "tsc -p tsconfig.json"
   },
   "dependencies": {
+    "@ally/automations": "workspace:*",
     "@ally/config": "workspace:*",
     "@ally/db": "workspace:*",
     "@ally/realtime": "workspace:*",

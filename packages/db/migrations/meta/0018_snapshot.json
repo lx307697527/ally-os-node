@@ -1,6 +1,6 @@
 {
-  "id": "c15d9346-3619-4143-9dcc-e960c589c109",
-  "prevId": "4a9f5988-a7ba-4b9f-82bf-056360db49ec",
+  "id": "5d7c1563-27ad-46bd-bd48-b2a5ff775907",
+  "prevId": "c15d9346-3619-4143-9dcc-e960c589c109",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -2064,6 +2064,200 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
+    "public.numbering_rules": {
+      "name": "numbering_rules",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "subject": {
+          "name": "subject",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "label": {
+          "name": "label",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "prefix": {
+          "name": "prefix",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "''"
+        },
+        "date_format": {
+          "name": "date_format",
+          "type": "numbering_date_format",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "padding": {
+          "name": "padding",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 4
+        },
+        "start_number": {
+          "name": "start_number",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 1
+        },
+        "active": {
+          "name": "active",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": true
+        },
+        "version": {
+          "name": "version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 1
+        },
+        "created_by_id": {
+          "name": "created_by_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "numbering_rules_active_subject_idx": {
+          "name": "numbering_rules_active_subject_idx",
+          "columns": [
+            {
+              "expression": "subject",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"numbering_rules\".\"active\"",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "numbering_rules_created_by_id_auth_user_id_fk": {
+          "name": "numbering_rules_created_by_id_auth_user_id_fk",
+          "tableFrom": "numbering_rules",
+          "tableTo": "auth_user",
+          "columnsFrom": [
+            "created_by_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.numbering_sequences": {
+      "name": "numbering_sequences",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "rule_id": {
+          "name": "rule_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "last_issued": {
+          "name": "last_issued",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "numbering_sequences_rule_idx": {
+          "name": "numbering_sequences_rule_idx",
+          "columns": [
+            {
+              "expression": "rule_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "numbering_sequences_rule_id_numbering_rules_id_fk": {
+          "name": "numbering_sequences_rule_id_numbering_rules_id_fk",
+          "tableFrom": "numbering_sequences",
+          "tableTo": "numbering_rules",
+          "columnsFrom": [
+            "rule_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
     "public.realtime_presence": {
       "name": "realtime_presence",
       "schema": "",
@@ -2928,6 +3122,15 @@
         "bug_report",
         "feature_request",
         "process_gap"
+      ]
+    },
+    "public.numbering_date_format": {
+      "name": "numbering_date_format",
+      "schema": "public",
+      "values": [
+        "YYYY",
+        "YYYYMM",
+        "YYYYMMDD"
       ]
     },
     "public.task_status": {

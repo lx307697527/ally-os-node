@@ -99,6 +99,14 @@ export const API_ROUTES: readonly RouteDecl[] = [
   { method: "GET", path: "/api/custom-fields/schema", auth: { kind: "session" } },
   { method: "GET", path: "/api/subjects/:subjectType/:subjectId/custom-fields", auth: { kind: "session" } },
   { method: "PUT", path: "/api/subjects/:subjectType/:subjectId/custom-fields", auth: { kind: "session" } },
+  // 自动化规则（#224 切片 1）：规则配置 + 执行日志读面，全部在
+  // automations.configure 权限点门（owner/admin）——新增规则 = 改全公司的连锁
+  // 反应，执行面在 worker（pg-boss），API 只开配置与观测
+  { method: "POST", path: "/api/automations", auth: { kind: "permission", permission: "automations.configure" } },
+  { method: "GET", path: "/api/automations", auth: { kind: "permission", permission: "automations.configure" } },
+  { method: "GET", path: "/api/automations/runs", auth: { kind: "permission", permission: "automations.configure" } },
+  { method: "PATCH", path: "/api/automations/:id", auth: { kind: "permission", permission: "automations.configure" } },
+  { method: "DELETE", path: "/api/automations/:id", auth: { kind: "permission", permission: "automations.configure" } },
   // 编号规则（#225）：配置工作室的编号配置面，改格式 = 改所有之后发出的单据号，
   // numbering.configure 权限点门（owner/admin 默认持有）；发号无 HTTP 面——
   // 分配是属主域创建单据事务里的进程内调用（numbering/service.ts）
