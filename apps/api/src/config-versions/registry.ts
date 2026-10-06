@@ -20,11 +20,33 @@ import type { Permission } from "../authz/permissions.ts";
 /** 事务内写台账/回滚/草稿用的最小连接面（调用方传 db 或 db.transaction 的 tx 都满足） */
 export type ConfigRevisionTx = Pick<Db, "select" | "insert" | "update" | "delete">;
 
+/**
+ * 族内逐主体的写面拒绝（#233 引入）：族的 configurePermission 之外，某些族还有
+ * 「逐行」的改权裁决（规则注册表的谁能改 = 按规则的角色数组，owner 恒可）。回滚
+ * 与发布 = 改那行配置，逐主体的门必须与 PATCH 面同扇——与「关注者集合 ⊆ 可见者
+ * 集合」在关注与投递两端各查一次同一裁法：同一裁决在两个写面各自强制，不靠
+ * 调用方自觉。形状与 permissionFailure 的 403 同构（code 自定义，如 role_required）。
+ */
+export interface SubjectWriteDenial {
+  error: "forbidden";
+  code: string;
+  [key: string]: unknown;
+}
+
 export interface ConfigSubjectSpec {
   /** 展示名（配置工作室 UI 的族清单；本切片只进日志与测试断言） */
   label: string;
   /** 读史 / 回滚所需的权限点 = 各族配置面的同一权限点（见 permissions.ts） */
   configurePermission: Permission;
+  /**
+   * 逐主体写面门（回滚 / 草稿保存与发布路由在族权限点之后调用；缺省 = 该族只有
+   * 族级权限点）。返回 undefined = 放行。
+   */
+  authorizeWrite?: (ctx: {
+    db: Pick<ConfigRevisionTx, "select">;
+    authz: { roles: readonly string[]; permissions: ReadonlySet<Permission> };
+    subjectId: string;
+  }) => Promise<SubjectWriteDenial | undefined>;
   /**
    * 把历史快照应用回配置行（回滚 = 前滚一个新版本）：用族自己的 zod 收口快照
    * 形状，UPDATE 内容列 + version 列，返回 false = 配置行已不存在（规则被删、

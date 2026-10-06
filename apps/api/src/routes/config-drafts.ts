@@ -5,7 +5,7 @@ import type { Db } from "@ally/db";
 import type { AppEnv } from "../auth/session.ts";
 import { recordAudit } from "../audit/audit-log.ts";
 import { configSubjectSpec } from "../config-versions/registry.ts";
-import { permissionFailure } from "../config-versions/http.ts";
+import { authorizeSubjectWrite, permissionFailure } from "../config-versions/http.ts";
 import {
   ConfigDraftNotFoundError,
   deleteConfigDraft,
@@ -134,6 +134,15 @@ export function configDraftsRoutes(deps: { db: Db; logger: Logger }) {
     if (!subjectId.success || !parsed.success) {
       return c.json({ error: "invalid_request" }, 400);
     }
+    // 逐主体写面门（#233）：与回滚同扇——存草稿是「以该主体的名义写下一版内容」
+    const writeDenial = await authorizeSubjectWrite(spec, {
+      db: deps.db,
+      authz: c.get("authz"),
+      subjectId: subjectId.data,
+    });
+    if (writeDenial !== undefined) {
+      return c.json(writeDenial, 403);
+    }
     const actorId = c.get("user").id;
     try {
       const saved = await saveConfigDraft(deps.db, {
@@ -200,6 +209,15 @@ export function configDraftsRoutes(deps: { db: Db; logger: Logger }) {
     const parsed = publishBody.safeParse(await c.req.json().catch(() => undefined));
     if (!subjectId.success || !parsed.success) {
       return c.json({ error: "invalid_request" }, 400);
+    }
+    // 逐主体写面门（#233）：与回滚/存草稿同扇——发布 = 改那行配置
+    const writeDenial = await authorizeSubjectWrite(spec, {
+      db: deps.db,
+      authz: c.get("authz"),
+      subjectId: subjectId.data,
+    });
+    if (writeDenial !== undefined) {
+      return c.json(writeDenial, 403);
     }
     const actorId = c.get("user").id;
     let outcome: PublishDraftResult;

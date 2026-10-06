@@ -129,6 +129,12 @@ export const API_ROUTES: readonly RouteDecl[] = [
   { method: "PUT", path: "/api/config-drafts/:subjectType/:subjectId", auth: { kind: "session" } },
   { method: "DELETE", path: "/api/config-drafts/:subjectType/:subjectId", auth: { kind: "session" } },
   { method: "POST", path: "/api/config-drafts/:subjectType/:subjectId/publish", auth: { kind: "session" } },
+  // 规则注册表（#233）：读面登录即可（全公司共用的业务参数，非敏感数据）；
+  // PATCH 的改权是逐规则的（行上角色数组 + owner 恒可 + 开关启用过 enableBy），
+  // 路由内裁决，403 面在 rules.test.ts 覆盖——刻意不走 rules.configure 权限点门
+  { method: "GET", path: "/api/rules", auth: { kind: "session" } },
+  { method: "GET", path: "/api/rules/:key", auth: { kind: "session" } },
+  { method: "PATCH", path: "/api/rules/:key", auth: { kind: "session" } },
   // 审计日志查询（#29）：owner / admin（audit.read 权限点）
   { method: "GET", path: "/api/audit-events", auth: { kind: "permission", permission: "audit.read" } },
   // 实时连接令牌（#110 切片 2）：把调用者自己会话的令牌发还给本人，WS auth

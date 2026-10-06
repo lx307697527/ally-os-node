@@ -4,11 +4,13 @@ import { schema } from "@ally/db";
 import { ruleSpecSchema } from "@ally/automations";
 import { NUMBERING_DATE_FORMATS } from "../numbering/service.ts";
 import { roleSchema } from "../authz/permissions.ts";
+import { ruleWriteDenial } from "../rules/service.ts";
 import { registerConfigSubject, type ConfigSubjectSpec } from "./registry.ts";
 
 /**
- * 五族配置的台账契约（#226 切片 1）：快照形状、回滚落列、注册；切片 2 加草稿
- * 内容契约（draftContentSchema，draft → publish 的保存面校验）。
+ * 六族配置的台账契约（#226 切片 1；第六族 registry_rule 随 #233 进场）：快照
+ * 形状、回滚落列、注册；切片 2 加草稿内容契约（draftContentSchema，draft →
+ * publish 的保存面校验）。
  *
  * 本文件是「快照长什么样」的唯一事实来源：配置面写入时用这里的 snapshotXxx
  * 建快照（0019 迁移的存量补账 SQL 与这些形状逐一同构），回滚时用同一形状的
@@ -278,6 +280,90 @@ const numberingRuleSpec: ConfigSubjectSpec = {
   },
 };
 
+// ── 规则注册表（#233）──────────────────────────────────────────────────────
+// 键是身份不是内容（消费方按字面量引用），故不在快照里——回滚「别的键」是语义
+// 错误，同 custom_field_defs.fieldKey 的裁法。快照含改权数组（changeableBy/
+// enableBy 是这份配置的治理内容，回滚要一并恢复）；待生效变更不在快照也不在
+// 台账（它不是「当时的现状」），回滚落列时一并清空——回滚后的生效配置就是快照
+// 那一份，不存在「回滚了还定时改回去」的暗门。
+const registryRuleSnapshotSchema = z.object({
+  label: z.string().min(1).max(500),
+  category: z.enum(schema.ruleCategory.enumValues),
+  valueType: z.enum(schema.ruleValueType.enumValues),
+  value: z.unknown(),
+  changeableBy: z.array(roleSchema),
+  enableBy: z.array(roleSchema).nullable(),
+  adjudicationRefs: z.array(z.string().min(1)),
+  riskFlag: z.boolean(),
+  riskNote: z.string().nullable(),
+});
+
+export function registryRuleSnapshot(row: {
+  label: string;
+  category: (typeof schema.ruleCategory.enumValues)[number];
+  valueType: (typeof schema.ruleValueType.enumValues)[number];
+  value: unknown;
+  changeableBy: string[];
+  enableBy: string[] | null;
+  adjudicationRefs: string[];
+  riskFlag: boolean;
+  riskNote: string | null;
+}): Record<string, unknown> {
+  return {
+    label: row.label,
+    category: row.category,
+    valueType: row.valueType,
+    value: row.value,
+    changeableBy: row.changeableBy,
+    enableBy: row.enableBy,
+    adjudicationRefs: row.adjudicationRefs,
+    riskFlag: row.riskFlag,
+    riskNote: row.riskNote,
+  };
+}
+
+const registryRuleSpec: ConfigSubjectSpec = {
+  label: "规则",
+  configurePermission: "rules.configure",
+  // 逐主体写面门（#233）：谁能改按行的角色数组（owner 恒可）——族的
+  // rules.configure 之外的第二扇门，与 PATCH 面同扇（同一裁决在两个写面各自强制）
+  authorizeWrite: async ({ db, authz, subjectId }) => {
+    const rows = await db
+      .select({ changeableBy: schema.registryRules.changeableBy })
+      .from(schema.registryRules)
+      .where(eq(schema.registryRules.id, subjectId))
+      .limit(1);
+    const rule = rows[0];
+    if (rule === undefined) return undefined; // 行已不存在 → 让流程走到 404 subject_not_found
+    return ruleWriteDenial({ roles: authz.roles }, rule);
+  },
+  applyRevision: async (tx, subjectId, snapshot, version) => {
+    const data = parseSnapshotOrThrow("registry_rule", registryRuleSnapshotSchema, snapshot);
+    const updated = await tx
+      .update(schema.registryRules)
+      .set({
+        label: data.label,
+        category: data.category,
+        valueType: data.valueType,
+        value: data.value,
+        changeableBy: data.changeableBy,
+        enableBy: data.enableBy,
+        adjudicationRefs: data.adjudicationRefs,
+        riskFlag: data.riskFlag,
+        riskNote: data.riskNote,
+        scheduledValue: null,
+        scheduledEffectiveAt: null,
+        scheduledRationale: null,
+        scheduledById: null,
+        version,
+        updatedAt: new Date(),
+      })
+      .where(eq(schema.registryRules.id, subjectId))
+      .returning({ id: schema.registryRules.id });
+    return updated.length > 0;
+  },
+};
+
 // workflow / approval：本切片没有定义改写路径，行内容恒等于 v1，回滚与草稿均
 // 无意义（409 rollback_unsupported / publish_unsupported）；快照照记（创建即
 // 第一版事实），史与差异可读。定义改写端点进场时同步补 applyRevision 与草稿契约。
@@ -298,3 +384,4 @@ registerConfigSubject("approval_config", approvalConfigSpec);
 registerConfigSubject("custom_field_def", customFieldDefSpec);
 registerConfigSubject("automation_rule", automationRuleSpec);
 registerConfigSubject("numbering_rule", numberingRuleSpec);
+registerConfigSubject("registry_rule", registryRuleSpec);

@@ -27,6 +27,7 @@ import { meRoutes } from "./routes/me.ts";
 import { notificationsRoutes } from "./routes/notifications.ts";
 import { numberingRulesRoutes } from "./routes/numbering-rules.ts";
 import { realtimeRoutes } from "./routes/realtime.ts";
+import { rulesRoutes } from "./routes/rules.ts";
 import { tasksRoutes } from "./routes/tasks.ts";
 import { userRolesRoutes } from "./routes/user-roles.ts";
 import { workflowInstancesRoutes } from "./routes/workflow-instances.ts";
@@ -145,6 +146,12 @@ export function createApp(deps: AppDeps) {
   // 配置草稿与一键发布（#226 切片 2）：先在测试环境试（草稿 overlay，发布前
   // 活配置读路径看不见），一键发布 = 前滚 published 新版本 + 审计。同一扇族门
   app.route("/", configDraftsRoutes(deps));
+  // 规则注册表（#233 切片 1）：裁决即配置的内核——读面登录即可（全公司共用的
+  // 业务参数），改值按每条规则的「谁能改」逐规则裁决（路由内，owner 恒可）；
+  // 第六配置族 registry_rule 在 config-versions/families.ts 注册，史/回滚走
+  // 台账。定时生效的到点前滚是内核函数（rules/service.ts），cron 接线随 worker
+  // 消费域进场
+  app.route("/", rulesRoutes(deps));
 
   return app;
 }
