@@ -71,6 +71,13 @@
       "when": 1791234919327,
       "tag": "0009_lame_jackpot",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1791245457979,
+      "tag": "0010_narrow_sentry",
+      "breakpoints": true
     }
   ]
 }

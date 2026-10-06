@@ -27,6 +27,13 @@ import { loadVisibleSubject } from "../subjects/registry.ts";
  * comment.mentioned 站内通知（聚合指向 subject，深链由前端计算），作者本人
  * 提到自己不通知（与 task.assigned 同裁）；通知与评论、审计在同一事务，
  * 提交后对被提及者发一次实时「催」（#110 切片 2，铃铛据此即时重读）。
+ *
+ * 关注扇出（#110 切片 4）：评论是关注者的第一个「动静」投递——同一事务里
+ * 对本 subject 的关注者补发 comment.created 通知（标题「在关注对象上有新
+ * 评论」，payload 与提及同构，铃铛同一渲染层）。扇出的两道闸：已收到提及
+ * 通知的人不重复投（提及优先，一人一评论至多一条）；关注者必须仍在当前
+ * 可见者集合里（关注不改变可见性——任务改派后，陈旧关注者不越过可见性门，
+ * 与 follows.ts 同一裁法）。作者本人关注自己的对象也不收自己的评论。
  */
 
 /** 列表单页上限；分页语义与 tasks / audit-events 一致（limit/offset + 精确 total） */
@@ -125,6 +132,25 @@ export function commentsRoutes(deps: { db: Db; notifyUsers: (userIds: string[]) 
           mentioned: mentioned.map((v) => v.id),
         },
       });
+      // 关注扇出（#110 切片 4）：关注者 − 已被提及（提及优先，一人一评论至多
+      // 一条）− 作者本人，且必须在**当前**可见者集合里（关注不改变可见性，
+      // 任务改派后陈旧关注者不越过门）
+      const followerRows = await tx
+        .select({ userId: schema.follows.userId })
+        .from(schema.follows)
+        .where(
+          and(
+            eq(schema.follows.subjectType, parsed.data.subjectType),
+            eq(schema.follows.subjectId, parsed.data.subjectId),
+          ),
+        );
+      const mentionedIds = new Set(mentioned.map((v) => v.id));
+      const watcherIds = followerRows
+        .map((row) => row.userId)
+        .filter(
+          (userId) =>
+            userId !== me.id && !mentionedIds.has(userId) && subject.viewers.some((v) => v.id === userId),
+        );
       for (const person of mentioned) {
         await tx.insert(schema.notifications).values({
           userId: person.id,
@@ -139,24 +165,40 @@ export function commentsRoutes(deps: { db: Db; notifyUsers: (userIds: string[]) 
           },
         });
       }
-      return row;
+      for (const userId of watcherIds) {
+        await tx.insert(schema.notifications).values({
+          userId,
+          eventType: "comment.created",
+          aggregateType: parsed.data.subjectType,
+          aggregateId: parsed.data.subjectId,
+          payload: {
+            taskTitle: subject.title,
+            commentId: row.id,
+            actorName: me.name,
+            excerpt: parsed.data.body.slice(0, EXCERPT_MAX),
+          },
+        });
+      }
+      return { row, watcherIds };
     });
-    // 提交后再对被提及者发实时「催」（#110 切片 2）：铃铛重读 summary，读到
-    // 的就是已提交的数据；催失败只降级回轮询（实现方保证不 reject）
-    if (mentioned.length > 0) {
-      await deps.notifyUsers(mentioned.map((person) => person.id));
+    // 提交后再对拿到新通知的人发实时「催」（#110 切片 2）：铃铛重读 summary，
+    // 读到的就是已提交的数据；催失败只降级回轮询（实现方保证不 reject）
+    const nudgedIds = [...mentioned.map((person) => person.id), ...created.watcherIds];
+    if (nudgedIds.length > 0) {
+      await deps.notifyUsers(nudgedIds);
     }
     return c.json(
       {
         comment: {
-          id: created.id,
+          id: created.row.id,
           subjectType: parsed.data.subjectType,
           subjectId: parsed.data.subjectId,
           body: parsed.data.body,
           author: { id: me.id, name: me.name },
-          createdAt: created.createdAt.toISOString(),
+          createdAt: created.row.createdAt.toISOString(),
         },
         mentioned,
+        notifiedFollowers: created.watcherIds.length,
       },
       201,
     );

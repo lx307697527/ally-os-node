@@ -91,6 +91,20 @@ describe("describeNotification (白名单类型：文案与深链在 TS 不在�
     expect(face.href).toBe(`/tasks/${taskId}?comment=${commentId}`);
   });
 
+  it("comment.created：关注对象上的新评论，去处同样带着 comment 参数", () => {
+    const face = describeNotification(
+      row({
+        eventType: "comment.created",
+        aggregateType: "task",
+        aggregateId: taskId,
+        payload: { taskTitle: "Review label copy", commentId, actorName: "Bob", excerpt: "Ship it" },
+      }),
+    );
+    expect(face.title).toBe("Bob commented on a task you follow");
+    expect(face.detail).toBe("Ship it");
+    expect(face.href).toBe(`/tasks/${taskId}?comment=${commentId}`);
+  });
+
   it("事实缺位不撒谎：没有聚合 id 无处可去，没有摘录用任务名，没有名字用 Someone", () => {
     const noAggregate = describeNotification(row({ eventType: "task.assigned", payload: { taskTitle: "t" } }));
     expect(noAggregate.href).toBeNull();
@@ -105,7 +119,7 @@ describe("describeNotification (白名单类型：文案与深链在 TS 不在�
   });
 
   it("白名单就是铃铛认得的全部：新生产者必须先进这张表", () => {
-    expect(NOTIFIED_EVENT_TYPES).toEqual(["task.assigned", "comment.mentioned"]);
+    expect(NOTIFIED_EVENT_TYPES).toEqual(["task.assigned", "comment.mentioned", "comment.created"]);
   });
 });
 
