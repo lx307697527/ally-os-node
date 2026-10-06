@@ -11,6 +11,7 @@ import { Region } from "./pages/Region.tsx";
 import { FeedbackDialog } from "./shared/components/FeedbackDialog.tsx";
 import { NotificationBell } from "./shared/components/NotificationBell.tsx";
 import { AuditLog } from "./shared/pages/AuditLog.tsx";
+import { Approvals } from "./shared/pages/Approvals.tsx";
 import { TaskDetail } from "./shared/pages/TaskDetail.tsx";
 import { Tasks } from "./shared/pages/Tasks.tsx";
 import { TwoFactorSettings } from "./shared/pages/TwoFactorSettings.tsx";
@@ -121,6 +122,9 @@ export function App(): ReactElement {
               深链落点（?comment= 落到那条评论）；行属门在服务端，无关人
               得到明确的「不可用」，不猜测是删了还是无权。 */}
           <Route path="/tasks/:taskId" element={<TaskDetail />} />
+          {/* 审批待办（#221 切片 3）：配置点名给我的在飞请求；裁决语境随
+              待办行走，详情记录仍过单据可见性门——两扇门在页面里都说话。 */}
+          <Route path="/approvals" element={<Approvals />} />
           {/* 审计日志（#29）：System 区第一个页面；服务端 audit.read 门，
               无权限的账号在页面里得到明确的答复，不预设谁能进来。 */}
           <Route path="/system/audit" element={<AuditLog />} />

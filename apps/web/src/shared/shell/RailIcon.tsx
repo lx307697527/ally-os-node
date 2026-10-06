@@ -20,7 +20,7 @@
 // the labels beside it.
 import type { ReactElement, ReactNode } from "react";
 
-export type RailIconName = "overview" | "ledger" | "tasks";
+export type RailIconName = "overview" | "ledger" | "tasks" | "approvals";
 
 const GLYPHS: Record<RailIconName, ReactNode> = {
   // A gauge: the arc, its baseline and one needle — where things stand.
@@ -45,6 +45,15 @@ const GLYPHS: Record<RailIconName, ReactNode> = {
     <>
       <rect x="4.75" y="4.75" width="14.5" height="14.5" rx="1.5" />
       <path d="m8.5 12.25 2.5 2.5 4.75-5.5" />
+    </>
+  ),
+  // A rubber stamp: handle, block, and the mark it leaves — a decision that
+  // is recorded, not clicked.
+  approvals: (
+    <>
+      <path d="M9.75 11V8.75a2.25 2.25 0 0 1 4.5 0V11" />
+      <rect x="5.25" y="11" width="13.5" height="5.5" rx="1.2" />
+      <path d="M7.75 20.5h8.5" />
     </>
   ),
 };
