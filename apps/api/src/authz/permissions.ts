@@ -43,7 +43,7 @@ export interface AuthzContext {
 }
 
 /** 权限点清单；随业务模块切片增加，新增必须先进这个注册表 */
-export const PERMISSIONS = ["roles.assign", "label_design", "audit.read", "workflow.configure", "approval.configure", "custom_fields.configure", "automations.configure"] as const;
+export const PERMISSIONS = ["roles.assign", "label_design", "audit.read", "workflow.configure", "approval.configure", "custom_fields.configure", "automations.configure", "numbering.configure"] as const;
 
 export type Permission = (typeof PERMISSIONS)[number];
 
@@ -76,10 +76,14 @@ export const permissionSchema = z.enum(PERMISSIONS);
  *   新增一条规则 = 改全公司的连锁反应（建任务、发通知），与流程/审批/字段的
  *   管理者同一批人；规则的执行结果（runs）的查看也在此权限点后面——执行日志
  *   含收件人名单与业务事件细节，是配置面的一部分，不另开读口。
+ * - numbering.configure：老板与管理员（#225）。编号规则属配置工作室——改编号
+ *   格式 = 改所有之后发出的单据号（发票/报价/PO），与流程/审批/字段的管理者
+ *   同一批人；发号不在任何权限点后面——分配是属主域创建单据事务里的进程内调用
+ *   （numbering/service.ts），有没有号随单据的可见性门走。
  */
 export const ROLE_PERMISSIONS: Readonly<Record<Role, readonly Permission[]>> = {
-  owner: ["roles.assign", "audit.read", "workflow.configure", "approval.configure", "custom_fields.configure", "automations.configure"],
-  admin: ["roles.assign", "audit.read", "workflow.configure", "approval.configure", "custom_fields.configure", "automations.configure"],
+  owner: ["roles.assign", "audit.read", "workflow.configure", "approval.configure", "custom_fields.configure", "automations.configure", "numbering.configure"],
+  admin: ["roles.assign", "audit.read", "workflow.configure", "approval.configure", "custom_fields.configure", "automations.configure", "numbering.configure"],
   sales_lead: [],
   sales: [],
   customer_service: [],

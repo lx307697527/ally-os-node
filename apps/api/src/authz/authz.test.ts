@@ -62,6 +62,7 @@ describe("permission registry (#23)", () => {
         "approval.configure",
         "custom_fields.configure",
         "automations.configure",
+        "numbering.configure",
       ]),
     );
     expect(effectivePermissions([], ["label_design"])).toEqual(
