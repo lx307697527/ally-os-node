@@ -8,6 +8,8 @@ import { requirePermission } from "../authz/middleware.ts";
 import { recordAudit } from "../audit/audit-log.ts";
 import { parseWorkflowTemplate, referencedBlocks } from "../workflow/engine.ts";
 import { actionBlock, conditionBlock } from "../workflow/blocks.ts";
+import { workflowTemplateSnapshot } from "../config-versions/families.ts";
+import { recordConfigRevision } from "../config-versions/service.ts";
 
 /**
  * 流程模板端点（#220 切片 1：配置工作室的流程配置面）。
@@ -16,7 +18,7 @@ import { actionBlock, conditionBlock } from "../workflow/blocks.ts";
  * = 改全员的工作方式。definition 在保存时过四道校验：zod 结构 → 拓扑语义
  * （initial/target/自环）→ XState 可达性 → 积木存在性（gates/entryActions 引用
  * 的名字必须在注册表里）；在飞实例拿到的是定义快照，模板行一经创建不改定义
- * （替换 = 停用旧行建新键，版本化随 #226 进场）。
+ * （替换 = 停用旧行建新键；创建经配置版本台账记 v1，#226）。
  *
  * subject_type 是开集 text：四个对象（线索/商机/订单履约/偏差）的流程可以
  * 在各自的业务域落地前先行配置；「能不能真的启动」由实例侧的属主域注册表
@@ -73,22 +75,44 @@ export function workflowTemplatesRoutes(deps: { db: Db }) {
     }
     // 部分唯一索引（每类型至多一个默认模板）不在 onConflictDoNothing 的目标里，
     // 撞上它说明这个 subjectType 已有默认模板——结构不变式的 409，不是意外
-    let inserted: { id: string }[];
+    const actorId = c.get("user").id;
+    let inserted: { id: string; version: number }[];
     try {
-      inserted = await deps.db
-        .insert(schema.workflowTemplates)
-        .values({
-          subjectType: body.subjectType,
-          templateKey: body.templateKey,
-          ...(body.productType !== undefined ? { productType: body.productType } : {}),
-          isDefault: body.isDefault,
-          definition: body.definition,
-          createdById: c.get("user").id,
-        })
-        .onConflictDoNothing({
-          target: [schema.workflowTemplates.subjectType, schema.workflowTemplates.templateKey],
-        })
-        .returning({ id: schema.workflowTemplates.id });
+      inserted = await deps.db.transaction(async (tx) => {
+        const rows = await tx
+          .insert(schema.workflowTemplates)
+          .values({
+            subjectType: body.subjectType,
+            templateKey: body.templateKey,
+            ...(body.productType !== undefined ? { productType: body.productType } : {}),
+            isDefault: body.isDefault,
+            definition: body.definition,
+            createdById: actorId,
+          })
+          .onConflictDoNothing({
+            target: [schema.workflowTemplates.subjectType, schema.workflowTemplates.templateKey],
+          })
+          .returning({ id: schema.workflowTemplates.id, version: schema.workflowTemplates.version });
+        const insertedRow = rows[0];
+        if (insertedRow !== undefined) {
+          // 台账 v1（#226）：创建即第一版事实，与配置行同一个事务
+          await recordConfigRevision(tx, {
+            subjectType: "workflow_template",
+            subjectId: insertedRow.id,
+            version: insertedRow.version,
+            actorId,
+            snapshot: workflowTemplateSnapshot({
+              productType: body.productType ?? null,
+              isDefault: body.isDefault,
+              active: true,
+              definition: body.definition,
+            }),
+            changes: null,
+            source: "created",
+          });
+        }
+        return rows;
+      });
     } catch (err) {
       if (isUniqueViolation(err)) {
         return c.json({ error: "default_template_exists" }, 409);

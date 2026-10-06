@@ -5,6 +5,8 @@ import { z } from "zod";
 import type { Db } from "@ally/db";
 import { schema } from "@ally/db";
 import { ruleSpecSchema } from "@ally/automations";
+import { automationRuleSnapshot } from "../config-versions/families.ts";
+import { jsonEqual, nextConfigVersion, recordConfigRevision } from "../config-versions/service.ts";
 import type { AppEnv } from "../auth/session.ts";
 import { requirePermission } from "../authz/middleware.ts";
 import { recordAudit } from "../audit/audit-log.ts";
@@ -18,9 +20,11 @@ import { recordAudit } from "../audit/audit-log.ts";
  * 半边：保存即生效，worker 扫描器每个周期读 enabled 规则，没有发布开关）。
  *
  * spec（trigger/conditions/actions）整体替换不局部合并：规则是「触发 → 条件 →
- * 动作」一个整体，PATCH 里带 spec 就是换规则——版本 +1 并留审计（#226 版本化
- * 进场前的最小纪律）；改名字/停用不动版本。执行日志（runs）的查看也在这扇门后：
- * 运行记录含收件人名单与业务事件细节，是配置面的一部分。
+ * 动作」一个整体，PATCH 里带 spec 就是换规则。每次真实变更（改名/启停/换 spec）
+ * 经配置版本台账（#226）记一个新版本并留审计，无实效变更幂等返回现状——台账
+ * 是版本史与回滚的事实来源（config-versions/），行.version 与台账同步。
+ * 执行日志（runs）的查看也在这扇门后：运行记录含收件人名单与业务事件细节，
+ * 是配置面的一部分。
  */
 
 const createBody = z.object({
@@ -98,19 +102,40 @@ export function automationsRoutes(deps: { db: Db; logger: Logger }) {
     }
     const body = parsed.data;
     const spec = specValues(body);
-    const inserted = await deps.db
-      .insert(schema.automationRules)
-      .values({
-        name: body.name,
-        ...(body.description !== undefined ? { description: body.description } : {}),
-        trigger: spec.trigger,
-        conditions: spec.conditions,
-        actions: spec.actions,
-        createdById: c.get("user").id,
-      })
-      .returning({ id: schema.automationRules.id });
-    const row = inserted[0];
-    if (row === undefined) throw new Error("automation rule insert returned no row");
+    const actorId = c.get("user").id;
+    const row = await deps.db.transaction(async (tx) => {
+      const inserted = await tx
+        .insert(schema.automationRules)
+        .values({
+          name: body.name,
+          ...(body.description !== undefined ? { description: body.description } : {}),
+          trigger: spec.trigger,
+          conditions: spec.conditions,
+          actions: spec.actions,
+          createdById: actorId,
+        })
+        .returning({ id: schema.automationRules.id, version: schema.automationRules.version });
+      const insertedRow = inserted[0];
+      if (insertedRow === undefined) throw new Error("automation rule insert returned no row");
+      // 台账 v1（#226）：创建即第一版事实，与配置行同一个事务
+      await recordConfigRevision(tx, {
+        subjectType: "automation_rule",
+        subjectId: insertedRow.id,
+        version: insertedRow.version,
+        actorId,
+        snapshot: automationRuleSnapshot({
+          name: body.name,
+          description: body.description ?? null,
+          trigger: spec.trigger,
+          conditions: spec.conditions,
+          actions: spec.actions,
+          enabled: true,
+        }),
+        changes: null,
+        source: "created",
+      });
+      return insertedRow;
+    });
     await recordAudit(deps.db, {
       actor: c.get("user").id,
       action: "automations.rule_created",
@@ -145,43 +170,76 @@ export function automationsRoutes(deps: { db: Db; logger: Logger }) {
     if (before === undefined) {
       return c.json({ error: "not_found" }, 404);
     }
-    const specChanged = body.spec !== undefined;
-    const updated = await deps.db
-      .update(schema.automationRules)
-      .set({
-        ...(body.name !== undefined ? { name: body.name } : {}),
-        ...(body.description !== undefined ? { description: body.description } : {}),
-        ...(body.enabled !== undefined ? { enabled: body.enabled } : {}),
-        ...(specChanged && body.spec !== undefined
-          ? {
-              ...specValues(body.spec),
-              // spec 变更即版本 +1（#226 进场前的最小纪律），改名/停用不动
-              version: before.version + 1,
-            }
-          : {}),
-        updatedAt: new Date(),
-      })
-      .where(eq(schema.automationRules.id, ruleId))
-      .returning({ version: schema.automationRules.version });
-    const row = updated[0];
-    if (row === undefined) throw new Error("automation rule update returned no row");
+    const nextSpec = body.spec !== undefined ? specValues(body.spec) : undefined;
+    // 实效变更集（顶层字段摘要，与台账 changes 同形）：无实效变更 = 幂等返回
+    // 现状，不更新、不记账、不留审计（审计只记真变更）
+    const changes: Record<string, { from: unknown; to: unknown }> = {};
+    if (body.name !== undefined && body.name !== before.name) {
+      changes.name = { from: before.name, to: body.name };
+    }
+    if (body.description !== undefined && !jsonEqual(body.description, before.description)) {
+      changes.description = { from: before.description, to: body.description };
+    }
+    if (body.enabled !== undefined && body.enabled !== before.enabled) {
+      changes.enabled = { from: before.enabled, to: body.enabled };
+    }
+    if (nextSpec !== undefined) {
+      if (!jsonEqual(nextSpec.trigger, before.trigger)) {
+        changes.trigger = { from: before.trigger, to: nextSpec.trigger };
+      }
+      if (!jsonEqual(nextSpec.conditions, before.conditions)) {
+        changes.conditions = { from: before.conditions, to: nextSpec.conditions };
+      }
+      if (!jsonEqual(nextSpec.actions, before.actions)) {
+        changes.actions = { from: before.actions, to: nextSpec.actions };
+      }
+    }
+    if (Object.keys(changes).length === 0) {
+      return c.json({ version: before.version });
+    }
+    const actorId = c.get("user").id;
+    const version = await deps.db.transaction(async (tx) => {
+      // 版本号从台账取（行.version = 台账最新版的不变式），不是行值 +1——
+      // 两处真相必然漂移，一处真相（台账）+ 同事务同步
+      const nextVersion = await nextConfigVersion(tx, "automation_rule", ruleId);
+      const updated = await tx
+        .update(schema.automationRules)
+        .set({
+          ...(body.name !== undefined ? { name: body.name } : {}),
+          ...(body.description !== undefined ? { description: body.description } : {}),
+          ...(body.enabled !== undefined ? { enabled: body.enabled } : {}),
+          ...(nextSpec ?? {}),
+          version: nextVersion,
+          updatedAt: new Date(),
+        })
+        .where(eq(schema.automationRules.id, ruleId))
+        .returning({ id: schema.automationRules.id });
+      if (updated[0] === undefined) throw new Error("automation rule update returned no row");
+      await recordConfigRevision(tx, {
+        subjectType: "automation_rule",
+        subjectId: ruleId,
+        version: nextVersion,
+        actorId,
+        snapshot: automationRuleSnapshot({
+          name: body.name ?? before.name,
+          description: body.description !== undefined ? body.description : before.description,
+          trigger: nextSpec !== undefined ? nextSpec.trigger : before.trigger,
+          conditions: nextSpec !== undefined ? nextSpec.conditions : before.conditions,
+          actions: nextSpec !== undefined ? nextSpec.actions : before.actions,
+          enabled: body.enabled ?? before.enabled,
+        }),
+        changes,
+        source: "updated",
+      });
+      return nextVersion;
+    });
     await recordAudit(deps.db, {
-      actor: c.get("user").id,
+      actor: actorId,
       action: "automations.rule_updated",
       target: ruleId,
-      detail: {
-        name: body.name ?? before.name,
-        enabled: body.enabled ?? before.enabled,
-        ...(specChanged && body.spec !== undefined
-          ? {
-              version: row.version,
-              from: { trigger: before.trigger, conditions: before.conditions, actions: before.actions },
-              to: specValues(body.spec),
-            }
-          : {}),
-      },
+      detail: { name: body.name ?? before.name, enabled: body.enabled ?? before.enabled, version, changes },
     });
-    return c.json({ version: row.version });
+    return c.json({ version });
   });
 
   app.delete("/api/automations/:id", requireAutomationsConfigure, async (c) => {

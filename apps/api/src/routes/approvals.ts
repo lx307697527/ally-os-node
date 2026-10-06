@@ -7,6 +7,8 @@ import type { Logger } from "pino";
 import type { AppEnv } from "../auth/session.ts";
 import { requirePermission } from "../authz/middleware.ts";
 import { recordAudit } from "../audit/audit-log.ts";
+import { approvalConfigSnapshot } from "../config-versions/families.ts";
+import { recordConfigRevision } from "../config-versions/service.ts";
 import { loadVisibleSubject } from "../subjects/registry.ts";
 import {
   actOnApproval,
@@ -80,21 +82,42 @@ export function approvalsRoutes(deps: { db: Db; logger: Logger; notifyUsers: (us
         422,
       );
     }
-    let inserted: { id: string }[];
+    const actorId = c.get("user").id;
+    let inserted: { id: string; version: number }[];
     try {
-      inserted = await deps.db
-        .insert(schema.approvalConfigs)
-        .values({
-          subjectType: body.subjectType,
-          configKey: body.configKey,
-          name: body.name,
-          levels: levels.data,
-          createdById: c.get("user").id,
-        })
-        .onConflictDoNothing({
-          target: [schema.approvalConfigs.subjectType, schema.approvalConfigs.configKey],
-        })
-        .returning({ id: schema.approvalConfigs.id });
+      inserted = await deps.db.transaction(async (tx) => {
+        const rows = await tx
+          .insert(schema.approvalConfigs)
+          .values({
+            subjectType: body.subjectType,
+            configKey: body.configKey,
+            name: body.name,
+            levels: levels.data,
+            createdById: actorId,
+          })
+          .onConflictDoNothing({
+            target: [schema.approvalConfigs.subjectType, schema.approvalConfigs.configKey],
+          })
+          .returning({ id: schema.approvalConfigs.id, version: schema.approvalConfigs.version });
+        const insertedRow = rows[0];
+        if (insertedRow !== undefined) {
+          // 台账 v1（#226）：创建即第一版事实，与配置行同一个事务
+          await recordConfigRevision(tx, {
+            subjectType: "approval_config",
+            subjectId: insertedRow.id,
+            version: insertedRow.version,
+            actorId,
+            snapshot: approvalConfigSnapshot({
+              name: body.name,
+              levels: levels.data,
+              active: true,
+            }),
+            changes: null,
+            source: "created",
+          });
+        }
+        return rows;
+      });
     } catch (err) {
       if (isUniqueViolation(err)) {
         return c.json({ error: "config_exists" }, 409);

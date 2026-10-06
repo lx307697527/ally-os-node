@@ -10,7 +10,8 @@ import { roleSchema } from "../authz/permissions.ts";
 import { recordAudit } from "../audit/audit-log.ts";
 import { loadVisibleSubject } from "../subjects/registry.ts";
 import { formSubjectSpec } from "../custom-fields/registry.ts";
-import {
+import { customFieldDefSnapshot } from "../config-versions/families.ts";
+import { nextConfigVersion, recordConfigRevision } from "../config-versions/service.ts";import {
   CUSTOM_FIELD_TYPES,
   canViewField,
   composeFormSchema,
@@ -87,24 +88,49 @@ export function customFieldsRoutes(deps: { db: Db; logger: Logger }) {
     if (spec !== undefined && body.fieldKey in spec.builtin) {
       return c.json({ error: "builtin_key_conflict" }, 422);
     }
-    const inserted = await deps.db
-      .insert(schema.customFieldDefs)
-      .values({
-        subjectType: body.subjectType,
-        fieldKey: body.fieldKey,
-        label: body.label,
-        fieldType: body.fieldType,
-        ...(body.fieldType === "select" ? { options: body.options ?? [] } : {}),
-        required: body.required,
-        viewableBy: [...body.viewableBy],
-        editableBy: [...body.editableBy],
-        createdById: c.get("user").id,
-      })
-      .onConflictDoNothing({
-        target: [schema.customFieldDefs.subjectType, schema.customFieldDefs.fieldKey],
-      })
-      .returning({ id: schema.customFieldDefs.id });
-    const row = inserted[0];
+    const actorId = c.get("user").id;
+    const options = body.fieldType === "select" ? (body.options ?? []) : null;
+    const row = await deps.db.transaction(async (tx) => {
+      const inserted = await tx
+        .insert(schema.customFieldDefs)
+        .values({
+          subjectType: body.subjectType,
+          fieldKey: body.fieldKey,
+          label: body.label,
+          fieldType: body.fieldType,
+          ...(options !== null ? { options } : {}),
+          required: body.required,
+          viewableBy: [...body.viewableBy],
+          editableBy: [...body.editableBy],
+          createdById: actorId,
+        })
+        .onConflictDoNothing({
+          target: [schema.customFieldDefs.subjectType, schema.customFieldDefs.fieldKey],
+        })
+        .returning({ id: schema.customFieldDefs.id, version: schema.customFieldDefs.version });
+      const insertedRow = inserted[0];
+      if (insertedRow !== undefined) {
+        // 台账 v1（#226）：创建即第一版事实，与配置行同一个事务
+        await recordConfigRevision(tx, {
+          subjectType: "custom_field_def",
+          subjectId: insertedRow.id,
+          version: insertedRow.version,
+          actorId,
+          snapshot: customFieldDefSnapshot({
+            label: body.label,
+            fieldType: body.fieldType,
+            options,
+            required: body.required,
+            viewableBy: [...body.viewableBy],
+            editableBy: [...body.editableBy],
+            active: true,
+          }),
+          changes: null,
+          source: "created",
+        });
+      }
+      return insertedRow;
+    });
     if (row === undefined) {
       return c.json({ error: "field_exists" }, 409);
     }
@@ -138,7 +164,8 @@ export function customFieldsRoutes(deps: { db: Db; logger: Logger }) {
     return c.json({ fields: rows });
   });
 
-  // 停用/恢复 = active 翻转，定义不改写（#226 版本化进场前的最小纪律）
+  // 停用/恢复 = active 翻转，其余定义不改写（内容改写端点随 #226 后续切片）；
+  // 每次翻转经台账记一个新版本
   app.patch("/api/custom-fields/:id", requireCustomFieldsConfigure, async (c) => {
     const id = z.uuid().safeParse(c.req.param("id"));
     if (!id.success) {
@@ -148,17 +175,65 @@ export function customFieldsRoutes(deps: { db: Db; logger: Logger }) {
     if (!parsed.success) {
       return c.json({ error: "invalid_request" }, 400);
     }
-    const updated = await deps.db
-      .update(schema.customFieldDefs)
-      .set({ active: parsed.data.active })
+    const actorId = c.get("user").id;
+    const found = await deps.db
+      .select({ active: schema.customFieldDefs.active })
+      .from(schema.customFieldDefs)
       .where(eq(schema.customFieldDefs.id, id.data))
-      .returning({ id: schema.customFieldDefs.id, active: schema.customFieldDefs.active });
-    const row = updated[0];
+      .limit(1);
+    const before = found[0];
+    if (before === undefined) {
+      return c.json({ error: "not_found" }, 404);
+    }
+    if (before.active === parsed.data.active) {
+      // real-change-only：翻到现状 = 幂等返回，不更新、不记账、不留审计
+      return c.json({ id: id.data, active: before.active });
+    }
+    const row = await deps.db.transaction(async (tx) => {
+      // 停用/恢复也是一次内容变更：版本号从台账取（行.version = 台账最新版，#226）
+      const nextVersion = await nextConfigVersion(tx, "custom_field_def", id.data);
+      const updated = await tx
+        .update(schema.customFieldDefs)
+        .set({ active: parsed.data.active, version: nextVersion })
+        .where(eq(schema.customFieldDefs.id, id.data))
+        .returning({
+          id: schema.customFieldDefs.id,
+          active: schema.customFieldDefs.active,
+          label: schema.customFieldDefs.label,
+          fieldType: schema.customFieldDefs.fieldType,
+          options: schema.customFieldDefs.options,
+          required: schema.customFieldDefs.required,
+          viewableBy: schema.customFieldDefs.viewableBy,
+          editableBy: schema.customFieldDefs.editableBy,
+        });
+      const updatedRow = updated[0];
+      if (updatedRow === undefined) {
+        return undefined;
+      }
+      await recordConfigRevision(tx, {
+        subjectType: "custom_field_def",
+        subjectId: id.data,
+        version: nextVersion,
+        actorId,
+        snapshot: customFieldDefSnapshot({
+          label: updatedRow.label,
+          fieldType: updatedRow.fieldType,
+          options: updatedRow.options,
+          required: updatedRow.required,
+          viewableBy: updatedRow.viewableBy,
+          editableBy: updatedRow.editableBy,
+          active: updatedRow.active,
+        }),
+        changes: { active: { from: !parsed.data.active, to: parsed.data.active } },
+        source: "updated",
+      });
+      return updatedRow;
+    });
     if (row === undefined) {
       return c.json({ error: "not_found" }, 404);
     }
     await recordAudit(deps.db, {
-      actor: c.get("user").id,
+      actor: actorId,
       action: row.active ? "custom_fields.field_activated" : "custom_fields.field_deactivated",
       target: row.id,
     });

@@ -8,6 +8,8 @@ import type { AppEnv } from "../auth/session.ts";
 import { requirePermission } from "../authz/middleware.ts";
 import { recordAudit } from "../audit/audit-log.ts";
 import { NUMBERING_DATE_FORMATS } from "../numbering/service.ts";
+import { numberingRuleSnapshot } from "../config-versions/families.ts";
+import { nextConfigVersion, recordConfigRevision } from "../config-versions/service.ts";
 import { numberedSubjectSpec, numberedSubjects } from "../numbering/registry.ts";
 
 /** pg 的唯一约束冲突（23505）：形状收窄而不引依赖（pg 是 @ally/db 的传递依赖）。
@@ -32,8 +34,9 @@ function isUniqueViolation(err: unknown): boolean {
  * 与 workflow 实例启动同一裁法），配置面只管规则的增改查。
  *
  * 规则的改写纪律与字段定义不同：编号格式（前缀/日期段/位宽/label）允许就地改
- * ——「修改编号规则后新单据使用新格式」是验收题意，改动历史由审计承载
- * （real-change-only：无实效变更不写审计）；起始号不可改（对已在发的系列无效果，
+ * ——「修改编号规则后新单据使用新格式」是验收题意；每次实效变更经配置版本台账
+ * （#226）记一个新版本并留审计（real-change-only：无实效变更不记账不写审计），
+ * 已发出的号不变（不改建前行的号）；起始号不可改（对已在发的系列无效果，
  * 语义误导），重开系列 = 停用旧规则另建（部分唯一索引保证一对象一套生效规则）。
  */
 
@@ -110,20 +113,43 @@ export function numberingRulesRoutes(deps: { db: Db; logger: Logger }) {
     }
     // 同对象并发建规则：部分唯一索引（active 行）兜底，撞 23505 与「已存在」
     // 同答 409（不能把合法并发当 500 喷回去）
-    let inserted: { id: string }[];
+    const actorId = c.get("user").id;
+    let inserted: { id: string; version: number }[];
     try {
-      inserted = await deps.db
-        .insert(schema.numberingRules)
-        .values({
-          subject: body.subject,
-          label: body.label,
-          prefix: body.prefix,
-          dateFormat: body.dateFormat,
-          padding: body.padding,
-          startNumber: body.startNumber,
-          createdById: c.get("user").id,
-        })
-        .returning({ id: schema.numberingRules.id });
+      inserted = await deps.db.transaction(async (tx) => {
+        const rows = await tx
+          .insert(schema.numberingRules)
+          .values({
+            subject: body.subject,
+            label: body.label,
+            prefix: body.prefix,
+            dateFormat: body.dateFormat,
+            padding: body.padding,
+            startNumber: body.startNumber,
+            createdById: actorId,
+          })
+          .returning({ id: schema.numberingRules.id, version: schema.numberingRules.version });
+        const insertedRow = rows[0];
+        if (insertedRow !== undefined) {
+          // 台账 v1（#226）：创建即第一版事实，与配置行同一个事务
+          await recordConfigRevision(tx, {
+            subjectType: "numbering_rule",
+            subjectId: insertedRow.id,
+            version: insertedRow.version,
+            actorId,
+            snapshot: numberingRuleSnapshot({
+              label: body.label,
+              prefix: body.prefix,
+              dateFormat: body.dateFormat,
+              padding: body.padding,
+              active: true,
+            }),
+            changes: null,
+            source: "created",
+          });
+        }
+        return rows;
+      });
     } catch (err) {
       if (isUniqueViolation(err)) {
         return c.json({ error: "rule_exists" }, 409);
@@ -206,30 +232,55 @@ export function numberingRulesRoutes(deps: { db: Db; logger: Logger }) {
       // 审计只记真变更，活动流投影才不会被 no-op 刷屏）
       return c.json(presentRule(current, null));
     }
-    const updated = await deps.db
-      .update(schema.numberingRules)
-      .set({
-        ...(body.label !== undefined ? { label: body.label } : {}),
-        ...(body.prefix !== undefined ? { prefix: body.prefix } : {}),
-        ...(body.dateFormat !== undefined ? { dateFormat: body.dateFormat } : {}),
-        ...(body.padding !== undefined ? { padding: body.padding } : {}),
-        ...(body.active !== undefined ? { active: body.active } : {}),
-        updatedAt: new Date(),
-      })
-      .where(eq(schema.numberingRules.id, id.data))
-      .returning({
-        id: schema.numberingRules.id,
-        subject: schema.numberingRules.subject,
-        label: schema.numberingRules.label,
-        prefix: schema.numberingRules.prefix,
-        dateFormat: schema.numberingRules.dateFormat,
-        padding: schema.numberingRules.padding,
-        startNumber: schema.numberingRules.startNumber,
-        active: schema.numberingRules.active,
-        createdAt: schema.numberingRules.createdAt,
-        updatedAt: schema.numberingRules.updatedAt,
+    const actorId = c.get("user").id;
+    const row = await deps.db.transaction(async (tx) => {
+      // 版本号从台账取（行.version = 台账最新版的不变式，#226）
+      const nextVersion = await nextConfigVersion(tx, "numbering_rule", id.data);
+      const updated = await tx
+        .update(schema.numberingRules)
+        .set({
+          ...(body.label !== undefined ? { label: body.label } : {}),
+          ...(body.prefix !== undefined ? { prefix: body.prefix } : {}),
+          ...(body.dateFormat !== undefined ? { dateFormat: body.dateFormat } : {}),
+          ...(body.padding !== undefined ? { padding: body.padding } : {}),
+          ...(body.active !== undefined ? { active: body.active } : {}),
+          version: nextVersion,
+          updatedAt: new Date(),
+        })
+        .where(eq(schema.numberingRules.id, id.data))
+        .returning({
+          id: schema.numberingRules.id,
+          subject: schema.numberingRules.subject,
+          label: schema.numberingRules.label,
+          prefix: schema.numberingRules.prefix,
+          dateFormat: schema.numberingRules.dateFormat,
+          padding: schema.numberingRules.padding,
+          startNumber: schema.numberingRules.startNumber,
+          active: schema.numberingRules.active,
+          createdAt: schema.numberingRules.createdAt,
+          updatedAt: schema.numberingRules.updatedAt,
+        });
+      const updatedRow = updated[0];
+      if (updatedRow === undefined) {
+        return undefined;
+      }
+      await recordConfigRevision(tx, {
+        subjectType: "numbering_rule",
+        subjectId: id.data,
+        version: nextVersion,
+        actorId,
+        snapshot: numberingRuleSnapshot({
+          label: updatedRow.label,
+          prefix: updatedRow.prefix,
+          dateFormat: updatedRow.dateFormat,
+          padding: updatedRow.padding,
+          active: updatedRow.active,
+        }),
+        changes,
+        source: "updated",
       });
-    const row = updated[0];
+      return updatedRow;
+    });
     if (row === undefined) {
       return c.json({ error: "internal_error" }, 500);
     }
