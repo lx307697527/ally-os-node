@@ -398,3 +398,59 @@ export const follows = pgTable(
   },
   (t) => [primaryKey({ columns: [t.subjectType, t.subjectId, t.userId] })],
 );
+
+// ── 电子签名（#219：Part 11 底座）───────────────────────────────────────────
+// 受监管记录（批记录、检验、偏差、放行…）共用的签名内核（#232 §12「审批与签名」、
+// §13「签名时重新输入密码，记录含义，签后记录锁定；一人一号；签名用户双因素」）。
+// 老系统没有对应物（greenfield）；多态附着与评论/关注同一形态，合法的 subject
+// 类型由 apps/api/src/esign/registry.ts 逐域注册裁决（与 subjects/registry.ts
+// 的可见性门并存：看得到才签得到，注册表随首个消费域进场，机制先行不留产线）。
+//
+// Part 11 的三条结构化落点：
+// - 签名行不可改写：0012 migration 的触发器拒绝行级 UPDATE/DELETE（与 audit_events
+//   同一裁决——签名是「发生过的事实」，更正走新记录，不走改写）；
+// - 签名人外键不带 CASCADE：签名是监管记录不是社交内容，挂着签名的账号行删不掉
+//   （默认 NO ACTION 即拒），与 comments.authorId 的 CASCADE 刻意相反；
+// - signedAt 与 receivedAt 分列：平板离线签名联网后补同步时保留原签名时间
+//   （#219 验收第 4 条），服务端只断言收到时刻，两者之差就是离线窗口。
+//
+// recordVersion 是被签记录在签名时刻的版本标（由注册域给出）；recordHash 是
+// { subjectType, subjectId, version, record } 规范化 JSON 的 SHA-256——签名绑定
+// 「签的是什么」（Part 11.70 签名与记录的联结），事后可验内容未被改写。
+//
+// 唯一约束即业务规则：同一人对同一记录同一含义只签一次（一人一号的写侧不变式，
+// 并发路径撞约束同样拒绝）；clientToken 是签名端生成的幂等键，离线补同步的重放
+// （弱网重试、多端排队上传）按它去重返回同一行。
+export const esignatureMeaning = pgEnum("esignature_meaning", [
+  "performed",
+  "reviewed",
+  "approved",
+]);
+
+export const esignSignatures = pgTable(
+  "esign_signatures",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    subjectType: text("subject_type").notNull(),
+    subjectId: uuid("subject_id").notNull(),
+    signerId: uuid("signer_id").notNull().references(() => authUser.id),
+    meaning: esignatureMeaning("meaning").notNull(),
+    recordVersion: text("record_version").notNull(),
+    recordHash: text("record_hash").notNull(),
+    signedAt: timestamp("signed_at", { withTimezone: true }).notNull(),
+    receivedAt: timestamp("received_at", { withTimezone: true }).notNull().defaultNow(),
+    clientToken: text("client_token").notNull(),
+  },
+  (t) => [
+    // 唯一读法：这条记录上的签名墙（锁定判断与展示共用前缀）；签名人是过滤维度
+    // 暂无读者，不预置第二索引
+    index("esign_signatures_subject_idx").on(t.subjectType, t.subjectId),
+    uniqueIndex("esign_signatures_signer_meaning_idx").on(
+      t.subjectType,
+      t.subjectId,
+      t.signerId,
+      t.meaning,
+    ),
+    uniqueIndex("esign_signatures_client_token_idx").on(t.clientToken),
+  ],
+);

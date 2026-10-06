@@ -34,7 +34,8 @@
   应用的写路径（直连、运维失误、SQL 注入后的持久化），触发器挡得住——这正是
   老系统 `fix906` 的论证：不存在合法的行级 UPDATE/DELETE 流量，所以无条件拒绝。
 - **将来 Part 11 监管表**（电子批记录等，phase-4）进场时逐表评估「触发器兜底
-  人工写路径」；那是逐表的决定，随表落地，不预置机制。
+  人工写路径」；那是逐表的决定，随表落地，不预置机制。第一个落的是电子签名表
+  本身（#219，0012 触发器：签名行 append-only，与 audit_events 同一裁决）。
 - **失败语义**：审计写入失败原样抛出，业务操作随之失败——宁可操作失败回滚，
   不做「记不上就算了」的静默降级（审计丢失比业务失败严重）。
 
@@ -48,7 +49,11 @@
   `comment.deleted`（detail 记 `subjectType`/`subjectId`）、
   `follow.created`/`follow.deleted`（关注 #110 切片 4；行无 id，身份是
   `(subject_type, subject_id, user_id)` 三元组——target 为空，subject 引用在
-  detail，进对象活动流）；
+  detail，进对象活动流）、
+  `esignature.created`（电子签名 #219；target = 签名行 id，detail 记
+  `subjectType`/`subjectId`/`meaning`/`recordVersion`/`recordHash`/
+  `signedAt`/`receivedAt`——签名人、时间、含义、记录版本四要素齐在审计行上
+  （Part 11.50/11.70 的查询面）；离线补同步的重放不落第二行）；
   状态变更类动作在 detail 里带 `from`/`to`（如
   `{ from: "new", to: "contacted" }`），日志页详情列原样展示。
 - detail 放变更细节（授予/撤销了什么、从哪到哪、审批裁决等），不放大对象全文
