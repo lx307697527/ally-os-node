@@ -144,7 +144,7 @@ describe.skipIf(!databaseUrl)("automation scan/run (#224 slice 1, integration)",
   it("end-to-end: stage-enter rule creates task and notifications from an audit event", async () => {
     const ruleId = await insertRule({
       name: "进入审阅自动跟进",
-      trigger: { action: "workflow.state_changed" },
+      trigger: { kind: "event", action: "workflow.state_changed" },
       conditions: [{ path: "detail.to", op: "eq", value: "review" }],
       actions: [
         {
@@ -176,7 +176,8 @@ describe.skipIf(!databaseUrl)("automation scan/run (#224 slice 1, integration)",
     expect(results).toHaveLength(2);
     expect(results.every((r) => r.status === "succeeded")).toBe(true);
 
-    // 任务：创建人 = 规则创建者、经办人、到期 = now + 24h（±1h 容差）
+    // 任务：创建人 = 规则创建者、经办人、到期 = now + 24h（±1h 容差）；
+    // 附着在规则行上（观测面 + due 触发的防环闸，见 actions.ts）
     const tasks = await db.select().from(schema.tasks);
     expect(tasks).toHaveLength(1);
     const task = must(tasks[0]);
@@ -184,6 +185,8 @@ describe.skipIf(!databaseUrl)("automation scan/run (#224 slice 1, integration)",
     expect(task.assigneeId).toBe(USERS.assignee);
     expect(task.createdById).toBe(USERS.creator);
     expect(task.dueAt?.getTime()).toBeGreaterThan(Date.now() + 23 * 3_600_000);
+    expect(task.subjectType).toBe("automation_rule");
+    expect(task.subjectId).toBe(ruleId);
 
     // 动作的审计带 automation 前缀 actor 与 via 标记（扫描器据此防回路）
     const audits = await db
@@ -214,7 +217,7 @@ describe.skipIf(!databaseUrl)("automation scan/run (#224 slice 1, integration)",
   it("conditions that fail produce a skipped run without a run job", async () => {
     await insertRule({
       name: "只进 review",
-      trigger: { action: "workflow.state_changed" },
+      trigger: { kind: "event", action: "workflow.state_changed" },
       conditions: [{ path: "detail.to", op: "eq", value: "review" }],
       actions: [{ type: "notify", config: { userIds: [USERS.watcher], title: "t" } }],
     });
@@ -230,7 +233,7 @@ describe.skipIf(!databaseUrl)("automation scan/run (#224 slice 1, integration)",
   it("rescans are deduplicated by the (rule, event) unique constraint", async () => {
     await insertRule({
       name: "每次新建任务都通知",
-      trigger: { action: "task.created" },
+      trigger: { kind: "event", action: "task.created" },
       actions: [{ type: "notify", config: { userIds: [USERS.watcher], title: "t" } }],
     });
     await insertAuditEvent({ action: "task.created", detail: {} });
@@ -243,7 +246,7 @@ describe.skipIf(!databaseUrl)("automation scan/run (#224 slice 1, integration)",
   it("automation-produced audit events (automation: actor) never re-trigger rules", async () => {
     await insertRule({
       name: "回路试探",
-      trigger: { action: "task.created" },
+      trigger: { kind: "event", action: "task.created" },
       actions: [{ type: "notify", config: { userIds: [USERS.watcher], title: "t" } }],
     });
     await insertAuditEvent({ action: "task.created", actor: `automation:${randomUUID()}` });
@@ -255,7 +258,7 @@ describe.skipIf(!databaseUrl)("automation scan/run (#224 slice 1, integration)",
   it("disabled rules do not match", async () => {
     await insertRule({
       name: "停用的规则",
-      trigger: { action: "task.created" },
+      trigger: { kind: "event", action: "task.created" },
       actions: [{ type: "notify", config: { userIds: [USERS.watcher], title: "t" } }],
       enabled: false,
     });
@@ -267,7 +270,7 @@ describe.skipIf(!databaseUrl)("automation scan/run (#224 slice 1, integration)",
   it("retries only the failed action and skips already-succeeded ones", async () => {
     const ruleId = await insertRule({
       name: "第二个动作会失败",
-      trigger: { action: "task.created" },
+      trigger: { kind: "event", action: "task.created" },
       actions: [
         { type: "create_task", config: { title: "先建任务" } },
         // 收件人不存在 → FK 违反 → 动作失败（重试语境）
@@ -314,7 +317,7 @@ describe.skipIf(!databaseUrl)("automation scan/run (#224 slice 1, integration)",
   it("finalizes a run as failed when its rule disappears before execution", async () => {
     const ruleId = await insertRule({
       name: "会消失的规则",
-      trigger: { action: "task.created" },
+      trigger: { kind: "event", action: "task.created" },
       actions: [{ type: "notify", config: { userIds: [USERS.watcher], title: "t" } }],
     });
     await insertAuditEvent({ action: "task.created", detail: {} });
@@ -333,7 +336,7 @@ describe.skipIf(!databaseUrl)("automation scan/run (#224 slice 1, integration)",
   it("sweeper resends stuck pending runs and gives up beyond the threshold", async () => {
     await insertRule({
       name: "滞留演示",
-      trigger: { action: "task.created" },
+      trigger: { kind: "event", action: "task.created" },
       actions: [{ type: "notify", config: { userIds: [USERS.watcher], title: "t" } }],
     });
     await insertAuditEvent({ action: "task.created", detail: {} });
@@ -369,7 +372,7 @@ describe.skipIf(!databaseUrl)("automation scan/run (#224 slice 1, integration)",
   it("notify deduplicates recipients and does not fail the run when the bell nudge breaks", async () => {
     const ruleId = await insertRule({
       name: "去重与降级",
-      trigger: { action: "task.created" },
+      trigger: { kind: "event", action: "task.created" },
       actions: [
         {
           type: "notify",
@@ -399,7 +402,7 @@ describe.skipIf(!databaseUrl)("automation scan/run (#224 slice 1, integration)",
   it("a corrupted rule row finalizes as failed instead of executing garbage", async () => {
     const ruleId = await insertRule({
       name: "中途改坏的配置",
-      trigger: { action: "task.created" },
+      trigger: { kind: "event", action: "task.created" },
       actions: [{ type: "notify", config: { userIds: [USERS.watcher], title: "t" } }],
     });
     await insertAuditEvent({ action: "task.created", detail: {} });
@@ -425,7 +428,7 @@ describe.skipIf(!databaseUrl)("automation scan/run (#224 slice 1, integration)",
   it("scan skips rules whose stored spec is invalid (logged, not fatal)", async () => {
     await db.insert(schema.automationRules).values({
       name: "库里的坏行",
-      trigger: { action: "task.created" },
+      trigger: { kind: "event", action: "task.created" },
       actions: [{ type: "notify", config: { userIds: "not-an-array" } }],
       createdById: USERS.creator,
     });

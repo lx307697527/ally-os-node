@@ -75,6 +75,15 @@ export interface ActionContext {
   runId: string;
 }
 
+/**
+ * 自动化建的任务附着在规则行上（tasks.subject_type/subject_id 的又一个生产者）。
+ * 一石二鸟：观测面（「这条规则 spawn 过哪些任务」走 tasks_subject_idx 读法）+
+ * due 触发的防环闸（due-registry 的 task 成员不扫这类任务——「due 触发 →
+ * create_task(dueInHours)」不设防会每 ≥5 分钟自增一条任务，同规则与跨规则
+ * 的链式自触发一并挡住，人工建的入口不受影响）。
+ */
+export const AUTOMATION_TASK_SUBJECT_TYPE = "automation_rule";
+
 export async function executeCreateTask(
   db: Pick<Db, "insert">,
   services: ActionServices,
@@ -92,6 +101,8 @@ export async function executeCreateTask(
         ? { dueAt: new Date(Date.now() + config.dueInHours * 3_600_000) }
         : {}),
       createdById: ctx.createdById,
+      subjectType: AUTOMATION_TASK_SUBJECT_TYPE,
+      subjectId: ctx.ruleId,
     })
     .returning({ id: schema.tasks.id });
   const task = inserted[0];

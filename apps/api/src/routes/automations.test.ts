@@ -50,7 +50,7 @@ function adminUrl(databaseUrl: string | undefined): string {
 const STAGE_RULE = {
   name: "进入审阅自动跟进",
   description: "流程实例进入 review 时给负责人建跟进任务",
-  trigger: { action: "workflow.state_changed" },
+  trigger: { kind: "event", action: "workflow.state_changed" },
   conditions: [{ path: "detail.to", op: "eq", value: "review" }],
   actions: [
     { type: "create_task", config: { title: "跟进审阅", dueInHours: 24 } },
@@ -170,7 +170,7 @@ describe.skipIf(!databaseUrl)("automation rule endpoints (#224 slice 1, integrat
     expect(rule.id).toBe(ruleId);
     expect(rule.enabled).toBe(true);
     expect(rule.version).toBe(1);
-    expect(rule.trigger).toEqual({ action: "workflow.state_changed" });
+    expect(rule.trigger).toEqual({ kind: "event", action: "workflow.state_changed" });
 
     const audits = await db
       .select()
@@ -198,6 +198,46 @@ describe.skipIf(!databaseUrl)("automation rule endpoints (#224 slice 1, integrat
     expect(badCondition.status).toBe(400);
   });
 
+  it("accepts a due trigger and rejects due shapes the kernel does not define (#224 slice 2)", async () => {
+    const create = await app.request("/api/automations", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-test-user": "admin" },
+      body: JSON.stringify({
+        name: "任务到期前 1 小时提醒",
+        trigger: { kind: "due", subjectType: "task", anchorField: "dueAt", direction: "before", offsetMinutes: 60 },
+        actions: [{ type: "notify", config: { userIds: [USERS.alice], title: "任务快到期" } }],
+      }),
+    });
+    expect(create.status).toBe(201);
+    const rows = await db.select().from(schema.automationRules);
+    const rule = must(rows[0]);
+    expect(rule.trigger).toEqual({
+      kind: "due",
+      subjectType: "task",
+      anchorField: "dueAt",
+      direction: "before",
+      offsetMinutes: 60,
+    });
+
+    const badOffset = await app.request("/api/automations", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-test-user": "admin" },
+      body: JSON.stringify({
+        name: "偏移越界",
+        trigger: { kind: "due", subjectType: "task", anchorField: "dueAt", direction: "before", offsetMinutes: 4 },
+        actions: STAGE_RULE.actions,
+      }),
+    });
+    expect(badOffset.status).toBe(400);
+    // 无 kind 的切片 1 旧形状不再收：规则是上线前数据，不留双形状
+    const legacy = await app.request("/api/automations", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-test-user": "admin" },
+      body: JSON.stringify({ ...STAGE_RULE, trigger: { action: "task.created" } }),
+    });
+    expect(legacy.status).toBe(400);
+  });
+
   it("versions every real change through the ledger and stays idempotent on no-ops (#226)", async () => {
     const ruleId = await createRule();
     // 改名/启停也是内容变更：各记一版（#226 台账，行.version = 台账最新版）
@@ -213,7 +253,7 @@ describe.skipIf(!databaseUrl)("automation rule endpoints (#224 slice 1, integrat
       method: "PATCH",
       headers: { "content-type": "application/json", "x-test-user": "admin" },
       body: JSON.stringify({
-        spec: { trigger: { action: "task.created" }, actions: STAGE_RULE.actions },
+        spec: { trigger: { kind: "event", action: "task.created" }, actions: STAGE_RULE.actions },
       }),
     });
     expect(specChange.status).toBe(200);
@@ -239,7 +279,7 @@ describe.skipIf(!databaseUrl)("automation rule endpoints (#224 slice 1, integrat
     // 审计 changes 与台账 changes 同形：spec 变更带 trigger 的 from/to（conditions
     // 与现状一致则不在列）
     const specChanges = (specAudit.detail as { changes?: Record<string, unknown> }).changes;
-    expect(specChanges).toMatchObject({ trigger: { from: { action: "workflow.state_changed" } } });
+    expect(specChanges).toMatchObject({ trigger: { from: { kind: "event", action: "workflow.state_changed" } } });
     const renameAudit = must(audits[1]);
     expect(renameAudit.detail).toMatchObject({
       changes: { name: { from: "进入审阅自动跟进", to: "新名字" }, enabled: { from: true, to: false } },
@@ -261,7 +301,7 @@ describe.skipIf(!databaseUrl)("automation rule endpoints (#224 slice 1, integrat
     const rule = must(rows[0]);
     expect(rule.name).toBe("新名字");
     expect(rule.enabled).toBe(false);
-    expect(rule.trigger).toEqual({ action: "task.created" });
+    expect(rule.trigger).toEqual({ kind: "event", action: "task.created" });
     expect(rule.version).toBe(3);
   });
 

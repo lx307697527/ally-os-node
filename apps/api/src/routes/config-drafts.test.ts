@@ -81,7 +81,7 @@ const notifyAction = (title: string) => [{ type: "notify", config: { userIds: [U
 const automationContent = {
   name: "task follow-up",
   description: null,
-  trigger: { action: "task.created" },
+  trigger: { kind: "event", action: "task.created" },
   conditions: [] as unknown[],
   actions: notifyAction("new task"),
   enabled: true,

@@ -5,14 +5,15 @@ import { z } from "zod";
 import type { Db } from "@ally/db";
 import type { JobDefinition } from "../jobs/index.ts";
 import type { ActionDeps } from "./actions.ts";
+import { AUTOMATION_DUE_SCAN_JOB, runAutomationDueScan } from "./due-scanner.ts";
 import { AUTOMATION_RUN_JOB, runAutomationRun } from "./runner.ts";
 import { AUTOMATION_SCAN_JOB, runAutomationScan } from "./scanner.ts";
 
 /**
- * 自动化任务登记（#224 切片 1）：scan 每分钟扫审计事件尾窗命中规则落 run 行，
- * run 逐动作执行并写回结果。两个任务的队列配置走 runner.ts 默认值（重试 3 次、
- * 60s 指数退避、失败告警），scan 收紧为重试 1 次——下一轮扫描本身就是兜底，
- * 多侧重试只会放大重复扫描。
+ * 自动化任务登记（#224）：scan 每分钟扫审计事件尾窗命中规则落 run 行，due-scan
+ * 每分钟扫 due 触发的到期时刻带（切片 2），run 逐动作执行并写回结果。扫描任务
+ * 的队列配置走 runner.ts 默认值（重试 3 次、60s 指数退避、失败告警），收紧为
+ * 重试 1 次——下一轮扫描本身就是兜底，多侧重试只会放大重复扫描。
  *
  * db/pool 由 worker 引导（index.ts）注入：动作与扫描都只要 SQL 通道；铃铛「催」
  * 用 pool 当 pg_notify 发布执行器（与 API 的 RealtimeBus.publish 同一条 SQL）。
@@ -47,6 +48,16 @@ export function automationJobs(deps: AutomationJobsDeps): JobDefinition[] {
       await runAutomationScan({ ...actionDeps, sendRunJob, logger });
     },
   };
+  const dueScan: JobDefinition = {
+    name: AUTOMATION_DUE_SCAN_JOB,
+    // 与事件扫描同周期同策略：重叠窗的重复命中靠 (rule, subject 行) 唯一约束
+    // 吸收，下一轮扫描是兜底
+    cron: "* * * * *",
+    queue: { retryLimit: 1, retryDelay: 30, expireInSeconds: 300 },
+    handler: async (_data, { logger }) => {
+      await runAutomationDueScan({ ...actionDeps, sendRunJob, logger });
+    },
+  };
   const run: JobDefinition = {
     name: AUTOMATION_RUN_JOB,
     // pg-boss 的 payload 是边界外输入：zod 收口（不认识就失败进重试/告警，
@@ -59,7 +70,7 @@ export function automationJobs(deps: AutomationJobsDeps): JobDefinition[] {
       await runAutomationRun(actionDeps, parsed.data);
     },
   };
-  return [scan, run];
+  return [scan, dueScan, run];
 }
 
-export { AUTOMATION_RUN_JOB, AUTOMATION_SCAN_JOB };
+export { AUTOMATION_DUE_SCAN_JOB, AUTOMATION_RUN_JOB, AUTOMATION_SCAN_JOB };

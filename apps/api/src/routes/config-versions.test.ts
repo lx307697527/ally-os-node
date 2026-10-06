@@ -79,7 +79,7 @@ interface RevisionDetail extends RevisionSummary {
 const automationBody = {
   name: "task follow-up",
   description: "follow up created tasks",
-  trigger: { action: "task.created" },
+  trigger: { kind: "event", action: "task.created" },
   conditions: [{ path: "detail.title", op: "exists", value: true }],
   actions: [{ type: "notify", config: { userIds: [USERS.admin], title: "new task" } }],
 };
@@ -253,7 +253,7 @@ describe.skipIf(!databaseUrl)("config version ledger (#226 slice 1, integration)
       headers: { ...jsonHeaders, ...adminHeaders },
       body: JSON.stringify({
         spec: {
-          trigger: { action: "comment.created" },
+          trigger: { kind: "event", action: "comment.created" },
           conditions: [],
           actions: [{ type: "notify", config: { userIds: [USERS.admin], title: "new comment" } }],
         },
@@ -264,7 +264,7 @@ describe.skipIf(!databaseUrl)("config version ledger (#226 slice 1, integration)
 
     const v3 = await history("automation_rule", ruleId);
     expect(v3.map((rev) => rev.version)).toEqual([3, 2, 1]);
-    expect(v3[0]?.changes).toMatchObject({ trigger: { from: { action: "task.created" } } });
+    expect(v3[0]?.changes).toMatchObject({ trigger: { from: { kind: "event", action: "task.created" } } });
     expect(v3[1]?.changes).toMatchObject({ name: { from: "task follow-up", to: "task follow-up v2" } });
 
     // 无实效变更：幂等返回现状，不记账（台账仍是 3 版）
@@ -315,7 +315,7 @@ describe.skipIf(!databaseUrl)("config version ledger (#226 slice 1, integration)
       headers: { ...jsonHeaders, ...adminHeaders },
       body: JSON.stringify({
         spec: {
-          trigger: { action: "comment.created" },
+          trigger: { kind: "event", action: "comment.created" },
           conditions: [],
           actions: [{ type: "notify", config: { userIds: [USERS.admin], title: "new comment" } }],
         },

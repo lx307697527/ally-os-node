@@ -14,10 +14,44 @@ import { z } from "zod";
  * （action/target/actor/detail），不外溢。
  */
 
-/** 触发：审计事件 action 精确命中（如 task.created、workflow.state_changed） */
-export const triggerSpecSchema = z.object({
+/**
+ * 触发（#224 切片 2 起为判别联合，`kind` 区分）：
+ * - `event`：审计事件 action 精确命中（如 task.created、workflow.state_changed）
+ *   ——事件扫描器（automation-scan）消费；
+ * - `due`：记录上的日期字段到达锚点 ± 偏移（「预约前 N 小时」，Odoo 的
+ *   based-on-date-field 触发）——到期扫描器（automation-due-scan）消费，锚点
+ *   必须是注册过的 due subject 及其声明过的日期字段（worker 侧注册表裁决，
+ *   未注册 = 规则永不触发并告警，fail closed）。
+ *
+ * 两种触发写进同一张 automation_rules 表（trigger 是 jsonb），执行日志、动作、
+ * 条件、重试协议完全共用——差别只在「谁发现它该跑了」。
+ */
+export const eventTriggerSpecSchema = z.object({
+  kind: z.literal("event"),
   action: z.string().trim().min(1).max(200),
 });
+export type EventTriggerSpec = z.infer<typeof eventTriggerSpecSchema>;
+
+export const DUE_DIRECTIONS = ["before", "after"] as const;
+export type DueDirection = (typeof DUE_DIRECTIONS)[number];
+
+/** 偏移下界 5 分钟（更细的粒度是秒级调度的事，不是分钟级扫描器的事）；上界 90 天 */
+export const DUE_OFFSET_MINUTES_MIN = 5;
+export const DUE_OFFSET_MINUTES_MAX = 129_600;
+
+export const dueTriggerSpecSchema = z.object({
+  kind: z.literal("due"),
+  subjectType: z.string().trim().min(1).max(100),
+  anchorField: z.string().trim().min(1).max(100),
+  direction: z.enum(DUE_DIRECTIONS),
+  offsetMinutes: z.number().int().min(DUE_OFFSET_MINUTES_MIN).max(DUE_OFFSET_MINUTES_MAX),
+});
+export type DueTriggerSpec = z.infer<typeof dueTriggerSpecSchema>;
+
+export const triggerSpecSchema = z.discriminatedUnion("kind", [
+  eventTriggerSpecSchema,
+  dueTriggerSpecSchema,
+]);
 export type TriggerSpec = z.infer<typeof triggerSpecSchema>;
 
 export const CONDITION_OPS = ["eq", "ne", "in", "exists"] as const;
@@ -93,7 +127,26 @@ export interface AutomationEventContext {
 export const AUTOMATION_ACTOR_PREFIX = "automation:";
 
 export function eventMatchesTrigger(trigger: TriggerSpec, event: { action: string }): boolean {
-  return event.action === trigger.action;
+  return trigger.kind === "event" && event.action === trigger.action;
+}
+
+/**
+ * due 触发合成的事件语境：条件求值看到的形状与审计事件完全一致（同一份
+ * resolvePath/evaluateConditions），但语境是扫描器从注册的 subject 行投影出来
+ * 的，不写审计——「到期时刻到了」不是一次业务变更（docs/audit.md 的纪律），
+ * 执行日志在 automation_runs。
+ */
+export function dueEventContext(args: {
+  subjectType: string;
+  subjectId: string;
+  detail: Record<string, unknown>;
+}): AutomationEventContext {
+  return {
+    action: `${args.subjectType}.due`,
+    target: `${args.subjectType}:${args.subjectId}`,
+    actor: null,
+    detail: args.detail,
+  };
 }
 
 /** 点路径取值：只允许穿过普通对象；数组下标、原型链、__proto__ 一律到不了 */
