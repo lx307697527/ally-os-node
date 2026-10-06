@@ -75,7 +75,17 @@
   同意或驳回、意见、签名含义」的查询面；裁决行本身 append-only（0014））、
   `approval.completed`/`approval.rejected`（请求终态 #221；target = 请求行
   id，detail 记 `subjectType`/`subjectId`/`configKey`/`decision`/`finalStep`
-  ——终态同时给发起人落一条站内通知，#110 通知内核）；
+  ——终态同时给发起人落一条站内通知，#110 通知内核）、
+  `custom_fields.field_created`（字段定义 #222；target = 定义行 id，detail 记
+  `subjectType`/`fieldKey`/`fieldType`/`required`/`viewableBy`/`editableBy`
+  ——字段级权限配了哪些角色一眼可查）、
+  `custom_fields.field_activated`/`custom_fields.field_deactivated`（字段停用
+  与恢复 #222；target = 定义行 id——定义一经创建不改写，active 翻转是唯一的
+  状态路，#226 版本化进场前的最小纪律）、
+  `custom_fields.values_updated`（字段值提交 #222；target = subject id，
+  detail 记 `subjectType`/`subjectId`/`title`/`fieldKeys`——subject 引用在
+  detail，进对象的活动流时间线；值行本身可 upsert，审计行记「谁在何时写了
+  哪些键」）、
   状态变更类动作在 detail 里带 `from`/`to`（如
   `{ from: "new", to: "contacted" }`），日志页详情列原样展示。
 - detail 放变更细节（授予/撤销了什么、从哪到哪、审批裁决等），不放大对象全文

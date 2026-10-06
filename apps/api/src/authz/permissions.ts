@@ -43,7 +43,7 @@ export interface AuthzContext {
 }
 
 /** 权限点清单；随业务模块切片增加，新增必须先进这个注册表 */
-export const PERMISSIONS = ["roles.assign", "label_design", "audit.read", "workflow.configure", "approval.configure"] as const;
+export const PERMISSIONS = ["roles.assign", "label_design", "audit.read", "workflow.configure", "approval.configure", "custom_fields.configure"] as const;
 
 export type Permission = (typeof PERMISSIONS)[number];
 
@@ -68,10 +68,14 @@ export const permissionSchema = z.enum(PERMISSIONS);
  *   = 改「谁有权裁决什么」（#221「配置审批人（指定人员或角色）」），与流程/规则
  *   的管理者同一批人；请求的提交与裁决不在此权限点后面——单据可见性门与配置
  *   点名（users/roles）各裁各的，审批自批合法（R-16-5）。
+ * - custom_fields.configure：老板与管理员（#222）。自定义字段属配置工作室——
+ *   给对象加字段 = 改所有人的表单与详情页，与流程/审批的管理者同一批人；字段
+ *   值的填写不在此权限点后面——能不能写某个字段由字段级 viewableBy/editableBy
+ *   与 subject 可见性门裁决，配置权和填写权分离。
  */
 export const ROLE_PERMISSIONS: Readonly<Record<Role, readonly Permission[]>> = {
-  owner: ["roles.assign", "audit.read", "workflow.configure", "approval.configure"],
-  admin: ["roles.assign", "audit.read", "workflow.configure", "approval.configure"],
+  owner: ["roles.assign", "audit.read", "workflow.configure", "approval.configure", "custom_fields.configure"],
+  admin: ["roles.assign", "audit.read", "workflow.configure", "approval.configure", "custom_fields.configure"],
   sales_lead: [],
   sales: [],
   customer_service: [],

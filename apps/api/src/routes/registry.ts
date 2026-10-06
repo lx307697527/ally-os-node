@@ -90,6 +90,15 @@ export const API_ROUTES: readonly RouteDecl[] = [
   { method: "GET", path: "/api/approval-requests/todo", auth: { kind: "session" } },
   { method: "GET", path: "/api/approval-requests/:id", auth: { kind: "session" } },
   { method: "POST", path: "/api/approval-requests/:id/actions", auth: { kind: "session" } },
+  // 自定义字段（#222）：字段配置在 custom_fields.configure 权限点门（owner/admin
+  // 默认持有）；表单 schema 合成与字段值读写是填表人的面——登录即可，字段级
+  // viewableBy/editableBy 与 subject 可见性门在路由内逐字段裁决
+  { method: "POST", path: "/api/custom-fields", auth: { kind: "permission", permission: "custom_fields.configure" } },
+  { method: "GET", path: "/api/custom-fields", auth: { kind: "permission", permission: "custom_fields.configure" } },
+  { method: "PATCH", path: "/api/custom-fields/:id", auth: { kind: "permission", permission: "custom_fields.configure" } },
+  { method: "GET", path: "/api/custom-fields/schema", auth: { kind: "session" } },
+  { method: "GET", path: "/api/subjects/:subjectType/:subjectId/custom-fields", auth: { kind: "session" } },
+  { method: "PUT", path: "/api/subjects/:subjectType/:subjectId/custom-fields", auth: { kind: "session" } },
   // 审计日志查询（#29）：owner / admin（audit.read 权限点）
   { method: "GET", path: "/api/audit-events", auth: { kind: "permission", permission: "audit.read" } },
   // 实时连接令牌（#110 切片 2）：把调用者自己会话的令牌发还给本人，WS auth
