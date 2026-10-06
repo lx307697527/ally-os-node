@@ -41,7 +41,9 @@
 
 ## 词表与 detail 约定
 
-- action 是开集，格式 `domain.object.verb`：`role.granted`、`role.revoked`、
+- action 是开集，格式 `domain.object.verb`：`role.granted`、`role.revoked`
+  （R-16-6；直接执行 detail 记 `role`，经审批生效 detail 记
+  `role`/`via: "approval"`/`requestId`/`submittedBy`，actor 记终审批准人）、
   `task.created`、`task.updated`（detail 记 `fields: [...]`）、`task.assigned`、
   `comment.created`（detail 记 `subjectType`/`subjectId`/`mentioned`）、
   `comment.updated`（#110 切片 5；detail 记 `subjectType`/`subjectId`/

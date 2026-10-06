@@ -607,6 +607,11 @@ export const approvalRequests = pgTable(
     subjectType: text("subject_type").notNull(),
     subjectId: uuid("subject_id").notNull(),
     levels: jsonb("levels").notNull(),
+    // 请求参数（属主域在进程内提交时带上，如 R-16-6 角色变更的 {action, role}）：
+    // 审批人必须看得见「批的到底是什么」，终审批准后属主域的 outcome 处理器按它
+    // 执行业务效果（批准即生效，与终审同一事务）。带 outcome 自动化的 subject
+    // 提交时必须带 payload（service 层强制），纯记录线可以不带。
+    payload: jsonb("payload"),
     // 当前级下标（0 基）。推进用乐观并发控制：UPDATE 带 current_step/status 条件，
     // 两个审批人同时裁决同级只有一个生效——不覆盖别人，也不落第二行 action
     currentStep: integer("current_step").notNull().default(0),

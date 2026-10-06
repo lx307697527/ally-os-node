@@ -8,6 +8,8 @@ import { sessionMiddleware } from "./auth/session.ts";
 import { authzMiddleware, requireTwoFactorGate } from "./authz/middleware.ts";
 import type { AuthzStore } from "./authz/service.ts";
 import "./approval/registry.ts";
+// R-16-6 消费方接线（#221 切片 2）：user_role 的可见性门 + 批准即生效 outcome
+import "./authz/role-approval.ts";
 import { activityRoutes } from "./routes/activity.ts";
 import { approvalsRoutes } from "./routes/approvals.ts";
 import { authProvidersRoutes } from "./routes/auth-providers.ts";

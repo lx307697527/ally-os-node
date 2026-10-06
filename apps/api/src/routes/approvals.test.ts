@@ -4,6 +4,8 @@ import { and, eq, sql } from "drizzle-orm";
 import pino from "pino";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createDb, runMigrations, schema } from "@ally/db";
+import { registerApprovalOutcome } from "../approval/outcomes.ts";
+import { submitApprovalRequest } from "../approval/service.ts";
 import { SUBJECT_LOADERS } from "../subjects/registry.ts";
 import { registerWorkflowSubject } from "../workflow/registry.ts";
 import { startWorkflow } from "../workflow/service.ts";
@@ -59,6 +61,42 @@ SUBJECT_LOADERS["approval-doc"] = (_db, subjectId) => {
 
 registerWorkflowSubject("approval-doc", {
   load: (_db, subjectId) => Promise.resolve(docs.has(subjectId) ? { productType: null } : null),
+});
+
+// 批准即生效的夹具域：payload 透传与 outcome 调用的断言面（调用记录在闭包数组，
+// subjectType 独立于生产注册——模块注册表是进程级全局，夹具用专属名字）
+interface OutcomeCall {
+  requestId: string;
+  subjectId: string;
+  payload: unknown;
+  submittedById: string;
+  actorId: string;
+}
+const outcomeCalls: OutcomeCall[] = [];
+let outcomeFailNext = false;
+
+SUBJECT_LOADERS["outcome-doc"] = (_db, subjectId) => {
+  const doc = docs.get(subjectId);
+  if (doc === undefined) return Promise.resolve(null);
+  return Promise.resolve({
+    id: subjectId,
+    title: "Outcome doc",
+    viewers: doc.viewerIds.map((id) => ({ id, name: userNameById.get(id) ?? id })),
+  });
+};
+
+registerApprovalOutcome("outcome-doc", (_tx, ctx) => {
+  outcomeCalls.push({
+    requestId: ctx.requestId,
+    subjectId: ctx.subjectId,
+    payload: ctx.payload,
+    submittedById: ctx.submittedById,
+    actorId: ctx.actorId,
+  });
+  if (outcomeFailNext) {
+    return Promise.reject(new Error("outcome fixture failure"));
+  }
+  return Promise.resolve();
 });
 
 describe.skipIf(!databaseUrl)("approvals route (#221, integration)", () => {
@@ -138,6 +176,8 @@ describe.skipIf(!databaseUrl)("approvals route (#221, integration)", () => {
       sql`truncate table ${schema.approvalConfigs}, ${schema.approvalRequests}, ${schema.approvalActions}, ${schema.esignSignatures}, ${schema.auditEvents}, ${schema.notifications}, ${schema.workflowTemplates}, ${schema.workflowInstances}, ${schema.workflowTransitions} cascade`,
     );
     docs.clear();
+    outcomeCalls.length = 0;
+    outcomeFailNext = false;
   });
 
   afterAll(async () => {
@@ -654,6 +694,100 @@ describe.skipIf(!databaseUrl)("approvals route (#221, integration)", () => {
     });
     expect(released.status).toBe(200);
     expect((await released.json()) as { to: string }).toMatchObject({ to: "released" });
+  });
+
+  // ── 批准即生效（payload + outcome，#221 切片 2）──────────────────────────
+
+  it("carries payload to the approver and runs the outcome exactly at final approval", async () => {
+    await createConfig("auto_line", [
+      { name: "lead review", users: [bobId] },
+      { name: "final sign-off", users: [carolId] },
+    ], "outcome-doc");
+    const docId = makeDoc([aliceId, bobId, carolId]);
+
+    // 带 outcome 自动化的 subject 走通用端点（不收 payload）：422 挡住无参数死请求
+    const generic = await app.request("/api/approval-requests", {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie: must(session.get("alice")) },
+      body: JSON.stringify({ subjectType: "outcome-doc", subjectId: docId, configKey: "auto_line" }),
+    });
+    expect(generic.status).toBe(422);
+    expect(((await generic.json()) as { error: string }).error).toBe("payload_required");
+
+    // 属主域进程内带参数提交：payload 进请求、给审批人看
+    const created = await submitApprovalRequest(db, {
+      subjectType: "outcome-doc",
+      subjectId: docId,
+      configKey: "auto_line",
+      submitterId: aliceId,
+      payload: { amount: 42 },
+    });
+    expect(created.status).toBe("created");
+    const requestId = must(created.status === "created" ? created.requestId : undefined);
+
+    // 中间级通过不触发 outcome
+    expect((await act(requestId, "bob", { decision: "approved" })).status).toBe(200);
+    expect(outcomeCalls).toEqual([]);
+
+    // 审批人看得见「批的到底是什么」
+    const view = await app.request(`/api/approval-requests/${requestId}`, {
+      headers: { cookie: must(session.get("carol")) },
+    });
+    expect(((await view.json()) as { request: { payload: unknown } }).request.payload).toEqual({
+      amount: 42,
+    });
+
+    // 终审批准的同一笔事务里 outcome 拿到全部语境
+    const final = await act(requestId, "carol", { decision: "approved" });
+    expect(final.status).toBe(200);
+    expect(outcomeCalls).toEqual([
+      {
+        requestId,
+        subjectId: docId,
+        payload: { amount: 42 },
+        submittedById: aliceId,
+        actorId: carolId,
+      },
+    ]);
+  });
+
+  it("an outcome failure rolls the whole decision back (fail closed)", async () => {
+    await createConfig("fragile_line", [{ name: "only", users: [bobId] }], "outcome-doc");
+    const docId = makeDoc([aliceId, bobId]);
+    const created = await submitApprovalRequest(db, {
+      subjectType: "outcome-doc",
+      subjectId: docId,
+      configKey: "fragile_line",
+      submitterId: aliceId,
+      payload: { fragile: true },
+    });
+    const requestId = must(created.status === "created" ? created.requestId : undefined);
+    outcomeFailNext = true;
+
+    const response = await act(requestId, "bob", { decision: "approved" });
+    expect(response.status).toBe(500);
+
+    // 裁决没发生：请求仍在飞、无裁决行、无终态审计——属主域修好数据后可重裁
+    const requestRows = await db
+      .select({ status: schema.approvalRequests.status, currentStep: schema.approvalRequests.currentStep })
+      .from(schema.approvalRequests)
+      .where(eq(schema.approvalRequests.id, requestId));
+    expect(requestRows[0]).toMatchObject({ status: "pending", currentStep: 0 });
+    expect(await db.select().from(schema.approvalActions)).toHaveLength(0);
+    const lifecycle = await db
+      .select({ action: schema.auditEvents.action })
+      .from(schema.auditEvents)
+      .where(eq(schema.auditEvents.target, requestId));
+    expect(lifecycle.map((row) => row.action)).toEqual(["approval.requested"]);
+
+    // 修好后再裁：放行
+    outcomeFailNext = false;
+    expect((await act(requestId, "bob", { decision: "approved" })).status).toBe(200);
+    const after = await db
+      .select({ status: schema.approvalRequests.status })
+      .from(schema.approvalRequests)
+      .where(eq(schema.approvalRequests.id, requestId));
+    expect(must(after[0]).status).toBe("approved");
   });
 
   // ── 并发 ────────────────────────────────────────────────────────────────
