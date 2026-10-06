@@ -14,6 +14,7 @@
 | HTTP 面 | `apps/api/src/routes/rules.ts` | GET `/api/rules`、GET `/api/rules/:key`（登录即可——全公司共用的业务参数，非敏感数据）、PATCH `/api/rules/:key`（改权逐规则裁决，路由内） |
 | 配置版本 | `config-versions/families.ts` 第六族 `registry_rule` | 史/差异/回滚走 #226 台账；`applyRevision` 落列并**清空待生效变更**；`authorizeWrite` 把「谁能改」强制到回滚/草稿/发布写面（`ConfigSubjectSpec` 的新钩子，#233 引入） |
 | 权限点 | `authz/permissions.ts` | `rules.configure`（owner/admin）——只管配置工作室面（读史/回滚/台账）；规则的**改值**不在这扇门后 |
+| 待填待办提醒 | `apps/worker/src/rules/`（0022 迁移） | #233 切片 2：每日 `rules-pending-reminder` 对账扫描——待填规则在「谁能改」持有者的待办里保有一条 open 提醒（多态附着 `tasks.subject_type='registry_rule'`，任务内核附着列的首个生产者），值填上自动销账，详见下文专节 |
 
 ## 核心语义
 
@@ -57,15 +58,32 @@ version 一并落，再 `recordConfigRevision`）；无实效变更不记账；c
 `{ value: {from,to}, adjudicationRefs: {from,to} }`。种子行按 0019 先例补
 source='created' 的 v1，使「行.version = 台账最新版」从第一行成立。
 
+## 待填规则的待办提醒（#233 切片 2，worker）
+
+- **对账语义**（`apps/worker/src/rules/reminder.ts`，每日 13:00 UTC 的
+  `rules-pending-reminder` 任务）：`value is null` 的规则 → 给「谁能改」角色持有
+  者的我的待办里各保有一条 open 提醒任务（多态附着 `tasks.subject_type =
+  'registry_rule'`——任务内核附着列的第一个生产者，0022 expand-only 进场）；
+  「谁能改」无人持有时回落 owner（owner 恒可改同源），连 owner 都没有 → 告警
+  跳过（一条没人看得见的任务是假成功）。
+- **销账与重建**：值填上 → 遗留 open 提醒自动关闭（`task.status_changed` 审计，
+  from/to 带词表）；经办人提前勾掉而值仍空 → 下一轮再建一条——待办的目的就是
+  填值，值没填 = 没完成，提醒是故意的。
+- **写入纪律与任务内核（#113）逐条对齐**：任务行 + `task.created` 审计 +
+  `task.assigned` 通知同事务，实时「催」提交后发（失败只降级回轮询）；actor 用
+  `system:rules-registry`（非 uuid actor 的先例是 `automation:<runId>`）——系统
+  行为不署名给任何用户。任务/通知文案英文（RULE-010）。
+
 ## 刻意不在这切片里的（#233 保持 open）
 
 - **决策表值类型**（GoRules ZEN，§4.9）：随首个消费域进场（#221 审批路线 /
   #223 费率分档），valueType 届时加 `decision_table`。
 - **gate 类别的种子与条件积木**：category 枚举已留 `gate`，门槛条件随 #220 的
   条件积木消费域进场；首个流程门槛落地时把 §4.3 的默认条件登记进来。
-- **定时生效的 cron 接线**：`applyDueRuleChanges` 内核已测，worker 侧 JobDefinition
+- **定时生效的 cron 接线**：`applyDueRuleChanges` 内核已测；worker 侧 JobDefinition
   随第一个消费域一起接（同 workflow due scan 的裁法——内核先行，交付归 worker）。
-- **待填规则的待办提醒**：需任务/报表消费域（#261/#225）。
+  结构性前提：内核现居 apps/api，worker 不跨 app 依赖——接线那天内核随消费域
+  一起下沉共享包（automations 内核居 packages/automations 同一先例）。
 - **规则效果周报**（§4.8 每周汇总）：#225 报表域。
 - **改治理本身**（changeableBy/enableBy/riskFlag 的编辑）与规则的新增/退役面：
   治理变更 = 改裁决，随 #226 受监管变更控制（#206）一起裁。

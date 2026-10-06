@@ -318,7 +318,8 @@ export const feedbackReports = pgTable(
 // 回拨），迁移要点要求评估合并：裁决是收敛为一套（#232 §11「一套任务系统，可挂
 // 在任何记录上」）。业务对象的附着列（subject_type/subject_id，老 crm.tasks 的
 // 多态形态）随第一个有附着对象的业务域切片 expand-only 进场——不在没有生产者时
-// 预置空列（与 #29 切片 1「先建机制不留产线」同一裁决）。
+// 预置空列（与 #29 切片 1「先建机制不留产线」同一裁决）。#233 切片 2（规则注册
+// 表待填提醒）是第一个生产者：subject_type='registry_rule'，独立任务两列皆空。
 // 状态词表与老 crm.tasks 的 CHECK 逐值对齐（open|done|cancelled，勾选式翻转）；
 // ops 任务的六态（#156）进场时 ALTER TYPE ADD VALUE，向后兼容。
 export const taskStatus = pgEnum("task_status", ["open", "done", "cancelled"]);
@@ -335,6 +336,12 @@ export const tasks = pgTable(
     // 至少一个非 customer 角色」的裁决在 API 层，表不重复表达
     assigneeId: uuid("assignee_id").references(() => authUser.id, { onDelete: "set null" }),
     createdById: uuid("created_by_id").references(() => authUser.id, { onDelete: "set null" }),
+    // 多态附着（老 crm.tasks 形态）：text 不用枚举，新业务域挂任务不動数据库
+    // （与 comments.subject_type、notifications.event_type 同一裁法）。独立任务
+    // 两列皆 null；对账类生产者（规则待填提醒）靠 (subject_type, subject_id,
+    // assignee_id, status) 去重，不靠标题字符串匹配
+    subjectType: text("subject_type"),
+    subjectId: uuid("subject_id"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -342,6 +349,8 @@ export const tasks = pgTable(
     // 「我的待办」主读法：按人 + 状态过滤；到期排序在查询侧表达（nulls last）
     index("tasks_assignee_status_idx").on(t.assigneeId, t.status),
     index("tasks_created_by_idx").on(t.createdById),
+    // 附着读法：一个业务对象上挂着哪些任务（对账去重主查法）
+    index("tasks_subject_idx").on(t.subjectType, t.subjectId),
   ],
 );
 
