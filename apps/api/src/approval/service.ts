@@ -550,7 +550,15 @@ export interface ApprovalTodoRow {
   subjectId: string;
   stepIndex: number;
   levelName: string;
+  /** 谁在等这一批（#221 切片 3）：裁决语境跟着待办行走，裁决人不必先过单据可见性门 */
+  submittedBy: { id: string; name: string };
   submittedAt: Date;
+  /** 请求参数（批的到底是什么）；纯记录线为 null——与详情读法同一字段 */
+  payload: unknown;
+  /** 当前级「同意」是否要签名仪式 + 含义：UI 据此先弹签名框再裁决；
+   *  422 signature_required 仍是服务端底线，不是 UI 的发现路径 */
+  requireSignature: boolean;
+  signatureMeaning: Extract<EsignMeaning, "reviewed" | "approved">;
 }
 
 /**
@@ -564,6 +572,7 @@ export async function approvalTodo(
   viewer: { id: string; roles: readonly Role[] },
   limit = 50,
 ): Promise<ApprovalTodoRow[]> {
+  const submitter = alias(schema.authUser, "submitter");
   const rows = await db
     .select({
       requestId: schema.approvalRequests.id,
@@ -572,11 +581,14 @@ export async function approvalTodo(
       subjectType: schema.approvalRequests.subjectType,
       subjectId: schema.approvalRequests.subjectId,
       levels: schema.approvalRequests.levels,
+      payload: schema.approvalRequests.payload,
       currentStep: schema.approvalRequests.currentStep,
+      submittedBy: { id: submitter.id, name: submitter.name },
       createdAt: schema.approvalRequests.createdAt,
     })
     .from(schema.approvalRequests)
     .innerJoin(schema.approvalConfigs, eq(schema.approvalRequests.configId, schema.approvalConfigs.id))
+    .innerJoin(submitter, eq(schema.approvalRequests.submittedById, submitter.id))
     .where(eq(schema.approvalRequests.status, "pending"))
     .orderBy(asc(schema.approvalRequests.createdAt))
     .limit(limit);
@@ -596,7 +608,11 @@ export async function approvalTodo(
         subjectId: row.subjectId,
         stepIndex: row.currentStep,
         levelName: level.name,
+        submittedBy: row.submittedBy,
         submittedAt: row.createdAt,
+        payload: row.payload ?? null,
+        requireSignature: level.requireSignature,
+        signatureMeaning: level.signatureMeaning,
       },
     ];
   });

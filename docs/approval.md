@@ -73,6 +73,15 @@ template / instance / transition 同构。
 | 第一个消费方（R-16-6） | `apps/api/src/authz/role-approval.ts` + `routes/user-roles.ts` | 管理员授予/撤销 owner/admin/finance 走审批：审批线（`user_role`/`role_grant`）已配置 → 202 建请求（payload 记 `{action, role}`），老板终审批准即生效（同一事务写 user_role + `role.granted`/`role.revoked` 审计，detail 带 `via`/`requestId`/`submittedBy`，actor 记终审批准人）；线未配置/停用 → 保持切片 1 的 fail-closed（403 `owner_approval_required`，只允许 owner 直接执行，不预置配置数据）；owner 本人任何时候直接执行（R-16-5 自批）；无变化的操作（已持有/本没持有）不进线 |
 | user_role 可见性门 | `subjects/registry.ts`（`authz/role-approval.ts` 注册） | `user_role` subject 的可见者 = 目标用户本人 + 持 `roles.assign` 角色（owner/admin）的人——审批详情（含 payload、各级裁决）给审批人看，与角色管理端点同一扇权限门 |
 
+## 已落地：待办页 + 签名对话框首消费（#221 切片 3）
+
+| 部分 | 位置 | 说明 |
+| --- | --- | --- |
+| 待办行裁决语境 | `apps/api/src/approval/service.ts` `approvalTodo` | 待办行携带裁决所需的一切：`submittedBy`（谁在等）、`payload`（批的到底是什么，与详情读法同字段）、`requireSignature`/`signatureMeaning`（当前级同意要不要签名仪式、什么含义）——配置点名的裁决人不必恰好是单据可见者，**行本身就得够裁**；422 `signature_required` 仍是服务端底线，不是 UI 的发现路径 |
+| 待办页 | `apps/web/src/shared/pages/Approvals.tsx`（`/approvals`，Home 区） | 在飞请求逐行展开：payload 渲染成标签/值行（`payload-rows.ts` 纯函数，snake_case 读成词）、备注（可选）、批准/驳回；陈旧收件箱（`gone`/`conflict`/`not_approver`）收起面板 + 换来实话——绝不说「Decision recorded」，这条裁决没落就是没落 |
+| 两扇门在页面里都说话 | `Approvals.tsx` ReviewPanel | 详情记录仍过单据可见性门：看得到 → 完整历史（各级谁批/驳、备注、签名含义与时刻）；看不到（404）→ 明说「完整记录限于能看到单据的人,按上方摘要裁决」——点名授权与单据可见性各管各的，不装作另一扇不存在 |
+| 签名对话框（#219 前端半边） | `apps/web/src/shared/components/SignatureDialog.tsx` | 仪式三件：会话外重输密码、含义按级别配置**展示**（Part 11.50 签名展示，不由签署人挑）、每次尝试新铸 `clientToken`（重放幂等靠它，被拒的重试是真新事件）；组件只管仪式，裁决调用与错误归消费页——#204 批次放行等后续签署场景扩展而非分叉 |
+
 ## 刻意不在这切片里的（#221 保持 open）
 
 - **触发条件与自动进入**：「满足条件的单据自动进入审批」的路线（金额区间 →
@@ -84,6 +93,5 @@ template / instance / transition 同构。
 - **配置面管理（#226）**：configKey 替换 = 建新键 + 停用旧行，停用端点与定义
   改写端点随 #226 后续切片；版本台账已进场——审批线创建即记 v1，版本史/差异
   可读（docs/config-versions.md），回滚对该族答 409（无就地改写路径）。
-- **后台审批配置 UI 与待办页**：随配置工作室前端进场（待办数据面
-  `GET /api/approval-requests/todo` 已就绪；R-16-6 的审批线配置目前由持
+- **后台审批配置 UI**：随配置工作室前端进场（R-16-6 的审批线配置目前由持
   `approval.configure` 的人经 API 创建一次）。

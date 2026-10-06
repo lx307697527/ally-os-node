@@ -518,6 +518,59 @@ describe.skipIf(!databaseUrl)("approvals route (#221, integration)", () => {
     expect(((await bobTodoAfter.json()) as { requests: unknown[] }).requests).toHaveLength(0);
   });
 
+  // 待办行带着裁决语境（#221 切片 3：待办页的读法）：提交人、请求参数（批的
+  // 到底是什么）、当前级要不要签名仪式——配置点名的裁决人不需要恰好是单据
+  // 可见者，行本身就得够裁（422 signature_required 仍是服务端底线，不是 UI
+  // 的发现路径）
+  it("todo rows carry the decision context: submitter, payload, signature requirement", async () => {
+    await createConfig("sig_paid_line", [
+      { name: "sign-off", users: [bobId], requireSignature: true, signatureMeaning: "reviewed" },
+    ]);
+    await createConfig("plain_line", [{ name: "only", users: [carolId] }]);
+    const docA = makeDoc([aliceId, bobId]);
+    const docB = makeDoc([aliceId, carolId]);
+    // 带 payload 的提交走进程内（与生产属主域同一形态；通用端点不收 payload）
+    const created = await submitApprovalRequest(db, {
+      subjectType: "approval-doc",
+      subjectId: docA,
+      configKey: "sig_paid_line",
+      submitterId: aliceId,
+      payload: { amount: 42 },
+    });
+    expect(created.status).toBe("created");
+    const plain = ((await (await submit(docB, "plain_line")).json()) as { requestId: string }).requestId;
+
+    const bobTodo = await app.request("/api/approval-requests/todo", {
+      headers: { cookie: must(session.get("bob")) },
+    });
+    const bobBody = (await bobTodo.json()) as {
+      requests: {
+        requestId: string;
+        submittedBy: { id: string; name: string };
+        payload: unknown;
+        requireSignature: boolean;
+        signatureMeaning: string;
+      }[];
+    };
+    expect(bobBody.requests).toHaveLength(1);
+    const row = must(bobBody.requests[0]);
+    expect(row.requestId).toBe(must(created.requestId));
+    expect(row.submittedBy).toEqual({ id: aliceId, name: "User alice" });
+    expect(row.payload).toEqual({ amount: 42 });
+    expect(row.requireSignature).toBe(true);
+    expect(row.signatureMeaning).toBe("reviewed");
+
+    const carolTodo = await app.request("/api/approval-requests/todo", {
+      headers: { cookie: must(session.get("carol")) },
+    });
+    const carolBody = (await carolTodo.json()) as {
+      requests: { requestId: string; payload: unknown; requireSignature: boolean }[];
+    };
+    expect(carolBody.requests.map((r) => r.requestId)).toEqual([plain]);
+    expect(must(carolBody.requests[0]).payload).toBeNull();
+    expect(must(carolBody.requests[0]).requireSignature).toBe(false);
+  });
+
   it("rejection closes the request, notifies the submitter, and allows a fresh submit", async () => {
     await createConfig("doc_release", [{ name: "only", users: [bobId] }]);
     const docId = makeDoc([aliceId, bobId]);

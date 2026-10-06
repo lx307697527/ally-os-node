@@ -59,6 +59,7 @@ export const RAIL_GROUPS: readonly RailGroup[] = [
     items: [
       { to: "/overview", label: "Dashboard", nav: "overview", icon: "overview" },
       { to: "/tasks", label: "Tasks", nav: "tasks", icon: "tasks" },
+      { to: "/approvals", label: "Approvals", nav: "approvals", icon: "approvals" },
     ],
   },
   {
