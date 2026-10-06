@@ -198,15 +198,16 @@ describe.skipIf(!databaseUrl)("automation rule endpoints (#224 slice 1, integrat
     expect(badCondition.status).toBe(400);
   });
 
-  it("patches name/enabled without version bump, spec with version bump", async () => {
+  it("versions every real change through the ledger and stays idempotent on no-ops (#226)", async () => {
     const ruleId = await createRule();
+    // 改名/启停也是内容变更：各记一版（#226 台账，行.version = 台账最新版）
     const rename = await app.request(`/api/automations/${ruleId}`, {
       method: "PATCH",
       headers: { "content-type": "application/json", "x-test-user": "admin" },
       body: JSON.stringify({ name: "新名字", enabled: false }),
     });
     expect(rename.status).toBe(200);
-    expect(((await rename.json()) as { version: number }).version).toBe(1);
+    expect(((await rename.json()) as { version: number }).version).toBe(2);
 
     const specChange = await app.request(`/api/automations/${ruleId}`, {
       method: "PATCH",
@@ -216,7 +217,16 @@ describe.skipIf(!databaseUrl)("automation rule endpoints (#224 slice 1, integrat
       }),
     });
     expect(specChange.status).toBe(200);
-    expect(((await specChange.json()) as { version: number }).version).toBe(2);
+    expect(((await specChange.json()) as { version: number }).version).toBe(3);
+
+    // 无实效变更：幂等返回现状，不记账不留审计
+    const noop = await app.request(`/api/automations/${ruleId}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json", "x-test-user": "admin" },
+      body: JSON.stringify({ name: "新名字", enabled: false }),
+    });
+    expect(noop.status).toBe(200);
+    expect(((await noop.json()) as { version: number }).version).toBe(3);
 
     const audits = await db
       .select()
@@ -224,15 +234,35 @@ describe.skipIf(!databaseUrl)("automation rule endpoints (#224 slice 1, integrat
       .where(eq(schema.auditEvents.action, "automations.rule_updated"))
       .orderBy(desc(schema.auditEvents.createdAt));
     expect(audits).toHaveLength(2);
-    // spec 变更的审计带 from/to（#226 前的最小纪律）
     const specAudit = must(audits[0]);
-    expect((specAudit.detail as { version?: number }).version).toBe(2);
+    expect((specAudit.detail as { version?: number }).version).toBe(3);
+    // 审计 changes 与台账 changes 同形：spec 变更带 trigger 的 from/to（conditions
+    // 与现状一致则不在列）
+    const specChanges = (specAudit.detail as { changes?: Record<string, unknown> }).changes;
+    expect(specChanges).toMatchObject({ trigger: { from: { action: "workflow.state_changed" } } });
+    const renameAudit = must(audits[1]);
+    expect(renameAudit.detail).toMatchObject({
+      changes: { name: { from: "进入审阅自动跟进", to: "新名字" }, enabled: { from: true, to: false } },
+    });
+
+    // 台账：3 版（v1 created + 两次 updated），行.version 同步
+    const revisions = await db
+      .select({ version: schema.configRevisions.version, source: schema.configRevisions.source })
+      .from(schema.configRevisions)
+      .where(eq(schema.configRevisions.subjectId, ruleId))
+      .orderBy(desc(schema.configRevisions.version));
+    expect(revisions).toEqual([
+      { version: 3, source: "updated" },
+      { version: 2, source: "updated" },
+      { version: 1, source: "created" },
+    ]);
 
     const rows = await db.select().from(schema.automationRules);
     const rule = must(rows[0]);
     expect(rule.name).toBe("新名字");
     expect(rule.enabled).toBe(false);
     expect(rule.trigger).toEqual({ action: "task.created" });
+    expect(rule.version).toBe(3);
   });
 
   it("404s patches and deletes on unknown ids", async () => {

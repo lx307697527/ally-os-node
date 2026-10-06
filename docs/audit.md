@@ -81,7 +81,7 @@
   ——字段级权限配了哪些角色一眼可查）、
   `custom_fields.field_activated`/`custom_fields.field_deactivated`（字段停用
   与恢复 #222；target = 定义行 id——定义一经创建不改写，active 翻转是唯一的
-  状态路，#226 版本化进场前的最小纪律）、
+  状态路（内容改写端点随 #226 后续切片），每次翻转同时记台账新版本）、
   `custom_fields.values_updated`（字段值提交 #222；target = subject id，
   detail 记 `subjectType`/`subjectId`/`title`/`fieldKeys`——subject 引用在
   detail，进对象的活动流时间线；值行本身可 upsert，审计行记「谁在何时写了

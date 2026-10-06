@@ -465,15 +465,16 @@ export const esignSignatures = pgTable(
 // 积木。subject 是开集 text（线索/商机/订单履约/偏差……与 subjects/registry.ts
 // 同一裁法），属主域切片注册加载器，不加列不动库。
 //
-// 版本列此刻恒为 1：#226「配置版本、审计与发布」进场前，模板只有初版；列先立住
-// 语义（快照与在飞实例的绑定读法要引用它），字段不预建机制之外的读者。
+// 版本列 = 配置版本台账（config_revisions，#226）里该模板的最新版本号，创建时
+// 记 v1；定义尚无就地改写路径（替换 = 停旧行建新行，新行自为一版事实），在飞
+// 实例的 definition 快照读法不受台账影响。
 export const workflowTemplates = pgTable(
   "workflow_templates",
   {
     id: uuid("id").primaryKey().defaultRandom(),
     subjectType: text("subject_type").notNull(),
     // 流程模板键 = XState machine id 的宿主身份（如 standard_lead）；一个 subject
-    // 类型下键唯一，模板替换 = 停用旧行 + 新键，不 UPDATE 定义（#226 前的最小纪律）
+    // 类型下键唯一，模板替换 = 停用旧行 + 新键（定义就地改写端点随 #226 后续切片）
     templateKey: text("template_key").notNull(),
     // 按产品类型选模板（#220「按产品类型切换模板」）：null = 不分类型的兜底模板
     productType: text("product_type"),
@@ -574,7 +575,7 @@ export const approvalConfigs = pgTable(
     id: uuid("id").primaryKey().defaultRandom(),
     subjectType: text("subject_type").notNull(),
     // 审批线键（如 role_grant、quote_discount）：一个 subject 类型下键唯一，
-    // 与 workflow_templates_key_idx 同构；停用 = active 翻转，定义不改写（#226 前的最小纪律）
+    // 与 workflow_templates_key_idx 同构；定义改写/停用端点随 #226 后续切片进场
     configKey: text("config_key").notNull(),
     name: text("name").notNull(),
     // 有序级别数组（[{ name, users, roles, requireSignature, signatureMeaning }]），
@@ -583,8 +584,8 @@ export const approvalConfigs = pgTable(
     // 例外在 R-15-4，随 phase-3/4 的属主域进场）
     levels: jsonb("levels").notNull(),
     active: boolean("active").notNull().default(true),
-    // 版本列此刻恒为 1：#226「配置版本、审计与发布」进场前的预埋（与 workflow
-    // version 同一裁法——快照读法要引用它，字段先立住语义）
+    // 版本列 = 配置版本台账（#226）里的最新版本号，创建时记 v1；levels 的
+    // 提交时刻快照读法（approval_requests）不受台账影响
     version: integer("version").notNull().default(1),
     createdById: uuid("created_by_id").references(() => authUser.id, { onDelete: "set null" }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
@@ -703,9 +704,8 @@ export const customFieldDefs = pgTable(
     viewableBy: jsonb("viewable_by").$type<string[]>().notNull().default([]),
     editableBy: jsonb("editable_by").$type<string[]>().notNull().default([]),
     active: boolean("active").notNull().default(true),
-    // 版本列此刻恒为 1：#226「配置版本、审计与发布」进场前的预埋（与 workflow /
-    // approval version 同一裁法）；本切片的最小纪律 = 定义一经创建不改写，
-    // 停用 = active 翻转（配置面只暴露这两条路）
+    // 版本列 = 配置版本台账（#226）里的最新版本号；定义一经创建不改写（内容
+    // 改写端点随 #226 后续切片），停用/恢复 = active 翻转，每次翻转记一个新版本
     version: integer("version").notNull().default(1),
     createdById: uuid("created_by_id").references(() => authUser.id, { onDelete: "set null" }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
@@ -762,8 +762,8 @@ export const automationRules = pgTable("automation_rules", {
   conditions: jsonb("conditions").$type<unknown[]>().notNull().default([]),
   actions: jsonb("actions").$type<unknown[]>().notNull(),
   enabled: boolean("enabled").notNull().default(true),
-  // #226「配置版本、审计与发布」的预埋列（与 workflow/approval/custom-fields
-  // version 同一裁法）：本切片的最小纪律 = spec 变更即版本 +1 并留审计
+  // 版本列 = 配置版本台账（#226）里的最新版本号：任何真实变更（改名/启停/
+  // spec 替换）都经台账记一个新版本，无实效变更不记
   version: integer("version").notNull().default(1),
   // 规则删了，它建的任务还在（SET NULL，与 tasks.created_by_id 同裁）；
   // createdById 同时是 create_task 动作的创建人快照来源
@@ -857,10 +857,9 @@ export const numberingRules = pgTable(
     // 既有计数行盖过——语义误导，配置面直接拒绝），重开系列 = 停用旧规则另建
     startNumber: bigint("start_number", { mode: "number" }).notNull().default(1),
     active: boolean("active").notNull().default(true),
-    // 版本列此刻恒为 1：#226「配置版本、审计与发布」进场前的预埋（与 workflow /
-    // approval / custom_fields 同一裁法）。编号规则与字段定义不同：格式字段
-    // （前缀/日期段/位宽）允许就地改——改格式 = 改之后发出的号，这正是 #225
-    // 验收第 3 条的题意；改动历史由审计承载，不改建前行的号
+    // 版本列 = 配置版本台账（#226）里的最新版本号。编号规则与字段定义不同：
+    // 格式字段（前缀/日期段/位宽）允许就地改——改格式 = 改之后发出的号，这正是
+    // #225 验收第 3 条的题意；每次就地改经台账记一个新版本，不改建前行的号
     version: integer("version").notNull().default(1),
     createdById: uuid("created_by_id").references(() => authUser.id, { onDelete: "set null" }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
@@ -889,4 +888,56 @@ export const numberingSequences = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [uniqueIndex("numbering_sequences_rule_idx").on(t.ruleId)],
+);
+
+// ── 配置版本台账（#226 切片 1：版本、审计与回滚的统一内核）─────────────────────
+// 配置工作室的五族配置（流程模板 / 审批线 / 自定义字段 / 自动化规则 / 编号规则）
+// 的 JSON 内容统一记进同一本台账：每次真实变更一行（谁、何时、改了什么、当时
+// 的全量快照），#232 §4.9「状态机、决策表、表单 schema 都是 JSON,统一纳入同一
+// 套版本、审计、回滚」。台账只回答「配置曾经是什么样」；「该不该改」仍由各族
+// 配置面的权限点裁决,「改了之后发布到哪」(draft → 生产 + 受监管变更控制)是
+// #226 后续切片。
+//
+// 各配置行的 version 列自此 = 台账里的最新版本号(写入侧同事务同步),不再是
+// 恒 1 的预埋;workflow_instances / approval_requests 拿定义/级别快照的读法不变。
+export const configRevisionSource = pgEnum("config_revision_source", [
+  // 该版本对象的第一次入账(创建,或 0019 迁移对存量行的一次性补账)
+  "created",
+  // 内容变更(配置面 PATCH / 就地改写)
+  "updated",
+  // 经回滚端点恢复到历史版本——回滚本身也是一个新版本,不改写历史
+  "rolled_back",
+]);
+
+export const configRevisions = pgTable(
+  "config_revisions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    // 配置族(subject_type 开集 text):在 apps/api/src/config-versions/registry.ts
+    // 注册才能读史/回滚;与 custom_field_values 的 subject 同一裁法——多态、无
+    // 外键,配置行删除后台账行仍在(历史是对「存在过的配置」的事实,不随配置
+    // 消失;automations DELETE 后规则史可查,同一裁决)
+    subjectType: text("subject_type").notNull(),
+    subjectId: uuid("subject_id").notNull(),
+    // (subject_type, subject_id) 内从 1 单调递增;唯一索引把并发记版撞成 23505
+    // (fail loud),各族配置行的 version 列与之同事务同步
+    version: integer("version").notNull(),
+    // 该版本时刻配置内容的全量快照(只含用户可编辑字段,不含 id/时间戳/审计
+    // 元数据;形状由各族在 config-versions/families.ts 声明并在写入侧收口)。
+    // 回滚 = 把某个历史快照应用回配置行,快照是回滚的唯一事实来源。
+    snapshot: jsonb("snapshot").$type<Record<string, unknown>>().notNull(),
+    // 逐字段变更摘要:null = created(没有「从哪来」)。updated/rolled_back 是
+    // { 字段: { from, to } } 的顶层摘要(与审计 detail 的 from/to 同形),嵌套
+    // 内容的路径级差异由读面 diff 端点从两份快照现算,不入库
+    changes: jsonb("changes").$type<Record<string, { from: unknown; to: unknown }>>(),
+    source: configRevisionSource("source").notNull(),
+    changedById: uuid("changed_by_id").references(() => authUser.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    // 版本号在 (subject_type, subject_id) 内唯一:并发记版撞约束当场炸(fail
+    // loud),静默重号比失败严重——版本号是回滚的寻址方式
+    uniqueIndex("config_revisions_version_idx").on(t.subjectType, t.subjectId, t.version),
+    index("config_revisions_subject_idx").on(t.subjectType, t.subjectId),
+  ],
 );

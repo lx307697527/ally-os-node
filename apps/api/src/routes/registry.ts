@@ -114,6 +114,15 @@ export const API_ROUTES: readonly RouteDecl[] = [
   { method: "GET", path: "/api/numbering-rules", auth: { kind: "permission", permission: "numbering.configure" } },
   { method: "GET", path: "/api/numbering-rules/subjects", auth: { kind: "permission", permission: "numbering.configure" } },
   { method: "PATCH", path: "/api/numbering-rules/:id", auth: { kind: "permission", permission: "numbering.configure" } },
+  // 配置版本台账（#226）：subjects 列表登录即可（只有族名与展示名）；史/差异/
+  // 回滚按族动态裁决 = 各族配置面的同一权限点（config-versions/registry.ts 注册
+  // 时声明，路由内检查——回滚 = 改那族的配置，不能比配置面宽松），403 面在
+  // config-versions.test.ts 覆盖
+  { method: "GET", path: "/api/config-versions/subjects", auth: { kind: "session" } },
+  { method: "GET", path: "/api/config-versions/:subjectType/:subjectId", auth: { kind: "session" } },
+  { method: "GET", path: "/api/config-versions/:subjectType/:subjectId/revisions/:version", auth: { kind: "session" } },
+  { method: "GET", path: "/api/config-versions/:subjectType/:subjectId/diff", auth: { kind: "session" } },
+  { method: "POST", path: "/api/config-versions/:subjectType/:subjectId/rollback", auth: { kind: "session" } },
   // 审计日志查询（#29）：owner / admin（audit.read 权限点）
   { method: "GET", path: "/api/audit-events", auth: { kind: "permission", permission: "audit.read" } },
   // 实时连接令牌（#110 切片 2）：把调用者自己会话的令牌发还给本人，WS auth
