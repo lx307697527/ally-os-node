@@ -660,3 +660,85 @@ export const approvalActions = pgTable(
     uniqueIndex("approval_actions_request_step_idx").on(t.requestId, t.stepIndex),
   ],
 );
+
+// ── 自定义字段（#222 切片 1：可配置内核）────────────────────────────────────
+// 老系统没有任何自定义字段机制：询价向导是 3686 行写死 HTML，同一组字段在
+// 前端 HTML、intake-fields.ts、SQL 函数签名与 CHECK 约束四处手工同步（靠 parity
+// 测试防漂移），加一个字段要发版；「动态」的 submission_payload jsonb 用 CHECK
+// 约束把未知 key 钉死（feat288 p2「UNREPRESENTABLE」）。新设计（#232 §4.4/§4.9
+// v2.2）：字段定义存元数据表（Twenty 的元数据表 + ERPNext「不改表结构加字段」的
+// 裁法），内置字段由属主域用 zod 定义、自定义字段存成约束收口过的 JSON Schema
+// 形状，两者合成一份 schema 供前端渲染（react-jsonschema-form）和服务端校验共用。
+//
+// subject_type 是开集 text（与 workflow/approval 同一裁法）：哪些对象「能挂自定义
+// 字段」、其内置字段形状是什么，由属主域切片在 custom-fields/registry.ts 注册；
+// 未注册类型由 schema 端点回 400，不出现「能配字段但没地方渲染」的半开机状态。
+export const customFieldType = pgEnum("custom_field_type", [
+  "text",
+  "number",
+  "boolean",
+  "date",
+  "select",
+]);
+
+export const customFieldDefs = pgTable(
+  "custom_field_defs",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    subjectType: text("subject_type").notNull(),
+    // 字段键 = 合成 schema 里的属性名，也是值表的外部键（lower_snake_case，
+    // 校验在 API 层）；一个对象类型下键唯一，停用后键不复用（同 workflow
+    // template_key 纪律）
+    fieldKey: text("field_key").notNull(),
+    label: text("label").notNull(),
+    fieldType: customFieldType("field_type").notNull(),
+    // select 类型的可选项（API 层强制非空、无重复）；其余类型必须为空
+    options: jsonb("options").$type<string[]>(),
+    required: boolean("required").notNull().default(false),
+    // 字段级权限（#222「哪些角色可以查看、哪些可以编辑」）：角色名数组（zod
+    // roleSchema 在保存时收口），空数组 = 不限制——任何能看到该记录的人可见/可改；
+    // 提交侧「可写必须同时可见」（写一个看不见的字段是瞎写，fail closed）。
+    // 老系统对应物只有静态列级 GRANT（按表写死），没有「角色 × 字段」配置。
+    viewableBy: jsonb("viewable_by").$type<string[]>().notNull().default([]),
+    editableBy: jsonb("editable_by").$type<string[]>().notNull().default([]),
+    active: boolean("active").notNull().default(true),
+    // 版本列此刻恒为 1：#226「配置版本、审计与发布」进场前的预埋（与 workflow /
+    // approval version 同一裁法）；本切片的最小纪律 = 定义一经创建不改写，
+    // 停用 = active 翻转（配置面只暴露这两条路）
+    version: integer("version").notNull().default(1),
+    createdById: uuid("created_by_id").references(() => authUser.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("custom_field_defs_key_idx").on(t.subjectType, t.fieldKey),
+    // 「这个对象有哪些生效字段」的解析索引（表单合成与值读取共用前缀）
+    index("custom_field_defs_resolution_idx").on(t.subjectType, t.active),
+  ],
+);
+
+// 自定义字段的值：多态侧表（subject_type, subject_id）+ 每字段一行，形态与
+// comments/follows 相同（subject 无外键，属主记录删除时各域自清）。不往二十个
+// 业务表各加一列 jsonb 的反面（Twenty 把值放元数据侧表的同一裁法）：报表 /
+// 流程门槛 / 自动化规则（#222「自定义字段可在报表、流程门槛、自动化规则中使用」）
+// 能按字段键统一查询，属主表零改动。upsert 语义：一记录一字段一值，写侧唯一
+// 约束防并发双插。
+export const customFieldValues = pgTable(
+  "custom_field_values",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    subjectType: text("subject_type").notNull(),
+    subjectId: uuid("subject_id").notNull(),
+    fieldDefId: uuid("field_def_id")
+      .notNull()
+      .references(() => customFieldDefs.id),
+    // 形状由 service 层按字段定义的 zod 校验后入库（number/boolean/date/select
+    // 不可能是别的形状；text 上限 10k）；null = 显式清值（仅可选字段）
+    value: jsonb("value").$type<unknown>().notNull(),
+    updatedById: uuid("updated_by_id").references(() => authUser.id, { onDelete: "set null" }),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    // 一记录一字段一值：并发提交撞约束与 upsert 竞态同答（onConflictDoUpdate 兜住）
+    uniqueIndex("custom_field_values_unique_idx").on(t.subjectType, t.subjectId, t.fieldDefId),
+  ],
+);

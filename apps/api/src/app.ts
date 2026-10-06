@@ -15,6 +15,7 @@ import { approvalsRoutes } from "./routes/approvals.ts";
 import { authProvidersRoutes } from "./routes/auth-providers.ts";
 import { auditEventsRoutes } from "./routes/audit-events.ts";
 import { commentsRoutes } from "./routes/comments.ts";
+import { customFieldsRoutes } from "./routes/custom-fields.ts";
 import { esignaturesRoutes } from "./routes/esignatures.ts";
 import { feedbackRoutes } from "./routes/feedback.ts";
 import { followsRoutes } from "./routes/follows.ts";
@@ -113,6 +114,11 @@ export function createApp(deps: AppDeps) {
   // 消费方向：工作流门槛积木 approval.passed、esign 的第一个可签名 subject、
   // approval_action 的可见性门——上面 import 的副作用，顺序在本文件不敏感
   app.route("/", approvalsRoutes(deps));
+  // 自定义字段（#222）：字段配置（custom_fields.configure 权限点）+ 表单引擎的
+  // schema 合成与字段值读写（subject 可见性门 + 字段级 viewableBy/editableBy）。
+  // 表单 subject 注册表（custom-fields/registry.ts）本切片为空——询价向导和
+  // 清场检查表两个消费域进场时注册各自的内置字段
+  app.route("/", customFieldsRoutes(deps));
   // 实时连接令牌（#110 切片 2）：发还调用者自己会话的令牌给 WS auth 帧用
   app.route("/", realtimeRoutes(deps));
   // 审计日志查询（#29）：audit.read 权限点门（owner/admin 默认）
