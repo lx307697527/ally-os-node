@@ -39,6 +39,9 @@ export const API_ROUTES: readonly RouteDecl[] = [
   { method: "GET", path: "/api/notifications/summary", auth: { kind: "session" } },
   { method: "POST", path: "/api/notifications/:id/read", auth: { kind: "session" } },
   { method: "POST", path: "/api/notifications/read-all", auth: { kind: "session" } },
+  // 通知渠道偏好（#116）：本人数据面（与已读端点同扇），登录即可
+  { method: "GET", path: "/api/notifications/preferences", auth: { kind: "session" } },
+  { method: "PUT", path: "/api/notifications/preferences", auth: { kind: "session" } },
   // 反馈上报（#129）：任何登录者可提交
   { method: "POST", path: "/api/feedback-reports", auth: { kind: "session" } },
   // 任务（#113 切片 1）：创建人/经办人本人数据，登录即可；团队全局视图的

@@ -62,6 +62,7 @@ describe.skipIf(!databaseUrl)("notification endpoints (#129, integration)", () =
 
   afterEach(async () => {
     await db.delete(schema.notifications);
+    await db.delete(schema.notificationPreferences);
   });
 
   afterAll(async () => {
@@ -153,5 +154,73 @@ describe.skipIf(!databaseUrl)("notification endpoints (#129, integration)", () =
       .from(schema.notifications)
       .where(eq(schema.notifications.userId, userB));
     expect(stillUnreadB[0]?.isRead).toBe(false);
+  });
+
+  it("偏好（#116）：没建行 = 全默认，GET 不写行", async () => {
+    const res = await app.request("/api/notifications/preferences", {
+      headers: { "x-test-user": "A" },
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ emailDigest: false, updatedAt: null });
+    const rows = await db.select().from(schema.notificationPreferences);
+    expect(rows).toHaveLength(0);
+  });
+
+  it("偏好（#116）：PUT 落库并可反复改（upsert 同一行）", async () => {
+    const put = await app.request("/api/notifications/preferences", {
+      method: "PUT",
+      headers: { "content-type": "application/json", "x-test-user": "A" },
+      body: JSON.stringify({ emailDigest: true }),
+    });
+    expect(put.status).toBe(200);
+    const echoed = (await put.json()) as { emailDigest: boolean; updatedAt: string | null };
+    expect(echoed.emailDigest).toBe(true);
+    expect(typeof echoed.updatedAt).toBe("string");
+
+    const afterOn = await app.request("/api/notifications/preferences", {
+      headers: { "x-test-user": "A" },
+    });
+    const afterOnBody = (await afterOn.json()) as { emailDigest: boolean; updatedAt: string | null };
+    expect(afterOnBody.emailDigest).toBe(true);
+    expect(typeof afterOnBody.updatedAt).toBe("string");
+
+    const putOff = await app.request("/api/notifications/preferences", {
+      method: "PUT",
+      headers: { "content-type": "application/json", "x-test-user": "A" },
+      body: JSON.stringify({ emailDigest: false }),
+    });
+    const offBody = (await putOff.json()) as { emailDigest: boolean; updatedAt: string | null };
+    expect(offBody.emailDigest).toBe(false);
+    expect(typeof offBody.updatedAt).toBe("string");
+
+    // 整份替换语义：翻两次还是自己的一行，不涨行
+    const rows = await db
+      .select()
+      .from(schema.notificationPreferences)
+      .where(eq(schema.notificationPreferences.userId, userA));
+    expect(rows).toHaveLength(1);
+  });
+
+  it("偏好（#116）：按会话隔离——A 开摘要，B 仍是默认", async () => {
+    await app.request("/api/notifications/preferences", {
+      method: "PUT",
+      headers: { "content-type": "application/json", "x-test-user": "A" },
+      body: JSON.stringify({ emailDigest: true }),
+    });
+    const res = await app.request("/api/notifications/preferences", {
+      headers: { "x-test-user": "B" },
+    });
+    expect(await res.json()).toEqual({ emailDigest: false, updatedAt: null });
+  });
+
+  it("偏好（#116）：畸形请求体 400（缺字段 / 类型错 / 非对象）", async () => {
+    for (const body of [undefined, "{}", '{"emailDigest": "yes"}', "[true]", '{"emailDigest": true, "extra": 1}']) {
+      const res = await app.request("/api/notifications/preferences", {
+        method: "PUT",
+        headers: { "content-type": "application/json", "x-test-user": "A" },
+        ...(body === undefined ? {} : { body }),
+      });
+      expect(res.status).toBe(400);
+    }
   });
 });

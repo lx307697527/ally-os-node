@@ -7,7 +7,7 @@ import { registerActionBlock } from "../workflow/blocks.ts";
 import { createApp } from "../app.ts";
 import { createAuth, createSessionResolver } from "../auth/auth.ts";
 import { createAuthzStore } from "../authz/service.ts";
-import type { MailMessage } from "../mailer/mailer.ts";
+import type { MailMessage } from "@ally/mailer";
 
 // 集成测试（#220 验收：「能为线索、商机、订单履约、偏差分别配置流程」的配置面）。
 // 真实 PostgreSQL；未设 DATABASE_URL 跳过。本文件用独立的临时库（每次运行新建、

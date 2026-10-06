@@ -44,6 +44,9 @@ importers:
       '@ally/db':
         specifier: workspace:*
         version: link:../../packages/db
+      '@ally/mailer':
+        specifier: workspace:*
+        version: link:../../packages/mailer
       '@ally/realtime':
         specifier: workspace:*
         version: link:../../packages/realtime
@@ -148,6 +151,9 @@ importers:
       '@ally/db':
         specifier: workspace:*
         version: link:../../packages/db
+      '@ally/mailer':
+        specifier: workspace:*
+        version: link:../../packages/mailer
       '@ally/realtime':
         specifier: workspace:*
         version: link:../../packages/realtime
@@ -194,6 +200,15 @@ importers:
       kysely:
         specifier: ^0.29.0
         version: 0.29.6
+
+  packages/mailer:
+    dependencies:
+      pino:
+        specifier: ^10.3.1
+        version: 10.3.1
+      zod:
+        specifier: ^4.6.5
+        version: 4.6.5
 
   packages/realtime:
     dependencies:

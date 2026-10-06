@@ -4,7 +4,7 @@ import pino from "pino";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { createDb, runMigrations, schema } from "@ally/db";
 import { createApp } from "../app.ts";
-import type { MailMessage } from "../mailer/mailer.ts";
+import type { MailMessage } from "@ally/mailer";
 import { createAuth, createSessionResolver } from "./auth.ts";
 import { createAuthzStore } from "../authz/service.ts";
 import { importLegacyUsers, type LegacyUserRow } from "./legacy-import.ts";

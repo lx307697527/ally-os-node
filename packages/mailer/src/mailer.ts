@@ -2,13 +2,16 @@ import type { Logger } from "pino";
 import { z } from "zod";
 
 /**
- * 邮件发送基建（#22 邮件基建切片）。
+ * 邮件发送基建（#22 邮件基建切片；#116 起沉为共享包——通知摘要作业在
+ * worker 里发信，worker 不跨 app 依赖，基建随第一个跨 app 消费方下沉，
+ * 与 automations 内核下沉同一裁法）。
  *
  * 与老系统的对应：老系统是 Supabase Auth 的 Send Email Hook
  * （`supabase/functions/auth-send-email`，GoTrue 回调 + Svix 签名校验 + Resend）；
  * 新系统没有 GoTrue，Better Auth 的验证邮件回调直接拿 {@link Mailer} 发信。
  * 老系统「发信失败绝不阻塞登录/注册流程」的裁定在这里以同样方式落地：
- * 回调方 catch 所有发送失败、只记日志（见 auth.ts 的 sendVerificationEmail）。
+ * 回调方 catch 所有发送失败、只记日志（见 apps/api auth.ts 的
+ * sendVerificationEmail）。
  *
  * - key 已配置 → Resend HTTP API（fetch 注入以便测试；响应用 zod 校验）。
  * - key 未配置 → 日志模式：整封邮件（含验证链接）打进日志不发真信，

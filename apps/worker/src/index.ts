@@ -1,9 +1,11 @@
 import { parseEnv } from "@ally/config";
 import { createDb } from "@ally/db";
+import { createMailer } from "@ally/mailer";
 import { PgBoss } from "pg-boss";
 import pino from "pino";
 import { automationJobs } from "./automations/index.ts";
 import { jobs } from "./jobs/index.ts";
+import { notificationsJobs } from "./notifications/index.ts";
 import { rulesJobs } from "./rules/index.ts";
 import { registerJobs, type JobFailureAlerter } from "./runner.ts";
 import { createSlackAlerter, formatJobFailure } from "./slack.ts";
@@ -25,16 +27,32 @@ pool.on("error", (err) => {
   logger.error({ err }, "worker pool error");
 });
 
+// 邮件发送（#22 基建 / #116 渠道层消费）：key 未配置时日志模式，摘要「发信」进日志
+const mailer = createMailer({
+  logger,
+  resendApiKey: env.RESEND_API_KEY,
+  from: env.EMAIL_FROM,
+});
+
 const boss = new PgBoss(env.DATABASE_URL);
 boss.on("error", (err) => {
   logger.error({ err }, "pg-boss error");
 });
 
 await boss.start();
-await registerJobs(boss, [...jobs, ...automationJobs({ db, pool, boss, logger }), ...rulesJobs({ db, pool, logger })], {
-  logger,
-  onJobFailure,
-});
+await registerJobs(
+  boss,
+  [
+    ...jobs,
+    ...automationJobs({ db, pool, boss, logger }),
+    ...rulesJobs({ db, pool, logger }),
+    ...notificationsJobs({ db, mailer, webAppUrl: env.WEB_APP_URL, logger }),
+  ],
+  {
+    logger,
+    onJobFailure,
+  },
+);
 logger.info({ alerting: Boolean(env.SLACK_WEBHOOK_URL) }, "worker started");
 
 async function shutdown(signal: string) {
