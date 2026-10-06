@@ -59,6 +59,9 @@
   `workflow.template_created`（流程模板 #220；target = 模板行 id，detail 记
   `subjectType`/`templateKey`/`productType?`/`isDefault`/`states`——配置了哪些
   状态一眼可查）、
+  `workflow.template_updated`（流程模板就地改写 #220/#226；target = 模板行 id，
+  detail 记 `subjectType`/`templateKey`/`changes`（顶层字段 from/to）——无实效
+  变更的幂等 PATCH 不落此行）、
   `workflow.instance_started`（流程实例 #220；target = 实例行 id，detail 记
   `subjectType`/`subjectId`/`templateKey`/`from`——起点即初始状态）、
   `workflow.state_changed`（流程推进 #220；target = 实例行 id，detail 记

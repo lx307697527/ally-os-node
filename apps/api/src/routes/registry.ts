@@ -76,6 +76,7 @@ export const API_ROUTES: readonly RouteDecl[] = [
   { method: "POST", path: "/api/workflow-templates", auth: { kind: "permission", permission: "workflow.configure" } },
   { method: "GET", path: "/api/workflow-templates", auth: { kind: "permission", permission: "workflow.configure" } },
   { method: "GET", path: "/api/workflow-templates/:id", auth: { kind: "permission", permission: "workflow.configure" } },
+  { method: "PATCH", path: "/api/workflow-templates/:id", auth: { kind: "permission", permission: "workflow.configure" } },
   // 流程实例（#220）：状态读法 / 推进 / 历史三读，subject 可见性门与评论同扇
   // （推进另过员工地板 + 模板 roles/gates，在服务层）；可挂流程类型由属主域
   // 注册（workflow/registry.ts），实例启动是属主域进程内调用，无 HTTP 面
