@@ -53,7 +53,15 @@
   `esignature.created`（电子签名 #219；target = 签名行 id，detail 记
   `subjectType`/`subjectId`/`meaning`/`recordVersion`/`recordHash`/
   `signedAt`/`receivedAt`——签名人、时间、含义、记录版本四要素齐在审计行上
-  （Part 11.50/11.70 的查询面）；离线补同步的重放不落第二行）；
+  （Part 11.50/11.70 的查询面）；离线补同步的重放不落第二行）、
+  `workflow.template_created`（流程模板 #220；target = 模板行 id，detail 记
+  `subjectType`/`templateKey`/`productType?`/`isDefault`/`states`——配置了哪些
+  状态一眼可查）、
+  `workflow.instance_started`（流程实例 #220；target = 实例行 id，detail 记
+  `subjectType`/`subjectId`/`templateKey`/`from`——起点即初始状态）、
+  `workflow.state_changed`（流程推进 #220；target = 实例行 id，detail 记
+  `subjectType`/`subjectId`/`event`/`from`/`to` 与人工推进时的 `note`——
+  流转历史表之外的第二份权威读法，历史表 append-only、审计不可删除）；
   状态变更类动作在 detail 里带 `from`/`to`（如
   `{ from: "new", to: "contacted" }`），日志页详情列原样展示。
 - detail 放变更细节（授予/撤销了什么、从哪到哪、审批裁决等），不放大对象全文

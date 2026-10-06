@@ -43,7 +43,7 @@ export interface AuthzContext {
 }
 
 /** #23 切片内的两个权限点；随业务模块切片增加，新增必须先进这个注册表 */
-export const PERMISSIONS = ["roles.assign", "label_design", "audit.read"] as const;
+export const PERMISSIONS = ["roles.assign", "label_design", "audit.read", "workflow.configure"] as const;
 
 export type Permission = (typeof PERMISSIONS)[number];
 
@@ -60,10 +60,14 @@ export const permissionSchema = z.enum(PERMISSIONS);
  *   管理员可授予任意角色的人」，只能单独授人。
  * - audit.read：老板与管理员（#29；#232 §12 老板「全部查看」+ 管理员是系统
  *   操作者）。审计日志含全公司人员操作记录，不给其余角色默认开。
+ * - workflow.configure：老板与管理员（#220）。流程模板属配置工作室（#232 §4.4
+ *   「灵活性集中做在一个公共的配置工作室里」），改流程 = 改全员的工作方式，
+ *   与规则注册表的管理者同一批人（§12 管理员「维护规则注册表中的管理员项」）；
+ *   实例的推进不在此权限点后面——能推进谁由属主域的可见性门与模板 roles 裁决。
  */
 export const ROLE_PERMISSIONS: Readonly<Record<Role, readonly Permission[]>> = {
-  owner: ["roles.assign", "audit.read"],
-  admin: ["roles.assign", "audit.read"],
+  owner: ["roles.assign", "audit.read", "workflow.configure"],
+  admin: ["roles.assign", "audit.read", "workflow.configure"],
   sales_lead: [],
   sales: [],
   customer_service: [],

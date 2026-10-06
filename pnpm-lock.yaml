@@ -47,6 +47,9 @@ importers:
       '@hono/node-server':
         specifier: ^2.1.3
         version: 2.1.3(hono@4.13.11)
+      '@xstate/graph':
+        specifier: ^3.0.4
+        version: 3.0.4(xstate@5.33.2)
       bcryptjs:
         specifier: ^3.0.3
         version: 3.0.3
@@ -65,6 +68,9 @@ importers:
       ws:
         specifier: ^8.22.0
         version: 8.22.0
+      xstate:
+        specifier: ^5.33.2
+        version: 5.33.2
       zod:
         specifier: ^4.6.5
         version: 4.6.5
@@ -1336,6 +1342,11 @@ packages:
   '@vitest/spy@5.0.2':
     resolution: {integrity: sha512-Ijc7T1nT9efNb5LxvjaBrEqw3f/QwUv5EE0nKqZxgqsaV/FxAAZ8baGylA8X/Z2oS4Lp+K74Jr6dTJsDKxJDeg==}
 
+  '@xstate/graph@3.0.4':
+    resolution: {integrity: sha512-b12RA7E//+7FJVrD09Td+BhHRJbeKZnK+98xXBd+JmccG360xVP1lyzVhUZPgBgwPdmIGBJqhKzmWYJQ9c8ojQ==}
+    peerDependencies:
+      xstate: ^5.19.4
+
   acorn-jsx@5.3.2:
     resolution: {integrity: sha512-rq9s+JNhf0IChjtDXxllJ7g41oZk5SlXtp0LHwyA5cejwn7vKmKp4pPri6YEePv2PU65sAsegbXtIinmDFDXgQ==}
     peerDependencies:
@@ -2360,6 +2371,9 @@ packages:
       utf-8-validate:
         optional: true
 
+  xstate@5.33.2:
+    resolution: {integrity: sha512-8tC7yXgeCvpT8gKEeEje6ikJJG1wpnoLiXe+HfECW8m10ubMd3QxKOwWA8KxPJVBcLwfdRoMKYxIBGYKmo37/A==}
+
   xtend@4.0.2:
     resolution: {integrity: sha512-LKYU1iAXJXUgAXn9URjiu+MWhyUXHsvfp7mcuYm9dSUKK0/CjtrUwFAxD82/mCWbtLsGjFIad0wIsod4zrTAEQ==}
     engines: {node: '>=0.4'}
@@ -3286,6 +3300,10 @@ snapshots:
 
   '@vitest/spy@5.0.2': {}
 
+  '@xstate/graph@3.0.4(xstate@5.33.2)':
+    dependencies:
+      xstate: 5.33.2
+
   acorn-jsx@5.3.2(acorn@8.18.0):
     dependencies:
       acorn: 8.18.0
@@ -4098,6 +4116,8 @@ snapshots:
   word-wrap@1.2.5: {}
 
   ws@8.22.0: {}
+
+  xstate@5.33.2: {}
 
   xtend@4.0.2: {}
 

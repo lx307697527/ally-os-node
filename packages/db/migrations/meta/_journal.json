@@ -92,6 +92,13 @@
       "when": 1791256259534,
       "tag": "0012_slim_master_chief",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1791260190862,
+      "tag": "0013_minor_lucky_pierre",
+      "breakpoints": true
     }
   ]
 }
