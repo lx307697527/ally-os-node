@@ -13,6 +13,7 @@ import { NotificationBell } from "./shared/components/NotificationBell.tsx";
 import { AuditLog } from "./shared/pages/AuditLog.tsx";
 import { Approvals } from "./shared/pages/Approvals.tsx";
 import { NotificationSettings } from "./shared/pages/NotificationSettings.tsx";
+import { NumberingRules } from "./shared/pages/NumberingRules.tsx";
 import { TaskDetail } from "./shared/pages/TaskDetail.tsx";
 import { Tasks } from "./shared/pages/Tasks.tsx";
 import { TwoFactorSettings } from "./shared/pages/TwoFactorSettings.tsx";
@@ -129,6 +130,9 @@ export function App(): ReactElement {
           {/* 审计日志（#29）：System 区第一个页面；服务端 audit.read 门，
               无权限的账号在页面里得到明确的答复，不预设谁能进来。 */}
           <Route path="/system/audit" element={<AuditLog />} />
+          {/* 编号规则（#225）：配置工作室的编号配置面；服务端 numbering.configure
+              门，改格式只影响之后发出的号——页面把这条说在前头。 */}
+          <Route path="/system/numbering" element={<NumberingRules />} />
           {/* 2FA 自助（#24）：强制门把未绑定的管理员引到这里的合同,绑定流程
               本身不需要新的 API 面——走的都是 /api/auth/two-factor/*。 */}
           <Route path="/settings/two-factor" element={<TwoFactorSettings />} />
