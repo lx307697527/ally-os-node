@@ -909,6 +909,8 @@ export const configRevisionSource = pgEnum("config_revision_source", [
   "rolled_back",
   // 经发布端点把草稿内容应用为生效版本(#226 切片 2:先试后发,发布即入账)
   "published",
+  // 到点的定时生效变更前滚为生效值(#233:调度时刻已入审计,激活时刻在此记版)
+  "scheduled",
 ]);
 
 export const configRevisions = pgTable(
@@ -976,5 +978,82 @@ export const configDrafts = pgTable(
   (t) => [
     // 一对象至多一份草稿:草稿是「待发布的下一版」,不是多方案比选板
     uniqueIndex("config_drafts_subject_idx").on(t.subjectType, t.subjectId),
+  ],
+);
+
+// ── 规则注册表（#233 切片 1：裁决即配置的内核）───────────────────────────────────
+// 业务规则频繁变化（两个月内 12 条旧裁决被推翻，#232 §4），写死在代码里 = 每改
+// 一条裁决都要排开发上线。每条业务规则登记为一行：当前值、依据（裁决编号）、
+// 谁能改、风险标记、运行数据；修改必填新依据，经 #226 台账记版可回滚。三类值
+// （§4.3）：param（数字和清单，改完立即生效，不影响已发出的单据——单据记录当时
+// 的规则版本）、switch（已认可但暂不启用，关着时相关数据照样记录）、gate（流程
+// 推进的前提条件，条件积木随 #220 消费域进场，本切片只留类别枚举不落 gate 种子）。
+//
+// 硬底线不进注册表（§4.5）：不发营销短信、STOP、一键退订、Part 11 签名、质量
+// 放行职责分离、数据隔离、计算结构——写在代码里，任何配置都关不掉；本表没有
+// 也不允许有对应行（测试钉住）。决策表值类型（GoRules JSON，§4.9）随首个消费
+// 域（#221 审批路线 / #223 费率分档）进场。
+export const ruleCategory = pgEnum("rule_category", ["param", "switch", "gate"]);
+
+export const ruleValueType = pgEnum("rule_value_type", [
+  "number",
+  "text",
+  "boolean",
+  "string_list",
+  "number_list",
+  "json",
+]);
+
+export const registryRules = pgTable(
+  "registry_rules",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    // 稳定键（点分 slug，如 pricing.waste_rate_pct）：消费方代码按字面量引用，
+    // 键是身份不是内容——改显示名不改键，与 numbering_rules.subject、
+    // custom_field_defs.fieldKey 同一裁法
+    key: text("key").notNull(),
+    // 展示名（英文，RULE-010）
+    label: text("label").notNull(),
+    category: ruleCategory("category").notNull(),
+    valueType: ruleValueType("value_type").notNull(),
+    // 当前生效值；null = 「待填」上线（§4.2：客供料收费、寄存费率、退款阈值等
+    // 未定数字），消费方读取遇 null 必须显式处理（fail closed，见 rules/service.ts）
+    value: jsonb("value").$type<unknown>(),
+    // 谁能改（按裁决）：角色数组；owner 永远可改（代码强制，不入列），与
+    // user-roles 面的 owner 直通同一裁法。改这条列本身 = 改治理，本切片不开放
+    changeableBy: jsonb("changeable_by").$type<string[]>().notNull().default([]),
+    // 开关启用（关→开）额外要求的角色（R-01-6/8/12「启用需老板确认」——销售主管
+    // 可改参数、关掉，但打开要老板）；null = 启用与普通修改同一批人
+    enableBy: jsonb("enable_by").$type<string[] | null>(),
+    // 依据：裁决编号（R-06-4）或业主决定标记（OWNER-DECISION-日期）；每次修改
+    // 必填新依据，当前依据存行上，全量史在台账与审计
+    adjudicationRefs: jsonb("adjudication_refs").$type<string[]>().notNull().default([]),
+    // ⚠ 风险标记（§4.8）：「风险已告知、回答人维持」的裁决，附风险说明
+    riskFlag: boolean("risk_flag").notNull().default(false),
+    riskNote: text("risk_note"),
+    // 运行数据（§4.8）：触发次数、例外次数、被人工越过次数；经
+    // recordRuleOutcome 进程内累加，每周汇总属报表域（#225）
+    triggerCount: integer("trigger_count").notNull().default(0),
+    exceptionCount: integer("exception_count").notNull().default(0),
+    overrideCount: integer("override_count").notNull().default(0),
+    // 待生效变更（§4.2 生效时间「可定在某一天」）：定时变更先落在这里，到点由
+    // applyDueRuleChanges 前滚为生效值并记版（source='scheduled'）。行上只有一份
+    // 待生效变更——再调度即整份替换（与 config_drafts 一对象一草稿同一裁法）
+    scheduledValue: jsonb("scheduled_value").$type<unknown>(),
+    scheduledEffectiveAt: timestamp("scheduled_effective_at", { withTimezone: true }),
+    scheduledRationale: jsonb("scheduled_rationale").$type<{
+      refs: string[];
+      note?: string;
+    }>(),
+    scheduledById: uuid("scheduled_by_id").references(() => authUser.id, { onDelete: "set null" }),
+    // 版本列 = 配置版本台账（#226）最新版；registry_rule 是第六族，行.version 与
+    // 台账同事务同步
+    version: integer("version").notNull().default(1),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    // 键唯一：消费方按字面量取值，重键 = 两个真相源，建索引当场挡住
+    uniqueIndex("registry_rules_key_idx").on(t.key),
   ],
 );

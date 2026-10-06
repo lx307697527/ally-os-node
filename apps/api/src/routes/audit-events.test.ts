@@ -58,6 +58,11 @@ describe.skipIf(!databaseUrl)("audit events route (#29, integration)", () => {
       return url.toString();
     })();
   const { db, pool } = createDb(scopedUrl);
+  // 并行套件 drop … with (force) 的 57P01 会以 unhandled error 形式炸掉整个
+  // vitest 进程（测试全绿也挂，main 的 deploy CI 跑到过）；其它 scratch-DB
+  // 套件都有这道护栏，本文件漏了
+  pool.on("error", () => {});
+  admin.pool.on("error", () => {});
 
   const mailer = spyMailer();
   const auth = createAuth({

@@ -179,7 +179,7 @@ describe.skipIf(!databaseUrl)("config version ledger (#226 slice 1, integration)
     return ((await res.json()) as { revisions: RevisionSummary[] }).revisions;
   }
 
-  it("lists the five registered config families", async () => {
+  it("lists the six registered config families", async () => {
     const res = await app.request("/api/config-versions/subjects", { headers: adminHeaders });
     expect(res.status).toBe(200);
     const parsed = (await res.json()) as { subjects: { subjectType: string; label: string }[] };
@@ -188,6 +188,7 @@ describe.skipIf(!databaseUrl)("config version ledger (#226 slice 1, integration)
       "automation_rule",
       "custom_field_def",
       "numbering_rule",
+      "registry_rule",
       "workflow_template",
     ]);
   });

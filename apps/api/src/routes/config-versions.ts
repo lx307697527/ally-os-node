@@ -8,7 +8,7 @@ import {
   configSubjectSpec,
   registeredConfigSubjects,
 } from "../config-versions/registry.ts";
-import { permissionFailure } from "../config-versions/http.ts";
+import { authorizeSubjectWrite, permissionFailure } from "../config-versions/http.ts";
 import {
   ConfigRevisionNotFoundError,
   ConfigSubjectNotFoundError,
@@ -163,6 +163,16 @@ export function configVersionsRoutes(deps: { db: Db; logger: Logger }) {
     const parsed = rollbackBody.safeParse(await c.req.json().catch(() => undefined));
     if (!subjectId.success || !parsed.success) {
       return c.json({ error: "invalid_request" }, 400);
+    }
+    // 逐主体写面门（#233）：族权限点之后，某些族还有按行的改权裁决（规则注册表
+    // 的谁能改）——回滚 = 改那行配置，逐主体的门与该族 PATCH 面同扇
+    const writeDenial = await authorizeSubjectWrite(spec, {
+      db: deps.db,
+      authz: c.get("authz"),
+      subjectId: subjectId.data,
+    });
+    if (writeDenial !== undefined) {
+      return c.json(writeDenial, 403);
     }
     const actorId = c.get("user").id;
     let outcome: RollbackResult;

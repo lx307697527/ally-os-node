@@ -43,7 +43,7 @@ export interface AuthzContext {
 }
 
 /** 权限点清单；随业务模块切片增加，新增必须先进这个注册表 */
-export const PERMISSIONS = ["roles.assign", "label_design", "audit.read", "workflow.configure", "approval.configure", "custom_fields.configure", "automations.configure", "numbering.configure"] as const;
+export const PERMISSIONS = ["roles.assign", "label_design", "audit.read", "workflow.configure", "approval.configure", "custom_fields.configure", "automations.configure", "numbering.configure", "rules.configure"] as const;
 
 export type Permission = (typeof PERMISSIONS)[number];
 
@@ -80,10 +80,15 @@ export const permissionSchema = z.enum(PERMISSIONS);
  *   格式 = 改所有之后发出的单据号（发票/报价/PO），与流程/审批/字段的管理者
  *   同一批人；发号不在任何权限点后面——分配是属主域创建单据事务里的进程内调用
  *   （numbering/service.ts），有没有号随单据的可见性门走。
+ * - rules.configure：老板与管理员（#233）。规则注册表的配置工作室面（读史/回滚/
+ *   台账），管理者与流程/审批同批（§12 管理员「维护规则注册表中的管理员项」）。
+ *   规则的**改值**不在此权限点后面——每条规则按裁决各有「谁能改」（行上的角色
+ *   数组，owner 恒可），PATCH 与回滚的逐规则门在 rules/service.ts 裁决；这是
+ *   配置工作室里唯一「族权限点 ≠ 改权」的族。
  */
 export const ROLE_PERMISSIONS: Readonly<Record<Role, readonly Permission[]>> = {
-  owner: ["roles.assign", "audit.read", "workflow.configure", "approval.configure", "custom_fields.configure", "automations.configure", "numbering.configure"],
-  admin: ["roles.assign", "audit.read", "workflow.configure", "approval.configure", "custom_fields.configure", "automations.configure", "numbering.configure"],
+  owner: ["roles.assign", "audit.read", "workflow.configure", "approval.configure", "custom_fields.configure", "automations.configure", "numbering.configure", "rules.configure"],
+  admin: ["roles.assign", "audit.read", "workflow.configure", "approval.configure", "custom_fields.configure", "automations.configure", "numbering.configure", "rules.configure"],
   sales_lead: [],
   sales: [],
   customer_service: [],

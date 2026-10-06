@@ -148,6 +148,13 @@
       "when": 1791292331513,
       "tag": "0020_curious_miss_america",
       "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1791296288630,
+      "tag": "0021_flashy_chronomancer",
+      "breakpoints": true
     }
   ]
 }
