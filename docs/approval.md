@@ -16,7 +16,7 @@ template / instance / transition 同构。
 
 | 部分 | 位置 | 说明 |
 | --- | --- | --- |
-| 数据模型 | `packages/db/src/schema.ts`（migration `0014`） | `approval_configs`（subject 开集 text + configKey 唯一 + levels jsonb + version 预埋 #226）、`approval_requests`（**levels 提交时刻快照** + currentStep/status + 同单同线至多一个在飞请求的部分唯一索引）、`approval_actions`（裁决流水，**append-only 触发器**，与 audit_events/esign_signatures/workflow_transitions 同一裁决） |
+| 数据模型 | `packages/db/src/schema.ts`（migration `0014`） | `approval_configs`（subject 开集 text + configKey 唯一 + levels jsonb + version = #226 台账版本）、`approval_requests`（**levels 提交时刻快照** + currentStep/status + 同单同线至多一个在飞请求的部分唯一索引）、`approval_actions`（裁决流水，**append-only 触发器**，与 audit_events/esign_signatures/workflow_transitions 同一裁决） |
 | 级别形状 | `apps/api/src/approval/service.ts` | `[{ name, users, roles, requireSignature, signatureMeaning }]`——审批人 = 指定人员 ∪ 指定角色（app_role 闭集，customer 不可为审批人）；保存时 zod 收口，1–10 级 |
 | 服务 | `apps/api/src/approval/service.ts` | `submitApprovalRequest`（读 active 配置 → levels 快照进请求 → 部分唯一索引挡并发双提交）、`actOnApproval`（审批人匹配 → 2FA 门 → 签名仪式 → **事务内**：action 行 + esign 签名 + CAS 推进 + 审计 + 终态通知发起人；驳回任何一级 = 终态，单据回到发起人）、`approvalTodo`（待我审批：在飞请求当前级点名我或我的角色命中） |
 | 接缝注册 | `apps/api/src/approval/registry.ts` | 模块装载时接线三个消费方向：① 工作流门槛积木 **`approval.passed`**（#220 blocks 注册表的第一批成员：门槛 = 该单据该线存在 approved 请求，未提交/被驳回都不过门）；② esign 可签名 subject **`approval_action`**（#219 预告的第一个消费域：签名绑定裁决行的版本与内容快照）；③ approval_action 的可见性门（发起人 + 点名审批人 + 已裁决人 + 配置角色现任持有者） |
@@ -81,8 +81,9 @@ template / instance / transition 同构。
   R-16-6 的提交路径已经是这个形态，决策表只是换谁来判断「该进审批了」）。
 - **pg-boss 执行与提醒**：超时未裁决的催办、多级的通知扇出（#116 渠道层）。
 - **多人审批方式**：会签（全员同意）/票签（多数决）——现在任一命中即过。
-- **配置面管理（#226）**：configKey 替换 = 建新键 + 停用旧行，停用端点与
-  版本化随 #226；version 列已预埋（恒 1）。
+- **配置面管理（#226）**：configKey 替换 = 建新键 + 停用旧行，停用端点与定义
+  改写端点随 #226 后续切片；版本台账已进场——审批线创建即记 v1，版本史/差异
+  可读（docs/config-versions.md），回滚对该族答 409（无就地改写路径）。
 - **后台审批配置 UI 与待办页**：随配置工作室前端进场（待办数据面
   `GET /api/approval-requests/todo` 已就绪；R-16-6 的审批线配置目前由持
   `approval.configure` 的人经 API 创建一次）。

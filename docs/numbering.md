@@ -45,9 +45,10 @@
 ## 配置面的改写纪律
 
 - 格式字段（label/prefix/dateFormat/padding）**允许就地改**——「改格式 = 改之后
-  发出的号」正是验收题意；改动历史由审计承载（`numbering.rule_created` /
-  `numbering.rule_updated`，detail 带 `changes: {field: {from, to}}`），real-change-
-  only：无实效变更不留审计行。
+  发出的号」正是验收题意；每次实效变更经配置版本台账（#226，见
+  docs/config-versions.md）记一个新版本并留审计（`numbering.rule_created` /
+  `numbering.rule_updated`，detail 带 `changes: {field: {from, to}}`，与台账 changes
+  同形），real-change-only：无实效变更不记账不留审计行；已发出的号不变。
 - `startNumber` 不可改（strict PATCH 显式 400）：对已在发的系列无效果，静默忽略
   会让管理员误以为系列已重开。重开系列 = 停用旧规则另建（`active` 上的部分唯一
   索引保证一对象一套生效规则，停用规则留档可查）。
@@ -62,7 +63,7 @@
 - **模板管理**（PDF/邮件/短信/合同模板统一管理）：#225 下一个切片；PDF 渲染
   走 #128 统一 PDF 服务，模板表 + 属主域注册表与编号同一套法。
 - **配置 UI**：编号规则的管理页随配置工作室前端进场（subjects 端点已就绪）。
-- **version 列恒为 1**：#226「配置版本、审计与发布」的预埋，与 workflow/approval/
-  custom_fields 同一裁法。
+- **测试/发布流**：#226 台账已进场（版本史/差异/回滚，见 docs/config-versions.md）；
+  draft → 一键发布与受监管变更控制门是 #226 后续切片。
 - **第一个真实消费方**：发票/报价/PO 单据域都在 phase-2+（#229/#231 等），
   进场时注册 subject 并在创建事务里调用 `allocateDocumentNumber`。

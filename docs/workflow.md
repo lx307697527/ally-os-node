@@ -18,7 +18,7 @@ qualified/disqualified/waitlisted 强制带理由）、生产 12 相位
 
 | 部分 | 位置 | 说明 |
 | --- | --- | --- |
-| 数据模型 | `packages/db/src/schema.ts`（migration `0013`） | `workflow_templates`（subject 开集 text + templateKey 唯一 + productType/isDefault 选择维度 + definition jsonb + version 预埋 #226）、`workflow_instances`（一对象一实例唯一索引 + **definition 启动时刻快照** + currentState/stateEnteredAt/stateDueAt）、`workflow_transitions`（历史，**append-only 触发器**，与 audit_events/esign_signatures 同一裁决） |
+| 数据模型 | `packages/db/src/schema.ts`（migration `0013`） | `workflow_templates`（subject 开集 text + templateKey 唯一 + productType/isDefault 选择维度 + definition jsonb + version = #226 台账版本）、`workflow_instances`（一对象一实例唯一索引 + **definition 启动时刻快照** + currentState/stateEnteredAt/stateDueAt）、`workflow_transitions`（历史，**append-only 触发器**，与 audit_events/esign_signatures 同一裁决） |
 | 引擎 | `apps/api/src/workflow/engine.ts` | zod 模板 schema（流转收 XState 字符串简写与对象两种形态）→ 拓扑语义校验（initial/target/自环）→ XState 结构校验 → @xstate/graph 可达性；`applyWorkflowEvent` 用无驻留 actor 算「当前状态 + 事件 → 下一状态」；超时 `timeoutAfterHours` 在进入状态时一次算成 stateDueAt |
 | 积木注册表 | `apps/api/src/workflow/blocks.ts` | `registerConditionBlock`（门槛）/`registerActionBlock`（进入后动作）——属主域切片注册；#220 切片注册表为空，第一个成员 `approval.passed` 随 #221 进场（审批作为流程门槛）；模板保存时对注册表做存在性校验，运行时门槛缺失 fail closed（422 gate_unavailable） |
 | subject 注册表 | `apps/api/src/workflow/registry.ts` | `registerWorkflowSubject(type, { load })`——属主域给出「记录存在吗 + 产品类型」；线索/商机/订单履约/偏差都在 phase-2+，第一个属主域进场注册 |
@@ -79,8 +79,10 @@ roles 取 app_role 枚举、引用的积木必须在注册表里。
   送」等第一个有负责人的属主域 + #116 通知渠道层，届时以定时任务接上。
 - **第一张真实模板与第一个注册的 subject**：线索（#227）/商机（#227）/
   订单履约（#231）/偏差（#243）各自进场时注册加载器、带种子模板。
-- **配置版本、审计与发布（#226）**：version 列已预埋（恒 1）；模板替换目前是
-  「停用旧行 + 新键」，在飞实例靠 definition 快照不受影响。
+- **配置版本、审计与发布（#226）**：台账已进场——模板创建即记 v1，版本史/
+  差异可读（docs/config-versions.md）；定义尚无就地改写路径（替换仍是「停用旧行
+  + 新键」），回滚对该族答 409，定义改写端点进场时同步补 applyRevision；
+  draft → 发布流与受监管变更控制门是 #226 后续切片。
 - **后台流程图 / 模板编辑 UI**：从定义自动生成流程图随配置工作室前端进场。
 - **@xstate/graph 全路径接口测试作为 #212 验证文件**：形态已在
   `workflow/engine.test.ts`（全路径枚举 + 全矩阵拒绝），逐模板导出随 #212。

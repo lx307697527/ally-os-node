@@ -13,8 +13,9 @@ pg_cron + pg_net 定时任务里（#32）：逻辑分散在 887 个迁移文件�
 | 部分 | 位置 | 说明 |
 | --- | --- | --- |
 | 形状与纯引擎 | `packages/automations/src/index.ts` | 规则 spec 的 zod（trigger / conditions / actions，**API 保存时校验与 worker 运行时解析共用同一份**，两端不长两套形状）+ 纯求值：`eventMatchesTrigger`、`resolvePath`（点路径只穿普通对象，原型链键到不了）、`evaluateConditions`（AND，全过才放行）。包零依赖（只有 zod），api 与 worker 各自引入 |
-| 数据模型 | `packages/db/src/schema.ts`（migration `0017`） | `automation_rules`（trigger/conditions/actions 三段 jsonb + enabled + version 预埋 #226 + createdById）、`automation_runs`（一次执行一行：status `pending`/`skipped`/`succeeded`/`failed`、逐条件结果、逐动作结果、error；(rule_id, source_event_id) 唯一约束是扫描窗口重叠的防重发闸；**规则删除后 run 仍在**——rule_id SET NULL + rule_name 快照，执行日志是观测面不随配置消失） |
-| 路由 | `apps/api/src/routes/automations.ts` | 规则 CRUD + 执行日志读面（`GET /api/automations/runs`，最新在前，可按 ruleId/status 过滤），全部在 `automations.configure` 权限点后。spec 整体替换不局部合并；spec 变更版本 +1 并留审计（#226 进场前的最小纪律），改名/停用不动版本 |
+| 数据模型 | `packages/db/src/schema.ts`（migration `0017`） | `automation_rules`（trigger/conditions/actions 三段 jsonb + enabled + version = #226 台账版本 + createdById）、`automation_runs`（一次执行一行：status `pending`/`skipped`/`succeeded`/`failed`、逐条件结果、逐动作结果、error；(rule_id, source_event_id) 唯一约束是扫描窗口重叠的防重发闸；**规则删除后 run 仍在**——rule_id SET NULL + rule_name 快照，执行日志是观测面不随配置消失） |
+| 路由 | `apps/api/src/routes/automations.ts` | 规则 CRUD + 执行日志读面（`GET /api/automations/runs`，最新在前，可按 ruleId/status 过滤），全部在 `automations.configure` 权限点后。spec 整体替换不局部合并；每次真实变更（改名/启停/换 spec）经配置版本台账（#226）
+记一版并留审计，无实效变更幂等返回现状（不记账不留审计） |
 | 权限点 | `authz/permissions.ts` | `automations.configure`（owner/admin 默认）：新增一条规则 = 改全公司的连锁反应，属配置工作室；runs 的查看也在此点后（运行记录含收件人名单与业务事件细节，不另开读口） |
 | 扫描器 | `apps/worker/src/automations/scanner.ts` | `automation-scan` 任务（每分钟）：90 秒审计事件尾窗 × 启用规则 → 触发命中（审计 action 精确匹配）→ 条件求值 → 插 run 行（条件不过 = `skipped`，不发执行任务）；重叠窗口的重复命中靠唯一约束吸收。兼任滞留清障：pending 超 2 分钟重发执行任务（singletonKey 去重挡在途重复）、超 90 分钟终判 `failed`（执行任务 4 次尝试的最坏总时长 ≈ 66 分钟之外留余量） |
 | 执行器 | `apps/worker/src/automations/runner.ts` + `actions.ts` | `automation-run` 任务：顺序执行动作，**每动作一个事务 + run 行 SELECT … FOR UPDATE**（并发处理器在行锁上排队，动作不双跑）；动作失败不终结 run——进度带外写回后向上抛，pg-boss 重试 3 次（60s 指数退避）每次告警，重试只补失败的那个动作（action_results 是幂等闸：动作行存在 ⟺ 该动作已提交） |
@@ -64,4 +65,5 @@ pg_cron + pg_net 定时任务里（#32）：逻辑分散在 887 个迁移文件�
 3. 条件积木复用 workflow 的注册表形态（跨对象条件、自定义字段条件——
    custom_field_values 按字段键查询已备好）
 4. 规则效果度量（触发/例外/越过计数，§4.8 周报）与 #233 规则注册表的接驳
-5. #226 配置版本化与发布（版本列已预埋）；规则配置 UI（配置工作室）
+5. #226 配置版本化：台账已进场（每次真实变更记一版、可回滚，见
+   docs/config-versions.md）；draft → 发布流、规则配置 UI（配置工作室）仍在后头
