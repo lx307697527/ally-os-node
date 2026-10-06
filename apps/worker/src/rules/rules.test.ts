@@ -182,7 +182,9 @@ describe.skipIf(!databaseUrl)("rules pending reminder scan (#233 slice 2, integr
       expect(await openAssignees(key)).toEqual([USERS.owner1]);
     }
     for (const key of SEED_PENDING.admin) {
-      expect(await openAssignees(key)).toEqual([USERS.admin1, USERS.admin2]);
+      // openAssignees 按 uuid 字典序返回；期望也排序——uuid 是随机的，声明序
+      // 断言等于每跑一次掷一次硬币（CI 上真炸过一次）
+      expect(await openAssignees(key)).toEqual([USERS.admin1, USERS.admin2].sort());
     }
     expect(await openAssignees(SEED_PENDING.salesLead[0])).toEqual([USERS.lead1]);
 
