@@ -82,12 +82,26 @@ template / instance / transition 同构。
 | 两扇门在页面里都说话 | `Approvals.tsx` ReviewPanel | 详情记录仍过单据可见性门：看得到 → 完整历史（各级谁批/驳、备注、签名含义与时刻）；看不到（404）→ 明说「完整记录限于能看到单据的人,按上方摘要裁决」——点名授权与单据可见性各管各的，不装作另一扇不存在 |
 | 签名对话框（#219 前端半边） | `apps/web/src/shared/components/SignatureDialog.tsx` | 仪式三件：会话外重输密码、含义按级别配置**展示**（Part 11.50 签名展示，不由签署人挑）、每次尝试新铸 `clientToken`（重放幂等靠它，被拒的重试是真新事件）；组件只管仪式，裁决调用与错误归消费页——#204 批次放行等后续签署场景扩展而非分叉 |
 
+## 已落地：审批路线决策表（#221 决策表进线 × #233）
+
+「进哪条线」不再由属主域硬编码 configKey——`approval.routing.<subjectType>`
+（规则注册表 decision_table 值类型，见 docs/rules.md 决策表专节）裁决：
+
+| 部分 | 位置 | 说明 |
+| --- | --- | --- |
+| 路由解析 | `apps/api/src/approval/routing.ts` | `resolveApprovalRoute(db, subjectType, facts)`：读路由决策表 → `hitPolicy first` 命中行 → 输出 `configKey`（输出列 field 必须叫 configKey 的字符串单值）。matched → 调用方提交；unmatched 折叠六因（表缺失/未设/坏表/求值失败/无命中/输出不合法）由调用方 **fail closed**——未命中不是「不用审批」，是「不许跳过审批的暗门也不开」 |
+| 首个路由种子 | migration `0023` | `approval.routing.user_role`（gate 类别，R-16-6）：`{action} → configKey`，grant/revoke → `role_grant`，与切片 2 的硬编码行为逐条等价；台账补 source='created' 的 v1。改线 = 按裁决 PATCH 这条规则（谁能改 admin+owner），回滚走 #226 台账 |
+| 消费方改造 | `routes/user-roles.ts` | 授予/撤销的高级角色门前先问路由表；unmatched 与线不存在同答 403 `owner_approval_required`（reason 进日志）；owner 直通（R-16-5）不查表 |
+
+验收对照（#221「触发条件：如折扣超过阈值、采购金额超过阈值（阈值由配置决定）」
+的机制半边）：决策表形态已可表达金额区间 → 谁批（测试里有 25 万美元 PO → boss
+线的演练表），属主域把 `{amount, ...}` 交给 `resolveApprovalRoute` 即接线；
+真实的金额域消费（报价 #229 / 采购 #231）随各自域切片进场。
+
 ## 刻意不在这切片里的（#221 保持 open）
 
-- **触发条件与自动进入**：「满足条件的单据自动进入审批」的路线（金额区间 →
-  谁批）是 GoRules 决策表，存进规则注册表（#233）——决策表进场后，属主域在
-  业务动作里调 `submitApprovalRequest`（进程内，与 startWorkflow 同形态；
-  R-16-6 的提交路径已经是这个形态，决策表只是换谁来判断「该进审批了」）。
+- ~~**触发条件与自动进入**~~：机制半边已落地（路由决策表 + R-16-6 消费）；剩余
+  是金额域的首次接线（#229/#231）。
 - **pg-boss 执行与提醒**：超时未裁决的催办、多级的通知扇出（#116 渠道层）。
 - **多人审批方式**：会签（全员同意）/票签（多数决）——现在任一命中即过。
 - **配置面管理（#226）**：configKey 替换 = 建新键 + 停用旧行，停用端点与定义

@@ -4,6 +4,10 @@ import { schema, type Db } from "@ally/db";
 import { recordAudit } from "../audit/audit-log.ts";
 import type { SubjectWriteDenial } from "../config-versions/registry.ts";
 import { jsonEqual, nextConfigVersion, recordConfigRevision } from "../config-versions/service.ts";
+import {
+  assertDecisionTableCompiles,
+  decisionTableValueSchema,
+} from "./decision-table-schema.ts";
 
 /**
  * 规则注册表内核（#233 切片 1：裁决即配置）。
@@ -110,6 +114,10 @@ const ruleValueSchemas = {
   number_list: z.array(z.number()).min(1).max(200),
   // json：结构由消费域收口（法规风险清单、费率表……），注册表只保证是对象
   json: z.record(z.string(), z.unknown()),
+  // 决策表（#233 §4.9）：形状在这里收口，表达式语法错由写面编译探针另拒
+  // （changeRuleValue 里的 assertDecisionTableCompiles——ZEN 对坏单元格是静默
+  // 不命中，不校验 = 一张带错字的表「看着改好了、实际全部不命中」）
+  decision_table: decisionTableValueSchema,
 } as const;
 
 export type RuleRow = typeof schema.registryRules.$inferSelect;
@@ -223,7 +231,8 @@ export type ChangeRuleValueResult =
 
 /**
  * 改一条规则的值。校验链：键存在 → 值过 valueType 形状（开关不接受 null——开关
- * 只有开/关两态）→ 改权 → 实效变更才记版与审计。无实效变更不记账（与 #226 台账
+ * 只有开/关两态；决策表另过编译探针，语法错的表进不来）→ 改权 → 实效变更才记版
+ * 与审计。无实效变更不记账（与 #226 台账
  * 协议同一纪律）；立即变更不碰已有的待生效变更（先定下月改 8%、今天急改 9% 是
  * 两个都成立的意图）。定时变更的启用语义在调度时刻裁决（enableBy 门），不在
  * 激活时刻重裁——调度者过门后，激活是机械前滚。
@@ -240,6 +249,11 @@ export async function changeRuleValue(
   const effectiveSchema = rule.category === "switch" ? valueSchema : valueSchema.nullable();
   const parsed = effectiveSchema.safeParse(input.value);
   if (!parsed.success) throw new InvalidRuleValueError(input.key, parsed.error.issues);
+  // 决策表另有编译面：形状过了 zod 还要逐单元格可解析（语法错会让 ZEN 静默不
+  // 命中——表必须「可执行」才配进注册表；立即与定时同一扇门，同一校验点）
+  if (rule.valueType === "decision_table" && input.value !== null) {
+    await assertDecisionTableCompiles(input.value);
+  }
   const denial = authorizeRuleChange(authz, rule, input.value);
   if (denial !== undefined) throw new RuleChangeForbiddenError(input.key, denial);
 

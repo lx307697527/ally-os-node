@@ -5,12 +5,13 @@ import { z } from "zod";
 import type { Db } from "@ally/db";
 import { schema } from "@ally/db";
 import type { Logger } from "pino";
+import { resolveApprovalRoute } from "../approval/routing.ts";
 import { submitApprovalRequest } from "../approval/service.ts";
 import { recordAudit } from "../audit/audit-log.ts";
 import type { AppEnv } from "../auth/session.ts";
 import { requirePermission } from "../authz/middleware.ts";
 import { OWNER_APPROVAL_ROLES, roleSchema } from "../authz/permissions.ts";
-import { ROLE_APPROVAL_CONFIG_KEY, ROLE_APPROVAL_SUBJECT_TYPE } from "../authz/role-approval.ts";
+import { ROLE_APPROVAL_SUBJECT_TYPE } from "../authz/role-approval.ts";
 import type { AuthzStore } from "../authz/service.ts";
 
 /**
@@ -22,9 +23,12 @@ import type { AuthzStore } from "../authz/service.ts";
  * R-16-6 高级角色门（#221 切片 2 起）：owner/admin/finance 的授予与撤销——
  * - owner 本人直接执行（他就是确认人，R-16-5 业务审批可自批）；
  * - 其他 roles.assign 持有者走审批线（authz/role-approval.ts：owner 终审批准
- *   即生效）：审批线已配置 → 202 创建审批请求（payload 记 action/role）；已在飞
- *   → 409；审批线未配置 → 403 owner_approval_required（切片 1 的 fail-closed
- *   等价物保持不变：不预置配置数据，线由持 approval.configure 的人按需建）。
+ *   即生效）。「进哪条线」由注册表里的路由决策表裁决（approval/routing.ts：
+ *   `approval.routing.user_role`，#221 决策表进线——事实 {action, role} →
+ *   configKey，#233 §4.9）：命中 → 202 创建审批请求（payload 记 action/role）；
+ *   已在飞 → 409；未命中或路由表缺失/损坏 → 403 owner_approval_required
+ *   （fail closed 不变：高级角色变更退回「只允许 owner 直接执行」，绝不因配置
+ *   缺位而放开）。
  * - 无变化的操作（已持有再授 / 本就没持有再撤）不进审批——没有可确认的变更。
  */
 export function userRolesRoutes(deps: { db: Db; authzStore: AuthzStore; logger: Logger }) {
@@ -75,10 +79,21 @@ export function userRolesRoutes(deps: { db: Db; authzStore: AuthzStore; logger: 
     if ((await deps.authzStore.getRoles(userId)).includes(role)) {
       return c.json({ role, granted: false }, 200);
     }
+    const route = await resolveApprovalRoute(deps.db, ROLE_APPROVAL_SUBJECT_TYPE, {
+      action: "grant",
+      role,
+    });
+    if (route.status !== "matched") {
+      deps.logger.warn(
+        { subjectType: ROLE_APPROVAL_SUBJECT_TYPE, reason: route.reason, role },
+        "approval route unresolved; failing closed",
+      );
+      return c.json({ error: "forbidden", code: "owner_approval_required" }, 403);
+    }
     const outcome = await submitApprovalRequest(deps.db, {
       subjectType: ROLE_APPROVAL_SUBJECT_TYPE,
       subjectId: userId,
-      configKey: ROLE_APPROVAL_CONFIG_KEY,
+      configKey: route.configKey,
       submitterId: c.get("user").id,
       payload: { action: "grant", role },
     });
@@ -114,10 +129,21 @@ export function userRolesRoutes(deps: { db: Db; authzStore: AuthzStore; logger: 
     if (!(await deps.authzStore.getRoles(userId)).includes(role)) {
       return c.json({ role, revoked: false }, 200);
     }
+    const route = await resolveApprovalRoute(deps.db, ROLE_APPROVAL_SUBJECT_TYPE, {
+      action: "revoke",
+      role,
+    });
+    if (route.status !== "matched") {
+      deps.logger.warn(
+        { subjectType: ROLE_APPROVAL_SUBJECT_TYPE, reason: route.reason, role },
+        "approval route unresolved; failing closed",
+      );
+      return c.json({ error: "forbidden", code: "owner_approval_required" }, 403);
+    }
     const outcome = await submitApprovalRequest(deps.db, {
       subjectType: ROLE_APPROVAL_SUBJECT_TYPE,
       subjectId: userId,
-      configKey: ROLE_APPROVAL_CONFIG_KEY,
+      configKey: route.configKey,
       submitterId: c.get("user").id,
       payload: { action: "revoke", role },
     });
@@ -131,8 +157,9 @@ export function userRolesRoutes(deps: { db: Db; authzStore: AuthzStore; logger: 
  * 审批提交的三种落点（授予/撤销共用一个形状）：
  * - 建 202：请求已建，payload 已带 action/role，等老板终审（批准即生效）；
  * - 已在飞 409：同单同线至多一个在飞请求（内核部分唯一索引背书）；
- * - 线不存在/停用/坏掉 403 owner_approval_required：切片 1 的 fail-closed 等价
- *   物——高级角色变更退回「只允许 owner 直接执行」，不因配置缺位而放开。
+ * - 其余 403 owner_approval_required：路由未命中/路由表缺失或损坏，或线不存在/
+ *   停用/坏掉——fail-closed 等价物：高级角色变更退回「只允许 owner 直接执行」，
+ *   不因配置缺位而放开。
  */
 function approvalOutcomeResponse(
   c: Context<AppEnv>,

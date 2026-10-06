@@ -23,15 +23,18 @@ import { createAuthzStore } from "./service.ts";
  *    ——「所有权限变更留审计」R-16-6）。终审前变更已被 owner 直接执行时幂等
  *    收场，不重复审计。
  * 3. **提交路径**：routes/user-roles.ts 进程内带 payload 提交（通用提交端点对
- *    带 outcome 的类型强制 payload_required，无参数死请求进不来）。
+ *    带 outcome 的类型强制 payload_required，无参数死请求进不来）。进哪条线由
+ *    注册表路由决策表 `approval.routing.user_role` 裁决（approval/routing.ts，
+ *    #221 决策表进线）；种子表把 grant/revoke 都指向下面的 ROLE_APPROVAL_CONFIG_KEY。
  *
  * 审批线（approval_configs 里 subjectType=user_role、configKey=role_grant）由
- * 持 approval.configure 的人按需创建；线不存在时路由保持切片 1 前的 fail-closed
- * 等价物（高权限变更只允许 owner 直接执行）——不预置数据，配置工作室的归配置
- * 工作室（线定义不可改写，#226 前不替 owner 定终身）。
+ * 持 approval.configure 的人按需创建；线不存在或路由未命中时保持切片 1 前的
+ * fail-closed 等价物（高权限变更只允许 owner 直接执行）——不预置线数据，配置
+ * 工作室的归配置工作室（线定义不可改写，#226 前不替 owner 定终身）。
  */
 
 export const ROLE_APPROVAL_SUBJECT_TYPE = "user_role";
+/** 种子路由表（approval.routing.user_role）输出的线键；线的创建仍是配置面的事 */
 export const ROLE_APPROVAL_CONFIG_KEY = "role_grant";
 
 /** 请求参数：变更方向 + 目标角色。只服务高权限角色门——低权限不进审批线 */
