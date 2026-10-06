@@ -20,7 +20,7 @@
 // the labels beside it.
 import type { ReactElement, ReactNode } from "react";
 
-export type RailIconName = "overview" | "ledger" | "tasks" | "approvals";
+export type RailIconName = "overview" | "ledger" | "tasks" | "approvals" | "hash";
 
 const GLYPHS: Record<RailIconName, ReactNode> = {
   // A gauge: the arc, its baseline and one needle — where things stand.
@@ -54,6 +54,15 @@ const GLYPHS: Record<RailIconName, ReactNode> = {
       <path d="M9.75 11V8.75a2.25 2.25 0 0 1 4.5 0V11" />
       <rect x="5.25" y="11" width="13.5" height="5.5" rx="1.2" />
       <path d="M7.75 20.5h8.5" />
+    </>
+  ),
+  // A hash: the number sign itself — the series that counts documents out.
+  hash: (
+    <>
+      <path d="M9.5 4 7.5 20" />
+      <path d="M16.5 4l-2 16" />
+      <path d="M4.5 9h16" />
+      <path d="M3.5 15h16" />
     </>
   ),
 };

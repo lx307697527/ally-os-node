@@ -233,54 +233,17 @@ export function numberingRulesRoutes(deps: { db: Db; logger: Logger }) {
       return c.json(presentRule(current, null));
     }
     const actorId = c.get("user").id;
-    const row = await deps.db.transaction(async (tx) => {
-      // 版本号从台账取（行.version = 台账最新版的不变式，#226）
-      const nextVersion = await nextConfigVersion(tx, "numbering_rule", id.data);
-      const updated = await tx
-        .update(schema.numberingRules)
-        .set({
-          ...(body.label !== undefined ? { label: body.label } : {}),
-          ...(body.prefix !== undefined ? { prefix: body.prefix } : {}),
-          ...(body.dateFormat !== undefined ? { dateFormat: body.dateFormat } : {}),
-          ...(body.padding !== undefined ? { padding: body.padding } : {}),
-          ...(body.active !== undefined ? { active: body.active } : {}),
-          version: nextVersion,
-          updatedAt: new Date(),
-        })
-        .where(eq(schema.numberingRules.id, id.data))
-        .returning({
-          id: schema.numberingRules.id,
-          subject: schema.numberingRules.subject,
-          label: schema.numberingRules.label,
-          prefix: schema.numberingRules.prefix,
-          dateFormat: schema.numberingRules.dateFormat,
-          padding: schema.numberingRules.padding,
-          startNumber: schema.numberingRules.startNumber,
-          active: schema.numberingRules.active,
-          createdAt: schema.numberingRules.createdAt,
-          updatedAt: schema.numberingRules.updatedAt,
-        });
-      const updatedRow = updated[0];
-      if (updatedRow === undefined) {
-        return undefined;
+    let row: Awaited<ReturnType<typeof updateRuleRow>>;
+    try {
+      row = await updateRuleRow(deps, id.data, body, changes, actorId);
+    } catch (err) {
+      // 重新激活撞上一对象另一条生效规则：部分唯一索引兜底的同一扇门，
+      // 与 POST 的「已存在」同答 409（UI 的重激活按钮会走到这条路）
+      if (isUniqueViolation(err)) {
+        return c.json({ error: "rule_exists" }, 409);
       }
-      await recordConfigRevision(tx, {
-        subjectType: "numbering_rule",
-        subjectId: id.data,
-        version: nextVersion,
-        actorId,
-        snapshot: numberingRuleSnapshot({
-          label: updatedRow.label,
-          prefix: updatedRow.prefix,
-          dateFormat: updatedRow.dateFormat,
-          padding: updatedRow.padding,
-          active: updatedRow.active,
-        }),
-        changes,
-        source: "updated",
-      });
-      return updatedRow;
-    });
+      throw err;
+    }
     if (row === undefined) {
       return c.json({ error: "internal_error" }, 500);
     }
@@ -294,4 +257,76 @@ export function numberingRulesRoutes(deps: { db: Db; logger: Logger }) {
   });
 
   return app;
+}
+
+/** PATCH 的事务体（提出 main handler 是为了让上面的 catch 能包住整个事务） */
+function updateRuleRow(
+  deps: { db: Db },
+  id: string,
+  body: z.infer<typeof patchBody>,
+  changes: Record<string, { from: unknown; to: unknown }>,
+  actorId: string,
+): Promise<
+  | {
+      id: string;
+      subject: string;
+      label: string;
+      prefix: string;
+      dateFormat: (typeof NUMBERING_DATE_FORMATS)[number] | null;
+      padding: number;
+      startNumber: number;
+      active: boolean;
+      createdAt: Date;
+      updatedAt: Date;
+    }
+  | undefined
+> {
+  return deps.db.transaction(async (tx) => {
+    // 版本号从台账取（行.version = 台账最新版的不变式，#226）
+    const nextVersion = await nextConfigVersion(tx, "numbering_rule", id);
+    const updated = await tx
+      .update(schema.numberingRules)
+      .set({
+        ...(body.label !== undefined ? { label: body.label } : {}),
+        ...(body.prefix !== undefined ? { prefix: body.prefix } : {}),
+        ...(body.dateFormat !== undefined ? { dateFormat: body.dateFormat } : {}),
+        ...(body.padding !== undefined ? { padding: body.padding } : {}),
+        ...(body.active !== undefined ? { active: body.active } : {}),
+        version: nextVersion,
+        updatedAt: new Date(),
+      })
+      .where(eq(schema.numberingRules.id, id))
+      .returning({
+        id: schema.numberingRules.id,
+        subject: schema.numberingRules.subject,
+        label: schema.numberingRules.label,
+        prefix: schema.numberingRules.prefix,
+        dateFormat: schema.numberingRules.dateFormat,
+        padding: schema.numberingRules.padding,
+        startNumber: schema.numberingRules.startNumber,
+        active: schema.numberingRules.active,
+        createdAt: schema.numberingRules.createdAt,
+        updatedAt: schema.numberingRules.updatedAt,
+      });
+    const updatedRow = updated[0];
+    if (updatedRow === undefined) {
+      return undefined;
+    }
+    await recordConfigRevision(tx, {
+      subjectType: "numbering_rule",
+      subjectId: id,
+      version: nextVersion,
+      actorId,
+      snapshot: numberingRuleSnapshot({
+        label: updatedRow.label,
+        prefix: updatedRow.prefix,
+        dateFormat: updatedRow.dateFormat,
+        padding: updatedRow.padding,
+        active: updatedRow.active,
+      }),
+      changes,
+      source: "updated",
+    });
+    return updatedRow;
+  });
 }

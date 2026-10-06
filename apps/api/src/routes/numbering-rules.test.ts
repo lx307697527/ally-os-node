@@ -271,6 +271,26 @@ describe.skipIf(!databaseUrl)("numbering rule endpoints (#225 slice 1, integrati
     expect(missing.status).toBe(404);
   });
 
+  it("reactivating collides with another active rule on the subject (409, not 500)", async () => {
+    // 配置 UI 的重激活按钮会走到这条路：旧规则停用后另建了新规则，把旧的
+    // 再点亮会撞 active 部分唯一索引——与 POST 的「已存在」同答 409，
+    // 不能把合法的并发状态当 500 喷回去
+    const retired = await createRuleOk({ subject: FIXTURE_SUBJECT, label: "旧规则" });
+    await app.request(`/api/numbering-rules/${retired}`, {
+      method: "PATCH",
+      headers: { ...jsonHeaders, ...adminHeaders },
+      body: JSON.stringify({ active: false }),
+    });
+    await createRuleOk({ subject: FIXTURE_SUBJECT, label: "新规则" });
+    const res = await app.request(`/api/numbering-rules/${retired}`, {
+      method: "PATCH",
+      headers: { ...jsonHeaders, ...adminHeaders },
+      body: JSON.stringify({ active: true }),
+    });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ error: "rule_exists" });
+  });
+
   it("deactivating the rule fails allocation closed; reactivating resumes the same series", async () => {
     const id = await createRuleOk({ subject: FIXTURE_SUBJECT, label: "发票", prefix: "INV-", padding: 4 });
     const first = await allocateDocumentNumber(db, FIXTURE_SUBJECT, { now: CLOCK });
