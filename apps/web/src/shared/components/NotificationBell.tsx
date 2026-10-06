@@ -235,6 +235,20 @@ export function NotificationBell({
                 Couldn't refresh just now — showing what was loaded.
               </p>
             )}
+            <div className="border-t border-line px-3 py-2">
+              {/* 渠道偏好的发现入口（#116）：通知面的门口指向通知设置，
+                  keepOpen 不设——点了就走，菜单随路由跳转收起。 */}
+              <button
+                type="button"
+                data-testid="notification-settings-link"
+                onClick={() => {
+                  navigate("/settings/notifications");
+                }}
+                className="cursor-pointer border-0 bg-transparent p-0 text-meta text-link underline underline-offset-2 hover:text-link-hover"
+              >
+                Notification settings
+              </button>
+            </div>
           </div>
         </MenuPopup>
       </Menu>

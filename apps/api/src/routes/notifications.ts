@@ -6,10 +6,14 @@ import { schema } from "@ally/db";
 import type { AppEnv } from "../auth/session.ts";
 
 /**
- * 站内通知的读取与已读端点（#129）。老系统对应物是 PostgREST 直读
- * platform.notifications + 两个已读 RPC——新系统里读写都走这里：
+ * 站内通知的读取、已读与渠道偏好端点（#129 / #116 渠道层）。老系统对应物是
+ * PostgREST 直读 platform.notifications + 两个已读 RPC——新系统里读写都走这里：
  * 铃铛一次请求拿「最近 + 未读数」（FEAT-391 的单读合同），已读只允许
  * 操作自己的行。
+ *
+ * 渠道偏好（#116）也在这：应用内是通知的本体、永远开着；偏好表只登记额外
+ * 渠道（首个 = 邮件摘要，worker 每日扇出）。读改都是本人行，与已读端点同一
+ * 数据面——不设权限点、不进审计。
  *
  * 写入方（谁创建通知）不在这个文件：老系统是 outbox 触发器按 event_type
  * 白名单扇出，本系统的扇出生产者随各业务域迁移时落地，届时补幂等键列
@@ -27,8 +31,52 @@ export const UNREAD_COUNT_CAP = 21;
 
 const notificationIdSchema = z.uuid();
 
+/** PUT /preferences 的请求体：整份替换（不是 patch）——渠道就两个开关以内，整份最诚实 */
+const preferencesSchema = z.strictObject({ emailDigest: z.boolean() });
+
 export function notificationsRoutes(deps: { db: Db }) {
   const app = new Hono<AppEnv>();
+
+  app.get("/api/notifications/preferences", async (c) => {
+    const userId = c.get("user").id;
+    const [row] = await deps.db
+      .select({
+        emailDigest: schema.notificationPreferences.emailDigest,
+        updatedAt: schema.notificationPreferences.updatedAt,
+      })
+      .from(schema.notificationPreferences)
+      .where(eq(schema.notificationPreferences.userId, userId))
+      .limit(1);
+    // 没建行的用户 = 全默认（opt-in 表的缺席语义），不为他写行
+    return c.json({
+      emailDigest: row?.emailDigest ?? false,
+      updatedAt: row !== undefined ? row.updatedAt.toISOString() : null,
+    });
+  });
+
+  app.put("/api/notifications/preferences", async (c) => {
+    const parsed = preferencesSchema.safeParse(await c.req.json().catch(() => undefined));
+    if (!parsed.success) {
+      return c.json({ error: "invalid_request" }, 400);
+    }
+    const userId = c.get("user").id;
+    const [row] = await deps.db
+      .insert(schema.notificationPreferences)
+      .values({ userId, emailDigest: parsed.data.emailDigest, updatedAt: new Date() })
+      .onConflictDoUpdate({
+        target: schema.notificationPreferences.userId,
+        set: { emailDigest: parsed.data.emailDigest, updatedAt: new Date() },
+      })
+      .returning({
+        emailDigest: schema.notificationPreferences.emailDigest,
+        updatedAt: schema.notificationPreferences.updatedAt,
+      });
+    if (row === undefined) {
+      // upsert returning 空 = 库的承诺破了，按 500 走（不静默 200 假成功）
+      return c.json({ error: "internal_error" }, 500);
+    }
+    return c.json({ emailDigest: row.emailDigest, updatedAt: row.updatedAt.toISOString() });
+  });
 
   app.get("/api/notifications/summary", async (c) => {
     const userId = c.get("user").id;

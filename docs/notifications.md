@@ -1,6 +1,6 @@
-# Notifications (in-app bell) — #129
+# Notifications (in-app bell + channels) — #129 / #116
 
-Status: framework landed (slice 4). Producers come with business domains.
+Status: framework landed (slice 4); channel layer landed (email digest). Producers come with business domains.
 
 ## What exists
 
@@ -17,10 +17,43 @@ Status: framework landed (slice 4). Producers come with business domains.
     (200 `{marked:0}`)**: no existence oracle, old RPC anti-probe ruling. Malformed
     id → 400.
   - `POST /api/notifications/read-all` → `{marked: n}`.
+  - `GET|PUT /api/notifications/preferences` (#116) — the per-user channel layer.
+    `PUT` is full replacement with a strict body `{emailDigest: boolean}` (unknown keys
+    → 400); a user with no row reads the default (`{emailDigest: false, updatedAt: null}`)
+    and no row is written until they first save. Own-row data plane, same as the bell
+    endpoints: no permission point, no audit (personal delivery preference, not a
+    governance object).
 - **Frontend** `apps/web`: `NotificationBell` in the shell header (a `ReactNode` slot —
   the shell still fetches nothing), adapters in `notifications-client.ts` (zod-validated,
   every failure degrades to `null` = keep last good state), pure display in
   `notification-face.ts`, 60s visible-poll via `use-visible-poll.ts`.
+- **Channel layer** (#116): in-app (write + realtime bell) is the notification itself
+  and is always on; `notification_preferences` (migration 0025) registers the EXTRA
+  channels — the first is the **daily email digest**, a worker job
+  (`notifications-digest`, 13:30 UTC = 9:30 AM US Eastern, staggered 30 min after the
+  rules reminder):
+  - Rows carry `digest_sent_at` (0025, expand-only) — a delivery ledger. A row is
+    emailed **at most once**: the scan picks unread + never-digested rows for users
+    with `email_digest = true`, sends one email per user, and stamps only the rows it
+    LISTED (cap 50; the email reports the true total and says "… and N more"). Tomorrow's
+    scan picks up the unlisted remainder — nothing is silently dropped, nothing is
+    re-read aloud.
+  - In-app read state does not affect the digest — email is the "don't miss it"
+    backstop, not a projection of read state.
+  - Per-user failure isolation: one user's send failure doesn't block others; the job
+    then throws so pg-boss retries — stamped users are skipped, the retry only refills
+    the failures.
+  - Email copy is rendered from the row's FACTS (event type + `payload` fact fields +
+    time), not from a server-side copy of the bell's face map — the digest email is one
+    consumer surface; duplicating `describeNotification` server-side would be a second
+    truth to drift. Per-item deep links wait for the shared face package (with #115's
+    Slack channel, which needs the same copy).
+  - Mailer lives in `@ally/mailer` (sunk from apps/api when the worker became the second
+    consumer — same move as the automations kernel). Unconfigured `RESEND_API_KEY` =
+    logging mode, so a dev deployment "sends" digests into the worker log.
+  - Frontend: `/settings/notifications` (`NotificationSettings.tsx`) with the entry link
+    in the bell dropdown footer; adapters in `notification-preferences-client.ts` (same
+    never-throw, `null`-on-failure discipline).
 - **Live push** (#110 slice 2): `notification-live.ts` (built by the composition root,
   passed to the bell as the `live` prop) holds one WebSocket per tab, subscribed to the
   signed-in user's private `user:<id>` channel. A `notifications.changed` nudge — or a

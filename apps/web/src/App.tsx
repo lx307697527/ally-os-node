@@ -12,6 +12,7 @@ import { FeedbackDialog } from "./shared/components/FeedbackDialog.tsx";
 import { NotificationBell } from "./shared/components/NotificationBell.tsx";
 import { AuditLog } from "./shared/pages/AuditLog.tsx";
 import { Approvals } from "./shared/pages/Approvals.tsx";
+import { NotificationSettings } from "./shared/pages/NotificationSettings.tsx";
 import { TaskDetail } from "./shared/pages/TaskDetail.tsx";
 import { Tasks } from "./shared/pages/Tasks.tsx";
 import { TwoFactorSettings } from "./shared/pages/TwoFactorSettings.tsx";
@@ -131,6 +132,9 @@ export function App(): ReactElement {
           {/* 2FA 自助（#24）：强制门把未绑定的管理员引到这里的合同,绑定流程
               本身不需要新的 API 面——走的都是 /api/auth/two-factor/*。 */}
           <Route path="/settings/two-factor" element={<TwoFactorSettings />} />
+          {/* 通知渠道偏好（#116）：铃铛下拉直达；应用内是本体常开，页面只管
+              额外渠道（首个 = 邮件摘要）。 */}
+          <Route path="/settings/notifications" element={<NotificationSettings />} />
           {/* An address the router cannot reach is answered by the place a
               signed-in operator belongs — the same destination the index
               route picks. */}

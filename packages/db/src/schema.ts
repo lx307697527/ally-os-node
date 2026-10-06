@@ -256,6 +256,11 @@ export const notifications = pgTable(
     isRead: boolean("is_read").notNull().default(false),
     readAt: timestamp("read_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    // 渠道层的投递台账（#116）：这行进过哪次摘要邮件。null = 还没被任何摘要
+    // 带走过——摘要作业只捞 null 的行，发信成功才盖章，一行最多进一次邮件
+    //（exactly-once 投递，隔天不重复念旧账；应用内已读与否不影响它——邮件是
+    // 「别错过」的兜底，不是已读状态的投影）。
+    digestSentAt: timestamp("digest_sent_at", { withTimezone: true }),
   },
   (t) => [
     index("notifications_user_recent_idx").on(t.userId, desc(t.createdAt)),
@@ -263,6 +268,26 @@ export const notifications = pgTable(
     index("notifications_user_unread_idx").on(t.userId).where(sql`${t.isRead} = false`),
   ],
 );
+
+// ── 通知偏好（#116 渠道层）───────────────────────────────────────────────────
+// 设计 §11「应用内实时、邮件摘要、Slack，每人可选渠道」的人侧一半：一行 = 一个
+// 人对渠道的选择。应用内（写库 + realtime 铃铛）是通知的本体，永远开着、不设
+// 开关；本表只登记「额外渠道」。首渠道是邮件摘要（worker 每日一条，@ally/mailer
+// 发信）；Slack 渠道随 #115 进场时加列，expand-only。
+//
+// 老系统没有按人偏好（弹窗开关是 FEAT-638 的公司级单开关，app_config 一个键）；
+// 这里按设计升格为按人。默认全关：未配置的部署不该替人决定往外发信（opt-in，
+// 与「摘要代替打扰」的方向一致——要的是少看铃铛，不是多收邮件）。
+//
+// 个人数据面：读改都是本人行（同铃铛的已读端点），不设权限点、不进审计——
+// 改的是「给自己的投递方式」，不是治理对象（registry_rules 才是）。
+export const notificationPreferences = pgTable("notification_preferences", {
+  userId: uuid("user_id")
+    .primaryKey()
+    .references(() => authUser.id, { onDelete: "cascade" }),
+  emailDigest: boolean("email_digest").notNull().default(false),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
 
 // ── 反馈上报（#129）──────────────────────────────────────────────────────────
 // 后台内提交问题（老系统 FEAT-198 platform.feedback_reports 的直译）。提交人是
