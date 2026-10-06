@@ -78,6 +78,13 @@
       "when": 1791245457979,
       "tag": "0010_narrow_sentry",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1791248724258,
+      "tag": "0011_far_lilith",
+      "breakpoints": true
     }
   ]
 }

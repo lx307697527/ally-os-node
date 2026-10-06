@@ -52,6 +52,7 @@ export const API_ROUTES: readonly RouteDecl[] = [
   // 创建人/经办人），登录即可——可评即可见，无新权限点
   { method: "GET", path: "/api/comments", auth: { kind: "session" } },
   { method: "POST", path: "/api/comments", auth: { kind: "session" } },
+  { method: "PATCH", path: "/api/comments/:id", auth: { kind: "session" } },
   { method: "DELETE", path: "/api/comments/:id", auth: { kind: "session" } },
   // 活动流（#110 切片 3）：audit_events 的按对象读投影，subject 可见者门与
   // 评论同扇（subjects/registry.ts），登录即可——投影只含该 subject 自己的

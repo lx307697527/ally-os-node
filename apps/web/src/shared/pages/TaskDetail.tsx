@@ -340,6 +340,55 @@ function CommentsSection(props: {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notified, setNotified] = useState<string | null>(null);
+  // #110 slice 5: the id of the comment being edited inline (null = none)
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editDraft, setEditDraft] = useState("");
+  const [savingEdit, setSavingEdit] = useState(false);
+  const [editError, setEditError] = useState<string | null>(null);
+
+  function startEdit(row: CommentRow): void {
+    setError(null);
+    setEditError(null);
+    setEditingId(row.id);
+    setEditDraft(row.body);
+  }
+
+  function cancelEdit(): void {
+    setEditingId(null);
+    setEditDraft("");
+    setEditError(null);
+  }
+
+  async function saveEdit(row: CommentRow): Promise<void> {
+    setEditError(null);
+    const body = editDraft.trim();
+    if (body === "") {
+      setEditError("Write the comment first.");
+      return;
+    }
+    setSavingEdit(true);
+    const result = await commentAdapters.edit(row.id, body);
+    setSavingEdit(false);
+    if (!result.ok) {
+      setEditError(
+        result.reason === "forbidden"
+          ? "Only the author can edit a comment."
+          : result.reason === "conflict"
+            ? "The edit was rejected — check its length and try again."
+            : "The edit could not be saved. Reload and try again.",
+      );
+      return;
+    }
+    // An edit is also an activity row (comment.updated); both readers refresh.
+    // Newly mentioned people are named the same way a fresh post names them.
+    setEditingId(null);
+    setEditDraft("");
+    const newly = result.data.mentioned.map((p) => p.name);
+    setNotified(
+      newly.length === 0 ? null : `Notified: ${newly.join(", ")}`,
+    );
+    props.onChanged();
+  }
 
   async function submit(): Promise<void> {
     setError(null);
@@ -422,6 +471,8 @@ function CommentsSection(props: {
         <ul className="mt-2" data-testid="comments-list">
           {props.comments.map((row) => {
             const highlighted = row.id === props.highlightId;
+            const mine = props.meId !== null && row.author?.id === props.meId;
+            const editing = row.id === editingId;
             return (
               <li
                 key={row.id}
@@ -429,24 +480,83 @@ function CommentsSection(props: {
                 data-comment-id={row.id}
                 className={`border-b border-line py-2 ${highlighted ? "rounded-small bg-accent/10 ring-1 ring-accent" : ""}`}
               >
-                <span className="block text-ui leading-[var(--lh-ui)] text-ink">{row.body}</span>
-                <span className="mt-0.5 block font-mono text-[length:var(--fs-meta)] text-ink-soft">
-                  {row.author.name} · {formatDay(row.createdAt)}
-                </span>
-                {props.meId !== null && row.author.id === props.meId ? (
-                  <span className="mt-1 block">
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => {
-                        void remove(row);
+                {editing ? (
+                  <div className="grid gap-2" data-testid="comment-edit-form">
+                    <textarea
+                      value={editDraft}
+                      maxLength={COMMENT_BODY_MAX}
+                      onChange={(event) => {
+                        setEditDraft(event.target.value);
                       }}
-                      data-testid="comment-delete"
-                    >
-                      Delete
-                    </Button>
-                  </span>
-                ) : null}
+                      aria-label="Edit the comment"
+                      rows={3}
+                      data-testid="comment-edit-body"
+                      className="rounded-control border border-line bg-card p-[var(--pad-control)] font-sans text-ui text-ink"
+                    />
+                    <span className="font-mono text-[length:var(--fs-meta)] text-ink-soft">
+                      {mentionHint}
+                    </span>
+                    {editError !== null ? (
+                      <Paragraph className="text-ink-soft" data-testid="comment-edit-error">
+                        {editError}
+                      </Paragraph>
+                    ) : null}
+                    <span className="flex gap-2">
+                      <Button
+                        variant="primary"
+                        size="sm"
+                        disabled={savingEdit}
+                        onClick={() => {
+                          void saveEdit(row);
+                        }}
+                        data-testid="comment-edit-save"
+                      >
+                        Save
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        disabled={savingEdit}
+                        onClick={cancelEdit}
+                        data-testid="comment-edit-cancel"
+                      >
+                        Cancel
+                      </Button>
+                    </span>
+                  </div>
+                ) : (
+                  <>
+                    <span className="block text-ui leading-[var(--lh-ui)] text-ink">{row.body}</span>
+                    <span className="mt-0.5 block font-mono text-[length:var(--fs-meta)] text-ink-soft">
+                      {row.author?.name ?? "—"} · {formatDay(row.createdAt)}
+                      {row.editedAt !== null ? " · (edited)" : ""}
+                    </span>
+                    {mine ? (
+                      <span className="mt-1 flex gap-2">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => {
+                            startEdit(row);
+                          }}
+                          data-testid="comment-edit"
+                        >
+                          Edit
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => {
+                            void remove(row);
+                          }}
+                          data-testid="comment-delete"
+                        >
+                          Delete
+                        </Button>
+                      </span>
+                    ) : null}
+                  </>
+                )}
               </li>
             );
           })}
@@ -546,7 +656,8 @@ function ActivitySection(props: {
               <span className="block text-ui leading-[var(--lh-ui)] text-ink">
                 <span className="font-medium">{row.actor?.name ?? "System"}</span>
                 {" "}
-                {row.action === "comment.created" && row.target !== null ? (
+                {(row.action === "comment.created" || row.action === "comment.updated") &&
+                row.target !== null ? (
                   <Link
                     to={`/tasks/${props.subjectId}?comment=${row.target}`}
                     className="text-link underline underline-offset-2 hover:text-link-hover"
@@ -602,6 +713,8 @@ function activityText(row: ActivityRow): string {
     }
     case "comment.created":
       return "commented";
+    case "comment.updated":
+      return "edited a comment";
     case "comment.deleted":
       return "deleted a comment";
     case "follow.created":

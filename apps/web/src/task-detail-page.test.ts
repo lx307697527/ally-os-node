@@ -54,9 +54,21 @@ describe("task detail page (#110 slice 1)", () => {
   });
 
   it("only the author's rows offer Delete; delete failures are said", () => {
-    expect(page).toContain("row.author.id === props.meId");
+    expect(page).toContain("row.author?.id === props.meId");
     expect(page).toContain('data-testid="comment-delete"');
     expect(page).toContain("Only the author can delete a comment.");
+  });
+
+  it("the author's rows offer inline Edit; the edited marker and its failures are said (#110 slice 5)", () => {
+    expect(page).toContain('data-testid="comment-edit"');
+    expect(page).toContain('data-testid="comment-edit-save"');
+    expect(page).toContain('data-testid="comment-edit-cancel"');
+    expect(page).toContain('data-testid="comment-edit-error"');
+    // the "(edited)" marker reads the row's editedAt, null = never edited
+    expect(page).toContain('row.editedAt !== null ? " · (edited)" : ""');
+    expect(page).toContain("Only the author can edit a comment.");
+    expect(client).toContain('method: "PATCH"');
+    expect(client).toContain("editedAt: z.string().nullable()");
   });
 
   it("the record route keeps its list one link away", () => {
