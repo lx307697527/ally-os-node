@@ -33,7 +33,9 @@
   `config.rolled_back`（带可选 reason）。目标内容与现状一致 → 409
   `rollback_no_change`（回滚是 no-op 时明确拒绝，不记假变更）；目标版本不存在 →
   404；配置行已删（规则删除、模板替换）→ 404 `subject_not_found`（台账行仍在，
-  历史是对「存在过的配置」的事实）。
+  历史是对「存在过的配置」的事实）；快照恢复撞上族的结构不变式（workflow 模板
+  历史版带 `isDefault=true` 而默认位已被别的模板接管）→ 409 `rollback_conflict`
+  （整个事务已回滚，先摘位再回滚，绝不静默盖掉期间的线上变更）。
 - **存量行补账**：0019 迁移把五族已有行按当前 version 入账（source `created`，
   快照与写入面形状同构）。台账前的演进史无法逐版重建（automation_rules 曾靠
   「spec 变更 +1」到过 >1 的版本），以补账时刻现状为一版事实；版本连续性自此
@@ -68,10 +70,12 @@
   语义，绝不静默盖掉别人的变更；草稿行 FOR UPDATE 锁住，并发保存与并发发布
   在这一行上串行化）。
 - **能力随内容改写路径走**：只有注册了 `draftContentSchema` + `applyRevision`
-  的族能存草稿（automation_rule / custom_field_def / numbering_rule 三族）；
-  workflow / approval 尚无定义改写端点，草稿与发布对它们答 409
-  `publish_unsupported`（与回滚的 `rollback_unsupported` 同一裁法）。权限 =
-  各族配置面的同一权限点（动态按族裁决，与台账读面共用 config-versions/http.ts）。
+  的族能存草稿（automation_rule / custom_field_def / numbering_rule /
+  workflow_template 四族——workflow 的定义改写面随 #220/#226 进场，definition
+  的草稿校验与 POST/PATCH 同一道四门）；approval 尚无定义改写端点，草稿与发布
+  对它答 409 `publish_unsupported`（与回滚的 `rollback_unsupported`
+  同一裁法）。权限 = 各族配置面的同一权限点（动态按族裁决，与台账读面共用
+  config-versions/http.ts）。
 
 ## 记账协议（写入侧纪律）
 

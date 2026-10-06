@@ -36,6 +36,18 @@ import {
 
 const subjectIdParam = z.uuid();
 
+/** pg 的唯一约束冲突（23505）：形状收窄而不引依赖（pg 是 @ally/db 的传递依赖）。
+ * drizzle 会把驱动错误包进 DrizzleQueryError.cause，沿因果链找码 */
+function isUniqueViolation(err: unknown): boolean {
+  let current: unknown = err;
+  for (let depth = 0; depth < 4 && typeof current === "object" && current !== null; depth++) {
+    const candidate = current as { code?: unknown; cause?: unknown };
+    if (candidate.code === "23505") return true;
+    current = candidate.cause;
+  }
+  return false;
+}
+
 const diffQuery = z
   .object({
     from: z.coerce.number().int().min(1),
@@ -186,6 +198,12 @@ export function configVersionsRoutes(deps: { db: Db; logger: Logger }) {
         }),
       );
     } catch (err) {
+      if (isUniqueViolation(err)) {
+        // 快照恢复撞上结构不变式（如 workflow 模板的历史版本带 isDefault=true，
+        // 而另一模板已接管默认）：整个事务已回滚——409 与发布面同一扇（重读
+        // 现状、先摘位再回滚），绝不静默盖掉期间的线上变更
+        return c.json({ error: "rollback_conflict" }, 409);
+      }
       const mapped = rollbackErrorStatus(err);
       if (mapped === undefined) throw err;
       return c.json({ error: mapped.error }, mapped.status);

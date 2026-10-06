@@ -500,7 +500,7 @@ export const esignSignatures = pgTable(
 // 同一裁法），属主域切片注册加载器，不加列不动库。
 //
 // 版本列 = 配置版本台账（config_revisions，#226）里该模板的最新版本号，创建时
-// 记 v1；定义尚无就地改写路径（替换 = 停旧行建新行，新行自为一版事实），在飞
+// 记 v1；就地改写（PATCH/草稿发布/回滚）经台账前滚新版本，在飞
 // 实例的 definition 快照读法不受台账影响。
 export const workflowTemplates = pgTable(
   "workflow_templates",
@@ -508,7 +508,7 @@ export const workflowTemplates = pgTable(
     id: uuid("id").primaryKey().defaultRandom(),
     subjectType: text("subject_type").notNull(),
     // 流程模板键 = XState machine id 的宿主身份（如 standard_lead）；一个 subject
-    // 类型下键唯一，模板替换 = 停用旧行 + 新键（定义就地改写端点随 #226 后续切片）
+    // 类型下键唯一，键是身份不是内容（可改的是内容四字段，改键不设端点）
     templateKey: text("template_key").notNull(),
     // 按产品类型选模板（#220「按产品类型切换模板」）：null = 不分类型的兜底模板
     productType: text("product_type"),

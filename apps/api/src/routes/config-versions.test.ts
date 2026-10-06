@@ -535,7 +535,14 @@ describe.skipIf(!databaseUrl)("config version ledger (#226 slice 1, integration)
     const configId = must(((await configRes.json()) as { id?: string }).id);
     expect(await history("approval_config", configId)).toHaveLength(1);
 
-    // 定义改写端点未进场：回滚 409（明确说「这族还回滚不了」，不假装成功）
+    // 定义改写端点（#220/#226）进场：workflow 回滚走 applyRevision——PATCH 记
+    // v2 后回滚到 v1 前滚出 rolled_back v3，内容与版本号都回到台账寻址
+    const templatePatch = await app.request(`/api/workflow-templates/${templateId}`, {
+      method: "PATCH",
+      headers: { ...jsonHeaders, ...adminHeaders },
+      body: JSON.stringify({ active: false }),
+    });
+    expect(templatePatch.status).toBe(200);
     const templateRollback = await app.request(
       `/api/config-versions/workflow_template/${templateId}/rollback`,
       {
@@ -544,8 +551,9 @@ describe.skipIf(!databaseUrl)("config version ledger (#226 slice 1, integration)
         body: JSON.stringify({ toVersion: 1 }),
       },
     );
-    expect(templateRollback.status).toBe(409);
-    expect(await templateRollback.json()).toMatchObject({ error: "rollback_unsupported" });
+    expect(templateRollback.status).toBe(200);
+    expect(await templateRollback.json()).toMatchObject({ restoredVersion: 1, newVersion: 3 });
+    // approval 仍无定义改写路径：回滚 409（明确说「这族还回滚不了」，不假装成功）
     const configRollback = await app.request(
       `/api/config-versions/approval_config/${configId}/rollback`,
       {

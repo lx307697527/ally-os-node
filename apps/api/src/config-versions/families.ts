@@ -5,6 +5,8 @@ import { ruleSpecSchema } from "@ally/automations";
 import { NUMBERING_DATE_FORMATS } from "../numbering/service.ts";
 import { roleSchema } from "../authz/permissions.ts";
 import { ruleWriteDenial } from "../rules/service.ts";
+import { actionBlock, conditionBlock } from "../workflow/blocks.ts";
+import { parseWorkflowTemplate, referencedBlocks } from "../workflow/engine.ts";
 import { registerConfigSubject, type ConfigSubjectSpec } from "./registry.ts";
 
 /**
@@ -19,9 +21,10 @@ import { registerConfigSubject, type ConfigSubjectSpec } from "./registry.ts";
  * 个「别的键」是语义错误），numbering 的 startNumber 刻意不可恢复（对已在发
  * 的系列无效果，同 PATCH 面的拒绝理由）。
  *
- * 回滚能力随内容改写路径走：workflow / approval 本切片没有定义改写端点（行
- * 内容恒等于 v1，无可回滚的差异），注册时不带 applyRevision，回滚端点对其答
- * 409——定义改写端点进场（#226 后续切片）时同步补 applyRevision。
+ * 回滚能力随内容改写路径走：approval 本切片仍没有定义改写端点（行内容恒等于
+ * v1，无可回滚的差异），注册时不带 applyRevision，回滚端点对其答 409——定义
+ * 改写端点进场（#221 后续切片）时同步补 applyRevision。workflow_template 的
+ * 定义改写面随 #220/#226 进场（PATCH + 草稿发布 + 回滚）。
  *
  * 草稿内容契约（切片 2）只随 applyRevision 走：草稿校验对齐各族配置面的
  * **业务**校验（strict + select 选项规则 + ruleSpecSchema），存进去的必须是
@@ -42,6 +45,33 @@ export function workflowTemplateSnapshot(row: {
     definition: row.definition,
   };
 }
+
+// 草稿内容 = 快照同一形状（整体替换，四键必填）；definition 过与 POST/PATCH 面
+// 同一道四门校验（zod 结构 → 拓扑语义 → XState 可达性 → 积木存在性）——发布后
+// 要能直接被实例启动/推进读，引用不存在积木的定义不能借草稿面绕过保存面的拒绝
+export const workflowTemplateDraftContentSchema = z
+  .object({
+    productType: z.string().trim().min(1).max(64).nullable(),
+    isDefault: z.boolean(),
+    active: z.boolean(),
+    definition: z.unknown(),
+  })
+  .strict()
+  .superRefine((content, ctx) => {
+    const parsed = parseWorkflowTemplate(content.definition);
+    if (!parsed.ok) {
+      ctx.addIssue({ code: "custom", message: parsed.error });
+      return;
+    }
+    const blocks = referencedBlocks(parsed.template);
+    const missing = [
+      ...blocks.gates.filter((name) => conditionBlock(name) === undefined),
+      ...blocks.actions.filter((name) => actionBlock(name) === undefined),
+    ];
+    if (missing.length > 0) {
+      ctx.addIssue({ code: "custom", message: `unknown blocks: ${missing.join(", ")}` });
+    }
+  });
 
 // ── 审批线（#221）──────────────────────────────────────────────────────────
 export function approvalConfigSnapshot(row: {
@@ -364,12 +394,36 @@ const registryRuleSpec: ConfigSubjectSpec = {
   },
 };
 
-// workflow / approval：本切片没有定义改写路径，行内容恒等于 v1，回滚与草稿均
-// 无意义（409 rollback_unsupported / publish_unsupported）；快照照记（创建即
-// 第一版事实），史与差异可读。定义改写端点进场时同步补 applyRevision 与草稿契约。
+// workflow：定义改写面随 #220/#226 进场（PATCH + 草稿发布 + 回滚）；快照回写
+// 只做结构收口（四门业务校验在写入面/草稿面已完成，回滚的职责是把台账里的字节
+// 原样写回去，同 automation/numbering 的裁法）。approval 仍无定义改写路径
+// （409 rollback_unsupported / publish_unsupported），定义改写端点随 #221 进场。
+const workflowTemplateSnapshotSchema = z.object({
+  productType: z.string().nullable(),
+  isDefault: z.boolean(),
+  active: z.boolean(),
+  definition: z.unknown(),
+});
+
 const workflowTemplateSpec: ConfigSubjectSpec = {
   label: "流程模板",
   configurePermission: "workflow.configure",
+  draftContentSchema: workflowTemplateDraftContentSchema,
+  applyRevision: async (tx, subjectId, snapshot, version) => {
+    const data = parseSnapshotOrThrow("workflow_template", workflowTemplateSnapshotSchema, snapshot);
+    const updated = await tx
+      .update(schema.workflowTemplates)
+      .set({
+        productType: data.productType,
+        isDefault: data.isDefault,
+        active: data.active,
+        definition: data.definition,
+        version,
+      })
+      .where(eq(schema.workflowTemplates.id, subjectId))
+      .returning({ id: schema.workflowTemplates.id });
+    return updated.length > 0;
+  },
 };
 
 const approvalConfigSpec: ConfigSubjectSpec = {

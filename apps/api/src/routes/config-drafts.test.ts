@@ -255,21 +255,21 @@ describe.skipIf(!databaseUrl)("config drafts: draft → one-click publish (#226 
     expect(unregistered.status).toBe(404);
     expect(await unregistered.json()).toMatchObject({ error: "unregistered_subject" });
 
-    const templateRes = await app.request("/api/workflow-templates", {
+    // approval 仍无内容改写路径：草稿面 409（不假装能存草稿）；workflow 已随
+    // #220/#226 进场，正面用例在 workflow-templates.test.ts；不存在对象 404
+    const configRes = await app.request("/api/approval-configs", {
       method: "POST",
       headers: { ...jsonHeaders, ...adminHeaders },
       body: JSON.stringify({
-        subjectType: "lead",
-        templateKey: "standard_lead",
-        definition: {
-          initial: "new",
-          states: { new: { on: { CONTACT: "contacted" } }, contacted: {} },
-        },
+        subjectType: "quote_discount",
+        configKey: "discount_line",
+        name: "Discount line",
+        levels: [{ name: "step-1", users: [USERS.admin], roles: [] }],
       }),
     });
-    expect(templateRes.status).toBe(201);
-    const templateId = must(((await templateRes.json()) as { id?: string }).id);
-    const unsupported = await app.request(draftUrl("workflow_template", templateId), {
+    expect(configRes.status).toBe(201);
+    const configId = must(((await configRes.json()) as { id?: string }).id);
+    const unsupported = await app.request(draftUrl("approval_config", configId), {
       method: "PUT",
       headers: { ...jsonHeaders, ...adminHeaders },
       body: JSON.stringify({ content: { active: false } }),
