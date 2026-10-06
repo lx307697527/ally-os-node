@@ -86,6 +86,11 @@
   detail 记 `subjectType`/`subjectId`/`title`/`fieldKeys`——subject 引用在
   detail，进对象的活动流时间线；值行本身可 upsert，审计行记「谁在何时写了
   哪些键」）、
+  `automations.rule_created`/`automations.rule_updated`/`automations.rule_deleted`
+  （自动化规则 #224；target = 规则行 id，detail 记 `name` 与 spec 摘要
+  （trigger/conditions/actions），spec 变更再记 `version`/`from`/`to`——规则的
+  生命周期是纯配置面，每次变更一条审计；规则的**执行**不进审计词表，进
+  automation_runs（执行日志表，一次一行，与审计同附录性：run 行不删除）），
   状态变更类动作在 detail 里带 `from`/`to`（如
   `{ from: "new", to: "contacted" }`），日志页详情列原样展示。
 - detail 放变更细节（授予/撤销了什么、从哪到哪、审批裁决等），不放大对象全文

@@ -14,6 +14,7 @@ import { activityRoutes } from "./routes/activity.ts";
 import { approvalsRoutes } from "./routes/approvals.ts";
 import { authProvidersRoutes } from "./routes/auth-providers.ts";
 import { auditEventsRoutes } from "./routes/audit-events.ts";
+import { automationsRoutes } from "./routes/automations.ts";
 import { commentsRoutes } from "./routes/comments.ts";
 import { customFieldsRoutes } from "./routes/custom-fields.ts";
 import { esignaturesRoutes } from "./routes/esignatures.ts";
@@ -119,6 +120,10 @@ export function createApp(deps: AppDeps) {
   // 表单 subject 注册表（custom-fields/registry.ts）本切片为空——询价向导和
   // 清场检查表两个消费域进场时注册各自的内置字段
   app.route("/", customFieldsRoutes(deps));
+  // 自动化规则（#224 切片 1）：规则配置 + 执行日志读面（automations.configure
+  // 权限点）。规则的执行不在 API：worker 扫描器消费审计事件流（触发命中 →
+  // 条件 → 落 run 行），动作经 pg-boss 执行、重试与告警——保存即生效，无发布开关
+  app.route("/", automationsRoutes(deps));
   // 实时连接令牌（#110 切片 2）：发还调用者自己会话的令牌给 WS auth 帧用
   app.route("/", realtimeRoutes(deps));
   // 审计日志查询（#29）：audit.read 权限点门（owner/admin 默认）

@@ -742,3 +742,70 @@ export const customFieldValues = pgTable(
     uniqueIndex("custom_field_values_unique_idx").on(t.subjectType, t.subjectId, t.fieldDefId),
   ],
 );
+
+// ── 自动化规则（#224 切片 1：触发 → 条件 → 动作 内核）────────────────────────
+// 取代老系统写在数据库触发器里的业务逻辑（#134 清单）与部分定时任务：规则存成
+// 数据（触发、条件、动作三段 JSON，形状由 @ally/automations 的 zod 收口），由
+// worker 的扫描/执行任务消费审计事件流——触发是「审计事件 action 精确命中」，
+// 条件对事件语境（action/target/actor/detail）做点路径断言，动作第一批发
+// create_task / notify。老触发器的逻辑分散在 887 个迁移文件里「看不见、难测试」，
+// 新模型一条规则一行数据、一次执行一行日志（automation_runs）。
+//
+// trigger/conditions/actions 用 jsonb 不用列：动作类型是开集（email/sms/webhook/
+// AI 步骤随所属域进场），新类型不改表（与 notifications.event_type 同一裁法）。
+export const automationRules = pgTable("automation_rules", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  name: text("name").notNull(),
+  description: text("description"),
+  trigger: jsonb("trigger").$type<Record<string, unknown>>().notNull(),
+  conditions: jsonb("conditions").$type<unknown[]>().notNull().default([]),
+  actions: jsonb("actions").$type<unknown[]>().notNull(),
+  enabled: boolean("enabled").notNull().default(true),
+  // #226「配置版本、审计与发布」的预埋列（与 workflow/approval/custom-fields
+  // version 同一裁法）：本切片的最小纪律 = spec 变更即版本 +1 并留审计
+  version: integer("version").notNull().default(1),
+  // 规则删了，它建的任务还在（SET NULL，与 tasks.created_by_id 同裁）；
+  // createdById 同时是 create_task 动作的创建人快照来源
+  createdById: uuid("created_by_id").references(() => authUser.id, { onDelete: "set null" }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+// 每次执行留日志（#224 验收「触发了哪条规则、条件结果、动作结果」）。扫描器对
+// 「触发命中」的 (规则 × 事件) 各插一行：条件不过 = skipped（记录条件结果，不发
+// 执行任务）；条件过 = pending → 执行任务把它推到 succeeded/failed。唯一约束
+// (rule_id, source_event_id) 是扫描窗口重叠（90s 窗 × 60s 周期）下的防重发闸；
+// 规则删除后 run 仍在（SET NULL）且 rule_name 快照照旧可读——执行日志是不可少
+// 的观测面，不随配置消失。
+export const automationRunStatus = pgEnum("automation_run_status", [
+  "pending",
+  "skipped",
+  "succeeded",
+  "failed",
+]);
+
+export const automationRuns = pgTable(
+  "automation_runs",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    ruleId: uuid("rule_id").references(() => automationRules.id, { onDelete: "set null" }),
+    ruleName: text("rule_name").notNull(),
+    sourceEventId: uuid("source_event_id").notNull(),
+    status: automationRunStatus("status").notNull(),
+    // 逐条件结果（@ally/automations ConditionOutcome[]），skipped 行靠它回答「为什么没触发」
+    conditionResults: jsonb("condition_results").$type<unknown[]>().notNull().default([]),
+    // 逐动作结果（@ally/automations ActionResult[]）：重试只补失败的同一个动作，
+    // 已成功的动作靠这份记录跳过（幂等闸）
+    actionResults: jsonb("action_results").$type<unknown[]>(),
+    error: text("error"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    finishedAt: timestamp("finished_at", { withTimezone: true }),
+  },
+  (t) => [
+    uniqueIndex("automation_runs_rule_event_idx").on(t.ruleId, t.sourceEventId),
+    // 后台「最近执行」读法（最新在前翻页），与 audit_events_created_at_idx 同裁
+    index("automation_runs_created_at_idx").on(desc(t.createdAt)),
+    // 扫描器的滞留重发：pending 超过阈值的行按这条前缀找
+    index("automation_runs_pending_idx").on(t.status, t.createdAt),
+  ],
+);
