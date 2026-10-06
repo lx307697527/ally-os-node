@@ -1,16 +1,23 @@
 import { randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import pino from "pino";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createDb, runMigrations, schema } from "@ally/db";
 import { createApp } from "../app.ts";
 import { createAuth, createSessionResolver } from "../auth/auth.ts";
-import type { MailMessage } from "../mailer/mailer.ts";
+import { ROLE_APPROVAL_CONFIG_KEY, ROLE_APPROVAL_SUBJECT_TYPE } from "../authz/role-approval.ts";
 import { createAuthzStore } from "../authz/service.ts";
 import type { Role } from "../authz/permissions.ts";
+import type { MailMessage } from "../mailer/mailer.ts";
 
-// 集成测试：需要真实 PostgreSQL（角色管理端点写 user_role + audit_events）。
-// 未设 DATABASE_URL 时跳过。
+// 集成测试：需要真实 PostgreSQL（角色管理端点写 user_role + audit_events，R-16-6
+// 审批路径写 approval_*）。未设 DATABASE_URL 跳过。
+//
+// 本文件用**独立的临时库**（每次运行新建、跑完 drop，纪律同 approvals.test.ts）：
+// 审批请求的 submitted_by_id 对用户行是 no-action FK，且 approval_actions 行级
+// 触发器拒删——共享库上「测完删用户」的清理会撞 FK，审计断言也吃并行文件的残行；
+// 临时库整体生灭，beforeEach 一条 TRUNCATE 清出干净断言面（TRUNCATE 是 DDL，
+// 不触发 append-only 行触发器，docs/approval.md「测试清库的唯一通道」）。
 const databaseUrl = process.env.DATABASE_URL;
 
 const logger = pino({ level: "silent" });
@@ -40,8 +47,24 @@ interface Actor {
   email: string;
 }
 
-describe.skipIf(!databaseUrl)("user roles routes (#23, integration)", () => {
-  const { db, pool } = createDb(databaseUrl ?? "");
+describe.skipIf(!databaseUrl)("user roles routes (#23, #221 slice 2, integration)", () => {
+  // 管理连接连 maintenance 库建删临时库；测试连接指向本文件专属临时库
+  const dbName = `user_roles_test_${String(Date.now())}_${String(process.pid)}`;
+  const adminPool = createDb(adminUrl(databaseUrl));
+  const scopedUrl =
+    databaseUrl === undefined
+      ? ""
+      : (() => {
+          const url = new URL(databaseUrl);
+          url.pathname = `/${dbName}`;
+          return url.toString();
+        })();
+  const { db, pool } = createDb(scopedUrl);
+  // 拆库瞬间的空闲连接被 57P01 强杀时，pg Pool 会把 FATAL 重发到 pool 对象
+  // （样板：routes/comments.test.ts）。预期的拆除错误，吞掉。
+  pool.on("error", () => {});
+  adminPool.pool.on("error", () => {});
+
   const mailer = spyMailer();
   const auth = createAuth({
     db,
@@ -65,26 +88,28 @@ describe.skipIf(!databaseUrl)("user roles routes (#23, integration)", () => {
     resolveSession: createSessionResolver(auth),
     socialProviders: [],
     authzStore,
-  
-    notifyUsers: async () => {},});
 
-  const createdUserIds: string[] = [];
+    notifyUsers: async () => {},
+  });
 
   beforeAll(async () => {
+    if (!databaseUrl) throw new Error("unreachable: suite is skipped without DATABASE_URL");
+    await adminPool.pool.query(`create database "${dbName}"`);
     await runMigrations(db);
   });
 
-  afterEach(async () => {
-    // 审计行不清理：#29 起 audit_events append-only（行级 DELETE 被触发器拒绝，
-    // TRUNCATE 又会抹掉并行测试文件正在断言的共享库行）——本文件的断言都按
-    // target 过滤，别处的残行不进来；指向已删用户的审计残行是历史记录，无害。
-    for (const id of createdUserIds.splice(0)) {
-      await db.delete(schema.authUser).where(eq(schema.authUser.id, id));
-    }
+  beforeEach(async () => {
+    // 每条测试从空表开始（用户行与角色授予不清——临时库整体生灭）。一条语句：
+    // approval_* 有 FK 相连，分开 TRUNCATE 会撞约束（gotcha：单语句 TRUNCATE）
+    await db.execute(
+      sql`truncate table ${schema.approvalConfigs}, ${schema.approvalRequests}, ${schema.approvalActions}, ${schema.esignSignatures}, ${schema.auditEvents}, ${schema.notifications} cascade`,
+    );
   });
 
   afterAll(async () => {
     await pool.end();
+    await adminPool.pool.query(`drop database if exists "${dbName}" with (force)`);
+    await adminPool.pool.end();
   });
 
   async function signUpVerified(): Promise<Actor> {
@@ -97,7 +122,6 @@ describe.skipIf(!databaseUrl)("user roles routes (#23, integration)", () => {
     expect(signUp.status).toBe(200);
     const body = (await signUp.json()) as { user?: { id?: string } };
     const userId = must(body.user?.id);
-    createdUserIds.push(userId);
     const token = must(/token=([^"&\s<]+)/.exec(must(mailer.sent.at(-1)).html)?.[1]);
     const confirm = await app.request(`/api/auth/verify-email?token=${encodeURIComponent(token)}`);
     expect(confirm.status).toBe(200);
@@ -178,6 +202,61 @@ describe.skipIf(!databaseUrl)("user roles routes (#23, integration)", () => {
       .where(eq(schema.auditEvents.target, target));
   }
 
+  /**
+   * R-16-6 审批线夹具：直插配置行（配置面 API 的契约在 approvals.test.ts 覆盖）。
+   * 老板终审一级：点名 owner 角色，不要求签名。
+   */
+  async function ensureRoleApprovalLine(active = true): Promise<void> {
+    await db
+      .insert(schema.approvalConfigs)
+      .values({
+        subjectType: ROLE_APPROVAL_SUBJECT_TYPE,
+        configKey: ROLE_APPROVAL_CONFIG_KEY,
+        name: "High-privilege role change",
+        active,
+        levels: [
+          {
+            name: "owner confirm",
+            users: [],
+            roles: ["owner"],
+            requireSignature: false,
+            signatureMeaning: "approved",
+          },
+        ],
+      })
+      .onConflictDoNothing();
+    if (active) {
+      await db
+        .update(schema.approvalConfigs)
+        .set({ active: true })
+        .where(
+          and(
+            eq(schema.approvalConfigs.subjectType, ROLE_APPROVAL_SUBJECT_TYPE),
+            eq(schema.approvalConfigs.configKey, ROLE_APPROVAL_CONFIG_KEY),
+          ),
+        );
+    }
+  }
+
+  async function pendingRequestFor(
+    targetId: string,
+  ): Promise<{ id: string; status: string; payload: unknown } | undefined> {
+    const rows = await db
+      .select({
+        id: schema.approvalRequests.id,
+        status: schema.approvalRequests.status,
+        payload: schema.approvalRequests.payload,
+      })
+      .from(schema.approvalRequests)
+      .where(
+        and(
+          eq(schema.approvalRequests.subjectType, ROLE_APPROVAL_SUBJECT_TYPE),
+          eq(schema.approvalRequests.subjectId, targetId),
+        ),
+      );
+    return rows[0];
+  }
+
   it("admin grants sales; /api/me reflects the role; audit records the change", async () => {
     const f = await fixture();
     const res = await app.request(`/api/users/${f.target.userId}/roles`, {
@@ -213,7 +292,7 @@ describe.skipIf(!databaseUrl)("user roles routes (#23, integration)", () => {
     expect(await auditRows(f.target.userId)).toEqual([]);
   });
 
-  it("admin cannot grant owner-approval roles (R-16-6 gate), owner can", async () => {
+  it("admin cannot grant owner-approval roles while the line is unconfigured (fail-closed), owner can", async () => {
     const f = await fixture();
     const adminCookie = await f.cookieFor(f.admin);
     for (const role of ["owner", "admin", "finance"] as const) {
@@ -234,6 +313,286 @@ describe.skipIf(!databaseUrl)("user roles routes (#23, integration)", () => {
     });
     expect(ok.status).toBe(201);
     expect(await authzStore.getRoles(f.target.userId)).toEqual(["finance"]);
+  });
+
+  it("an inactive line keeps the same fail-closed gate", async () => {
+    const f = await fixture();
+    await ensureRoleApprovalLine(false);
+    const res = await app.request(`/api/users/${f.target.userId}/roles`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie: await f.cookieFor(f.admin) },
+      body: JSON.stringify({ role: "finance" }),
+    });
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: "forbidden", code: "owner_approval_required" });
+    expect(await pendingRequestFor(f.target.userId)).toBeUndefined();
+  });
+
+  it("admin grant of a high-privilege role becomes an approval request, not a grant (#221 slice 2)", async () => {
+    const f = await fixture();
+    await ensureRoleApprovalLine();
+    const res = await app.request(`/api/users/${f.target.userId}/roles`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie: await f.cookieFor(f.admin) },
+      body: JSON.stringify({ role: "finance" }),
+    });
+    expect(res.status).toBe(202);
+    const body = (await res.json()) as {
+      role: string;
+      granted: boolean;
+      approval: { requestId: string };
+    };
+    expect(body.role).toBe("finance");
+    expect(body.granted).toBe(false);
+
+    // 角色未生效；请求在飞、payload 记录了变更内容
+    expect(await authzStore.getRoles(f.target.userId)).toEqual([]);
+    const request = await pendingRequestFor(f.target.userId);
+    expect(request).toMatchObject({
+      status: "pending",
+      payload: { action: "grant", role: "finance" },
+    });
+
+    // 提交审计：谁、给谁、提了什么（R-16-6「所有权限变更留审计」的申请侧）
+    const submitted = await db
+      .select({ actor: schema.auditEvents.actor, detail: schema.auditEvents.detail })
+      .from(schema.auditEvents)
+      .where(eq(schema.auditEvents.action, "approval.requested"));
+    expect(submitted).toHaveLength(1);
+    expect(must(submitted[0]).actor).toBe(f.admin.userId);
+    expect(must(submitted[0]).detail).toMatchObject({
+      subjectType: ROLE_APPROVAL_SUBJECT_TYPE,
+      subjectId: f.target.userId,
+      configKey: ROLE_APPROVAL_CONFIG_KEY,
+      payload: { action: "grant", role: "finance" },
+    });
+  });
+
+  it("owner approval makes the grant take effect in the same stroke, with the audit trail", async () => {
+    const f = await fixture();
+    await ensureRoleApprovalLine();
+    const created = await app.request(`/api/users/${f.target.userId}/roles`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie: await f.cookieFor(f.admin) },
+      body: JSON.stringify({ role: "finance" }),
+    });
+    const requestId = ((await created.json()) as { approval: { requestId: string } }).approval
+      .requestId;
+
+    // 审批详情：老板（点名审批人）与目标用户看得见、带 payload；不相干的销售 404
+    const ownerView = await app.request(`/api/approval-requests/${requestId}`, {
+      headers: { cookie: await f.cookieFor(f.owner) },
+    });
+    expect(ownerView.status).toBe(200);
+    const viewBody = (await ownerView.json()) as {
+      request: { status: string; payload: unknown; currentLevel: { roles: string[] } | null };
+    };
+    expect(viewBody.request.status).toBe("pending");
+    expect(viewBody.request.payload).toEqual({ action: "grant", role: "finance" });
+    expect(viewBody.request.currentLevel).toMatchObject({ roles: ["owner"] });
+    const targetView = await app.request(`/api/approval-requests/${requestId}`, {
+      headers: { cookie: await f.cookieFor(f.target) },
+    });
+    expect(targetView.status).toBe(200);
+    const salesView = await app.request(`/api/approval-requests/${requestId}`, {
+      headers: { cookie: await f.cookieFor(f.sales) },
+    });
+    expect(salesView.status).toBe(404);
+
+    // 老板终审批准：批准即生效（同一笔提交里角色生效 + 审计 + 发起人通知）
+    const approved = await app.request(`/api/approval-requests/${requestId}/actions`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie: await f.cookieFor(f.owner) },
+      body: JSON.stringify({ decision: "approved" }),
+    });
+    expect(approved.status).toBe(200);
+    expect(((await approved.json()) as { requestStatus: string }).requestStatus).toBe("approved");
+
+    expect(await authzStore.getRoles(f.target.userId)).toEqual(["finance"]);
+    const rows = await auditRows(f.target.userId);
+    expect(rows).toEqual([
+      {
+        action: "role.granted",
+        actor: f.owner.userId,
+        detail: {
+          role: "finance",
+          via: "approval",
+          requestId,
+          submittedBy: f.admin.userId,
+        },
+      },
+    ]);
+    const notifications = await db
+      .select({ eventType: schema.notifications.eventType })
+      .from(schema.notifications)
+      .where(eq(schema.notifications.userId, f.admin.userId));
+    expect(notifications).toEqual([{ eventType: "approval.completed" }]);
+  });
+
+  it("owner rejection leaves the role ungranted, notifies the submitter, resubmission opens a new request", async () => {
+    const f = await fixture();
+    await ensureRoleApprovalLine();
+    const created = await app.request(`/api/users/${f.target.userId}/roles`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie: await f.cookieFor(f.admin) },
+      body: JSON.stringify({ role: "admin" }),
+    });
+    const firstId = ((await created.json()) as { approval: { requestId: string } }).approval
+      .requestId;
+
+    const rejected = await app.request(`/api/approval-requests/${firstId}/actions`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie: await f.cookieFor(f.owner) },
+      body: JSON.stringify({ decision: "rejected", note: "not yet" }),
+    });
+    expect(rejected.status).toBe(200);
+    expect(await authzStore.getRoles(f.target.userId)).toEqual([]);
+    expect(await auditRows(f.target.userId)).toEqual([]);
+
+    const notifications = await db
+      .select({ eventType: schema.notifications.eventType })
+      .from(schema.notifications)
+      .where(eq(schema.notifications.userId, f.admin.userId));
+    expect(notifications).toEqual([{ eventType: "approval.rejected" }]);
+
+    // 驳回是终态：重新提交 = 新请求
+    const again = await app.request(`/api/users/${f.target.userId}/roles`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie: await f.cookieFor(f.admin) },
+      body: JSON.stringify({ role: "admin" }),
+    });
+    expect(again.status).toBe(202);
+    const againId = ((await again.json()) as { approval: { requestId: string } }).approval.requestId;
+    expect(againId).not.toBe(firstId);
+  });
+
+  it("a second grant while one request is pending answers 409 with the pending id", async () => {
+    const f = await fixture();
+    await ensureRoleApprovalLine();
+    const first = await app.request(`/api/users/${f.target.userId}/roles`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie: await f.cookieFor(f.admin) },
+      body: JSON.stringify({ role: "finance" }),
+    });
+    expect(first.status).toBe(202);
+    const firstId = ((await first.json()) as { approval: { requestId: string } }).approval.requestId;
+
+    const second = await app.request(`/api/users/${f.target.userId}/roles`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie: await f.cookieFor(f.admin) },
+      body: JSON.stringify({ role: "finance" }),
+    });
+    expect(second.status).toBe(409);
+    expect(await second.json()).toEqual({
+      error: "conflict",
+      code: "owner_approval_pending",
+      requestId: firstId,
+    });
+  });
+
+  it("granting an already-held high-privilege role is a no-op without an approval request", async () => {
+    const f = await fixture();
+    await ensureRoleApprovalLine();
+    await seedRole(f.target.userId, "finance");
+    const res = await app.request(`/api/users/${f.target.userId}/roles`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie: await f.cookieFor(f.admin) },
+      body: JSON.stringify({ role: "finance" }),
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ role: "finance", granted: false });
+    expect(await pendingRequestFor(f.target.userId)).toBeUndefined();
+    expect(await auditRows(f.target.userId)).toEqual([]);
+  });
+
+  it("owner grants a high-privilege role directly even with the line configured (R-16-5)", async () => {
+    const f = await fixture();
+    await ensureRoleApprovalLine();
+    const res = await app.request(`/api/users/${f.target.userId}/roles`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie: await f.cookieFor(f.owner) },
+      body: JSON.stringify({ role: "finance" }),
+    });
+    expect(res.status).toBe(201);
+    expect(await res.json()).toEqual({ role: "finance", granted: true });
+    expect(await pendingRequestFor(f.target.userId)).toBeUndefined();
+    expect(await auditRows(f.target.userId)).toEqual([
+      { action: "role.granted", actor: f.owner.userId, detail: { role: "finance" } },
+    ]);
+  });
+
+  it("revoking a high-privilege role rides the same approval line", async () => {
+    const f = await fixture();
+    await ensureRoleApprovalLine();
+    await seedRole(f.target.userId, "finance");
+    const res = await app.request(`/api/users/${f.target.userId}/roles/finance`, {
+      method: "DELETE",
+      headers: { cookie: await f.cookieFor(f.admin) },
+    });
+    expect(res.status).toBe(202);
+    const body = (await res.json()) as {
+      role: string;
+      revoked: boolean;
+      approval: { requestId: string };
+    };
+    expect(body).toMatchObject({ role: "finance", revoked: false });
+    expect(await pendingRequestFor(f.target.userId)).toMatchObject({
+      status: "pending",
+      payload: { action: "revoke", role: "finance" },
+    });
+
+    const requestId = body.approval.requestId;
+    const approved = await app.request(`/api/approval-requests/${requestId}/actions`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie: await f.cookieFor(f.owner) },
+      body: JSON.stringify({ decision: "approved" }),
+    });
+    expect(approved.status).toBe(200);
+    expect(await authzStore.getRoles(f.target.userId)).toEqual([]);
+    expect(await auditRows(f.target.userId)).toEqual([
+      {
+        action: "role.revoked",
+        actor: f.owner.userId,
+        detail: {
+          role: "finance",
+          via: "approval",
+          requestId,
+          submittedBy: f.admin.userId,
+        },
+      },
+    ]);
+  });
+
+  it("revoking a not-held high-privilege role is a no-op without an approval request", async () => {
+    const f = await fixture();
+    await ensureRoleApprovalLine();
+    const res = await app.request(`/api/users/${f.target.userId}/roles/finance`, {
+      method: "DELETE",
+      headers: { cookie: await f.cookieFor(f.admin) },
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ role: "finance", revoked: false });
+    expect(await pendingRequestFor(f.target.userId)).toBeUndefined();
+    expect(await auditRows(f.target.userId)).toEqual([]);
+  });
+
+  it("the generic approval submit endpoint refuses payload-less requests on outcome subjects", async () => {
+    const f = await fixture();
+    await ensureRoleApprovalLine();
+    // admin 是 user_role 的可见者（roles.assign 持有者），可见性门放行；内核按
+    // 「带 outcome 自动化的 subject 必须带 payload」拒 422——无参数死请求进不了
+    // 在飞位，角色变更的唯一提交路径是本路由
+    const res = await app.request("/api/approval-requests", {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie: await f.cookieFor(f.admin) },
+      body: JSON.stringify({
+        subjectType: ROLE_APPROVAL_SUBJECT_TYPE,
+        subjectId: f.target.userId,
+        configKey: ROLE_APPROVAL_CONFIG_KEY,
+      }),
+    });
+    expect(res.status).toBe(422);
+    expect(await res.json()).toEqual({ error: "payload_required" });
   });
 
   it("users without roles.assign get 403 permission_required on every endpoint", async () => {
@@ -338,3 +697,10 @@ describe.skipIf(!databaseUrl)("user roles routes (#23, integration)", () => {
     expect(roles).toEqual([]);
   });
 });
+
+function adminUrl(databaseUrl: string | undefined): string {
+  if (databaseUrl === undefined) return "";
+  const url = new URL(databaseUrl);
+  url.pathname = "/postgres";
+  return url.toString();
+}

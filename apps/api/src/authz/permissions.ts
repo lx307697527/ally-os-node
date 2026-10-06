@@ -87,7 +87,11 @@ export const ROLE_PERMISSIONS: Readonly<Record<Role, readonly Permission[]>> = {
   customer: [],
 };
 
-/** R-16-6：授予这几个角色需要老板确认；审批流落地前直接只允许 owner 执行 */
+/**
+ * R-16-6：授予/撤销这几个角色需要老板确认。审批线（authz/role-approval.ts 的
+ * user_role/role_grant）已配置时走审批——老板终审批准即生效；线未配置时保持
+ * fail-closed 等价物：只允许 owner 本人直接执行（routes/user-roles.ts）。
+ */
 export const OWNER_APPROVAL_ROLES: readonly Role[] = ["owner", "admin", "finance"];
 
 /** 角色默认集 + 个人附加授权 = 生效权限集（user_permission 表存个人附加授权） */

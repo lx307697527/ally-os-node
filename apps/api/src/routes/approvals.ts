@@ -161,6 +161,12 @@ export function approvalsRoutes(deps: { db: Db; logger: Logger; notifyUsers: (us
         deps.logger.error({ configKey: body.configKey }, "approval config has invalid levels");
         throw new Error(`approval config ${body.configKey} has invalid levels`);
       }
+      if (outcome.reason === "payload_required") {
+        // 带 outcome 自动化的 subject（批准要执行业务效果）必须由属主域路由带
+        // 参数提交；通用端点不收 payload，对这类类型直接拒（422）——堵住
+        // 「批了也批不出效果」的无参数死请求占住在飞位
+        return c.json({ error: "payload_required" }, 422);
+      }
       return c.json(
         {
           error: outcome.reason,

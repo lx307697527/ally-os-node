@@ -7,6 +7,7 @@ import { recordAudit } from "../audit/audit-log.ts";
 import type { Role } from "../authz/permissions.ts";
 import { roleSchema } from "../authz/permissions.ts";
 import { signSubject, type EsignMeaning } from "../esign/service.ts";
+import { approvalOutcomeHandler } from "./outcomes.ts";
 
 /**
  * 审批内核服务（#221 切片 1）。
@@ -71,18 +72,34 @@ export interface SubmitCommand {
   subjectId: string;
   configKey: string;
   submitterId: string;
+  /**
+   * 请求参数（#221 切片 2）：随请求落库、给审批人看「批的到底是什么」、终审
+   * 批准后交 outcome 处理器执行。形状由属主域收口（内核不解释业务参数）；
+   * 带 outcome 自动化的 subject 必须带（否则批准无从执行，见 payload_required）。
+   */
+  payload?: unknown;
 }
 
 export type SubmitOutcome =
   | { status: "created"; requestId: string }
   | {
       status: "rejected";
-      reason: "config_not_found" | "config_inactive" | "levels_invalid" | "already_pending";
+      reason:
+        | "config_not_found"
+        | "config_inactive"
+        | "levels_invalid"
+        | "already_pending"
+        | "payload_required";
       requestId?: string;
     };
 
 /** 单据进入审批（属主域在业务动作里进程内调用；触发条件随 #233 决策表进场） */
 export async function submitApprovalRequest(db: Db, cmd: SubmitCommand): Promise<SubmitOutcome> {
+  // 带 outcome 自动化的 subject 无参数不放行：批准无从执行（通用提交端点不带
+  // payload，天然被此门挡住——带自动化线的唯一提交路径是属主域自己的路由）
+  if (cmd.payload === undefined && approvalOutcomeHandler(cmd.subjectType) !== undefined) {
+    return { status: "rejected", reason: "payload_required" };
+  }
   const configRows = await db
     .select()
     .from(schema.approvalConfigs)
@@ -113,6 +130,7 @@ export async function submitApprovalRequest(db: Db, cmd: SubmitCommand): Promise
       subjectType: cmd.subjectType,
       subjectId: cmd.subjectId,
       levels: config.levels,
+      ...(cmd.payload !== undefined ? { payload: cmd.payload } : {}),
       submittedById: cmd.submitterId,
     })
     // 部分唯一索引（同单同线至多一个在飞请求）撞车 = 并发双提交，输家按已存在
@@ -146,6 +164,7 @@ export async function submitApprovalRequest(db: Db, cmd: SubmitCommand): Promise
       subjectId: cmd.subjectId,
       configKey: config.configKey,
       steps: parsed.levels.map((level) => level.name),
+      ...(cmd.payload !== undefined ? { payload: cmd.payload } : {}),
     },
   });
   return { status: "created", requestId: row.id };
@@ -313,6 +332,24 @@ export async function actOnApproval(
       if (advanced[0] === undefined) {
         throw new ConcurrentConflict();
       }
+      // 批准即生效（#221 切片 2）：终审批准的同一事务里调用属主域 outcome 处理器
+      // （角色生效、折扣放开……）——业务效果与裁决要么全成要么全不算。处理器抛错
+      // = 整个裁决回滚（fail closed：批准落不下来，属主域修好数据后重裁）；驳回
+      // 与中间级通过不触发；未注册 subjectType 走纯记录线。
+      if (nextStatus === "approved") {
+        const outcome = approvalOutcomeHandler(request.subjectType);
+        if (outcome !== undefined) {
+          await outcome(tx, {
+            requestId: request.id,
+            subjectType: request.subjectType,
+            subjectId: request.subjectId,
+            configKey: request.configKey,
+            payload: request.payload,
+            submittedById: request.submittedById,
+            actorId: cmd.actorId,
+          });
+        }
+      }
       // 审计行与裁决同事务：审计失败则裁决失败（与全部业务写路径一致）。每条
       // action 一行 approval.action_recorded（#221 验收：审计可查审批人、时间、
       // 结论、签名含义），终态再加一行请求级事件。
@@ -409,6 +446,8 @@ export interface ApprovalRequestView {
   currentStep: number;
   /** 当前级的名字与审批人集合（在飞时给「轮到谁」；终态为 null） */
   currentLevel: { name: string; users: string[]; roles: Role[] } | null;
+  /** 请求参数（属主域提交时带上，如角色变更的 {action, role}）；纯记录线为 null */
+  payload: unknown;
   submittedBy: { id: string; name: string };
   submittedAt: Date;
   completedAt: Date | null;
@@ -426,6 +465,7 @@ export async function approvalRequestView(db: Db, requestId: string): Promise<Ap
       subjectType: schema.approvalRequests.subjectType,
       subjectId: schema.approvalRequests.subjectId,
       levels: schema.approvalRequests.levels,
+      payload: schema.approvalRequests.payload,
       status: schema.approvalRequests.status,
       currentStep: schema.approvalRequests.currentStep,
       submittedBy: { id: submitter.id, name: submitter.name },
@@ -482,6 +522,7 @@ export async function approvalRequestView(db: Db, requestId: string): Promise<Ap
       request.status === "pending" && level !== undefined
         ? { name: level.name, users: [...level.users], roles: [...level.roles] }
         : null,
+    payload: request.payload ?? null,
     submittedBy: request.submittedBy,
     submittedAt: request.createdAt,
     completedAt: request.completedAt,

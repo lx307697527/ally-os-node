@@ -20,7 +20,7 @@
 | 请求级加载 | `authz/middleware.ts` `authzMiddleware` | 紧跟 sessionMiddleware 挂在 `/api/*`：每请求查一次库（两小查询），把 `{ roles, permissions }` 放进 context——老系统每条 RLS 反复调 `has_role()` 的等价物，新系统一请求只查一次 |
 | 授权门 | 同上 `requireRole(...roles)` / `requirePermission(p)` | 任一角色即过（has_any_role 语义）/ 持有效权限点即过；不过答 403 `{ error: "forbidden", code: "role_required" \| "permission_required", … }`。401（未登录）与 403（登录但无权）分层不变 |
 | 角色管理端点 | `routes/user-roles.ts` | `GET/POST /api/users/:userId/roles`、`DELETE /api/users/:userId/roles/:role`，全部挂在 `roles.assign` 权限点后面。授予幂等（重复授予 200 `granted:false`），**只有真实变更写审计**（R-16-6：所有权限变更留审计，落 `audit_events`，actor/target/detail 齐全） |
-| R-16-6 高级角色门 | 同上 | 授予/撤销 `owner` / `admin` / `finance` 需要「老板确认」——审批流（#221）落地前，fail-closed 等价物是**只允许 owner 角色本人执行**，管理员不行，403 `owner_approval_required` |
+| R-16-6 高级角色门 | `routes/user-roles.ts` + `authz/role-approval.ts` | 授予/撤销 `owner` / `admin` / `finance` 需要「老板确认」（#221 切片 2 起）：owner 本人直接执行（R-16-5 自批）；其余 `roles.assign` 持有者走审批线——线已配置（`approval_configs` 里 `user_role`/`role_grant`）则 202 建审批请求，老板终审**批准即生效**（同一事务里写 user_role + `role.granted`/`role.revoked` 审计，detail 带 `via: "approval"`）；线未配置/停用则保持 fail-closed 等价物 403 `owner_approval_required`（不预置配置数据）。在飞请求重复提交 409 `owner_approval_pending` |
 | 路由授权声明 | `routes/registry.ts` + `routes/route-auth.test.ts` | 验收第 2 条的落点：每个 `/api/*` 路由（含公开路由）必须在 `API_ROUTES` 里有一行 auth 声明；测试把 app 实际路由与清单**双向比对**——新路由不写声明、或声明指向已删除的路由，测试都红；公开路由集合钉死，新公开端点必须显式改测试 |
 | 引导 CLI | `apps/api/src/scripts/grant-role.ts` | 授权端点依赖已有角色（鸡生蛋），第一台机器由运维用本脚本开第一个 owner/admin：`node --env-file-if-exists=.env apps/api/src/scripts/grant-role.ts --email <地址> --role owner --apply`。默认 dry-run；绕过 API 的 R-16-6 门属运维动作，写审计（actor 记 `cli:grant-role`）；也是撤掉最后一个 owner 后的恢复通道 |
 | 矩阵即测试 | `authz/authz.test.ts` | 验收「每个角色能 / 不能访问什么」：注册表里每个（角色 × 权限点）组合逐对断言与 `ROLE_PERMISSIONS` 一致——新权限点加进注册表的那一刻自动被覆盖 |
@@ -37,7 +37,7 @@
 | 角色 | 裁决默认权限（按 #232 §12） | 本切片落地 |
 | --- | --- | --- |
 | 老板 owner | 全部查看；审批：手工建单超 $100,000、PO 超阈值、退款超阈值、拉黑、账期与额度、特别版合同条款、授予高权限；合同我方签字（或授权他人）；授权质量放行例外；维护法规风险清单；设定买断价、标签设计费和提成规则；打开业务门槛例外开关 | `roles.assign`（高级角色授予的实际执行者）、`audit.read`（#29，「全部查看」先落在审计日志） |
-| 管理员 admin | 分配权限（授予老板/财务/管理员级需老板确认，R-16-6）；维护规则注册表中的管理员项 | `roles.assign`（高级角色被 R-16-6 门拦住，见上）、`audit.read`（#29） |
+| 管理员 admin | 分配权限（授予老板/财务/管理员级需老板确认，R-16-6）；维护规则注册表中的管理员项 | `roles.assign`（高级角色提交审批、老板终审批准后生效，见上）、`audit.read`（#29） |
 | 销售主管 sales_lead | 公海认领、改派归属、取消订单、同意签后变更、判定交货后赔偿、批准营销邮件、配置 qualified 规则和销售等级、设非数量折扣上限、发起退款和拉黑、查看利润 | —（随 #234/#239/#240/#237 等） |
 | 销售 sales | 公海认领；客户、报价、订单；确认配方与价格；代客户确认打样（留证据）；标记无效线索；标记配方保密；查看自己单子的毛利率 | —（随 #227/#229 等） |
 | 客服 customer_service | 改客户资料；处理和回复工单 | —（随 #235/#209） |
@@ -92,5 +92,7 @@
   回归测试。四层检查里的记录层、字段层（成本价/利润/银行信息）、职责分离（放行人
   ≠ 检测人，R-15-4）同理随模块进场。
 - 权限点随业务模块持续注册；每个模块切片自带「角色 × 新权限点」的矩阵增量。
-- R-16-6 的「老板确认」从「仅 owner 可执行」升级为真审批流（#221 审批配置工作室）。
+- ~~R-16-6 的「老板确认」从「仅 owner 可执行」升级为真审批流~~：#221 切片 2 已落地
+  （`authz/role-approval.ts`；审批线未配置时保持仅 owner 可执行的 fail-closed）。
+  待办页/配置 UI 随配置工作室前端进场。
 - 权限变更审计目前落 `audit_events`；审计的查询/展示界面随工作台模块（#191）。

@@ -63,17 +63,26 @@ template / instance / transition 同构。
    `already_pending`（附 requestId）；subject 类型未注册 400 / 不可见 404
    （反探测，与评论同扇）。
 
+## 已落地：批准即生效 + 第一个消费方（#221 切片 2）
+
+| 部分 | 位置 | 说明 |
+| --- | --- | --- |
+| 请求参数 | `packages/db/src/schema.ts`（migration `0015`） | `approval_requests.payload` jsonb（可空）：属主域进程内提交时带上（如角色变更的 `{action, role}`）——审批人必须看得见「批的到底是什么」，纯记录线可不带 |
+| 结果自动化注册表 | `apps/api/src/approval/outcomes.ts` | `registerApprovalOutcome(subjectType, handler)`：终审**批准**的同一事务里调用属主域处理器（角色生效、折扣放开……），业务效果与裁决要么全成要么全不算；处理器抛错 = 整个裁决回滚（fail closed，修好数据可重裁）。驳回与中间级通过不触发；未注册 subjectType 走纯记录线 |
+| payload 门 | `approval/service.ts` `submitApprovalRequest` | 带 outcome 注册的 subjectType 提交时必须带 payload，否则 `payload_required`——通用提交端点（`POST /api/approval-requests`）不收 payload，天然被挡（422），无参数死请求进不了在飞位；带自动化线的唯一提交路径是属主域自己的路由 |
+| 第一个消费方（R-16-6） | `apps/api/src/authz/role-approval.ts` + `routes/user-roles.ts` | 管理员授予/撤销 owner/admin/finance 走审批：审批线（`user_role`/`role_grant`）已配置 → 202 建请求（payload 记 `{action, role}`），老板终审批准即生效（同一事务写 user_role + `role.granted`/`role.revoked` 审计，detail 带 `via`/`requestId`/`submittedBy`，actor 记终审批准人）；线未配置/停用 → 保持切片 1 的 fail-closed（403 `owner_approval_required`，只允许 owner 直接执行，不预置配置数据）；owner 本人任何时候直接执行（R-16-5 自批）；无变化的操作（已持有/本没持有）不进线 |
+| user_role 可见性门 | `subjects/registry.ts`（`authz/role-approval.ts` 注册） | `user_role` subject 的可见者 = 目标用户本人 + 持 `roles.assign` 角色（owner/admin）的人——审批详情（含 payload、各级裁决）给审批人看，与角色管理端点同一扇权限门 |
+
 ## 刻意不在这切片里的（#221 保持 open）
 
 - **触发条件与自动进入**：「满足条件的单据自动进入审批」的路线（金额区间 →
   谁批）是 GoRules 决策表，存进规则注册表（#233）——决策表进场后，属主域在
-  业务动作里调 `submitApprovalRequest`（进程内，与 startWorkflow 同形态）。
-- **第一个真实消费方（R-16-6）**：授予 owner/admin/finance 角色需老板确认——
-  `routes/user-roles.ts` 现在的 fail-closed 等价物（只允许 owner 本人执行）
-  在审批内核接上后改为「创建审批请求」（切片 2）。
+  业务动作里调 `submitApprovalRequest`（进程内，与 startWorkflow 同形态；
+  R-16-6 的提交路径已经是这个形态，决策表只是换谁来判断「该进审批了」）。
 - **pg-boss 执行与提醒**：超时未裁决的催办、多级的通知扇出（#116 渠道层）。
 - **多人审批方式**：会签（全员同意）/票签（多数决）——现在任一命中即过。
 - **配置面管理（#226）**：configKey 替换 = 建新键 + 停用旧行，停用端点与
   版本化随 #226；version 列已预埋（恒 1）。
 - **后台审批配置 UI 与待办页**：随配置工作室前端进场（待办数据面
-  `GET /api/approval-requests/todo` 已就绪）。
+  `GET /api/approval-requests/todo` 已就绪；R-16-6 的审批线配置目前由持
+  `approval.configure` 的人经 API 创建一次）。

@@ -19,7 +19,12 @@ export interface AuthzStore {
   revokeRole(userId: string, role: Role): Promise<boolean>;
 }
 
-export function createAuthzStore(db: Db): AuthzStore {
+/**
+ * 参数收窄为结构子集（与 esign 的 signSubject 同裁）：批准即生效的 outcome 处理器
+ * 要拿终审事务里的连接造同款 store（角色生效与裁决同事务），调用方传 Db 或
+ * PgTransaction 都行。
+ */
+export function createAuthzStore(db: Pick<Db, "select" | "insert" | "delete">): AuthzStore {
   return {
     async getRoles(userId) {
       const rows = await db
