@@ -79,6 +79,17 @@ export const API_ROUTES: readonly RouteDecl[] = [
   { method: "GET", path: "/api/workflow-instances/:subjectType/:subjectId", auth: { kind: "session" } },
   { method: "POST", path: "/api/workflow-instances/:subjectType/:subjectId/transitions", auth: { kind: "session" } },
   { method: "GET", path: "/api/workflow-instances/:subjectType/:subjectId/transitions", auth: { kind: "session" } },
+  // 审批线管理（#221）：配置工作室的审批配置面，改审批路线 = 改「谁有权裁决
+  // 什么」，approval.configure 权限点门（owner/admin 默认持有）
+  { method: "POST", path: "/api/approval-configs", auth: { kind: "permission", permission: "approval.configure" } },
+  { method: "GET", path: "/api/approval-configs", auth: { kind: "permission", permission: "approval.configure" } },
+  // 审批请求（#221）：提交与详情过单据可见性门（subjects/registry.ts）；待办
+  // 与裁决由配置点名授权（users/roles 命中即审批人），要求签名的级别在服务层
+  // 过 2FA 门 + 签名仪式（#219 内核），自批合法（R-16-5），无新权限点
+  { method: "POST", path: "/api/approval-requests", auth: { kind: "session" } },
+  { method: "GET", path: "/api/approval-requests/todo", auth: { kind: "session" } },
+  { method: "GET", path: "/api/approval-requests/:id", auth: { kind: "session" } },
+  { method: "POST", path: "/api/approval-requests/:id/actions", auth: { kind: "session" } },
   // 审计日志查询（#29）：owner / admin（audit.read 权限点）
   { method: "GET", path: "/api/audit-events", auth: { kind: "permission", permission: "audit.read" } },
   // 实时连接令牌（#110 切片 2）：把调用者自己会话的令牌发还给本人，WS auth

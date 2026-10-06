@@ -544,3 +544,114 @@ export const workflowTransitions = pgTable(
     index("workflow_transitions_instance_idx").on(t.instanceId, t.createdAt),
   ],
 );
+
+// ── 审批（#221 切片 1：可配置内核）──────────────────────────────────────────
+// 老系统的审批散落各域：报价超阈值走 pricing.quote_approval_threshold() +
+// security 域的 approval_requests/outbox（feat349 只是把「该谁批」的通知接通），
+// SFP 审批只在前端判断——规则写死、记录不全（#221 正文原话）。新设计（#232 §4.9
+// v2.2）：审批流转自建（执行后续随 pg-boss 与现有后台作业同轨），审批路线的
+// 触发条件（金额区间 → 谁批）随 #233 的 GoRules 决策表进场——本切片先立
+// 「配置 → 多级流转 → 签名 → 审计」的内核，单据的自动进入是属主域的进程内调用。
+//
+// 三张表的分工与 workflow 同构：config 是配置（改它 = 改全员的工作方式，走
+// approval.configure 权限点），request 是在飞实例（levels 是提交时刻的配置快照
+// ——配置后续改版不改写在飞请求，与流程实例快照 template definition 同一裁法），
+// action 是「发生过的事实」流水（0014 触发器 append-only，与 audit_events /
+// esign_signatures / workflow_transitions 同一底线）。
+//
+// 驳回的语义（NocoBase 审批节点，#232 §4.9）：rejected 是请求的终态——单据回到
+// 发起人（通知落库），修改后重新提交 = 新请求（历史逐请求可溯，不改写旧请求）。
+// 同一单据同一审批线至多一个在飞请求：部分唯一索引钉成结构不变式，双提交在
+// 写入侧即被拒。
+export const approvalStatus = pgEnum("approval_status", ["pending", "approved", "rejected"]);
+
+export const approvalDecision = pgEnum("approval_decision", ["approved", "rejected"]);
+
+export const approvalConfigs = pgTable(
+  "approval_configs",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    subjectType: text("subject_type").notNull(),
+    // 审批线键（如 role_grant、quote_discount）：一个 subject 类型下键唯一，
+    // 与 workflow_templates_key_idx 同构；停用 = active 翻转，定义不改写（#226 前的最小纪律）
+    configKey: text("config_key").notNull(),
+    name: text("name").notNull(),
+    // 有序级别数组（[{ name, users, roles, requireSignature, signatureMeaning }]），
+    // 形状由 apps/api/src/approval/service.ts 的 zod 在保存时收口；审批人 = 指定
+    // 人员 ∪ 指定角色（R-16-5 业务审批可自批，内核不做职责分离——质量放行的
+    // 例外在 R-15-4，随 phase-3/4 的属主域进场）
+    levels: jsonb("levels").notNull(),
+    active: boolean("active").notNull().default(true),
+    // 版本列此刻恒为 1：#226「配置版本、审计与发布」进场前的预埋（与 workflow
+    // version 同一裁法——快照读法要引用它，字段先立住语义）
+    version: integer("version").notNull().default(1),
+    createdById: uuid("created_by_id").references(() => authUser.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("approval_configs_key_idx").on(t.subjectType, t.configKey),
+    index("approval_configs_resolution_idx").on(t.subjectType, t.active),
+  ],
+);
+
+export const approvalRequests = pgTable(
+  "approval_requests",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    configId: uuid("config_id")
+      .notNull()
+      .references(() => approvalConfigs.id),
+    // 配置键 / 级别数组都是提交时刻的快照：配置改版、停用、换 levels 不改写在飞
+    // 请求的审批路线（与流程实例的 definition 快照同一裁决）
+    configKey: text("config_key").notNull(),
+    subjectType: text("subject_type").notNull(),
+    subjectId: uuid("subject_id").notNull(),
+    levels: jsonb("levels").notNull(),
+    // 当前级下标（0 基）。推进用乐观并发控制：UPDATE 带 current_step/status 条件，
+    // 两个审批人同时裁决同级只有一个生效——不覆盖别人，也不落第二行 action
+    currentStep: integer("current_step").notNull().default(0),
+    status: approvalStatus("status").notNull().default("pending"),
+    // 发起人 = 驳回后单据回到的人（终态通知的收件人）
+    submittedById: uuid("submitted_by_id")
+      .notNull()
+      .references(() => authUser.id),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    // 一张单据一条审批线至多一个在飞请求（驳回后重新提交 = 新请求行）
+    uniqueIndex("approval_requests_pending_idx")
+      .on(t.subjectType, t.subjectId, t.configKey)
+      .where(sql`status = 'pending'`),
+    // 「待我审批」扫描的入口索引：在飞请求是稀疏集
+    index("approval_requests_todo_idx").on(t.status, t.currentStep),
+  ],
+);
+
+// 审批裁决流水：谁、在哪一级、何时、同意或驳回、意见。actor 与用户行不共生灭
+// （不带 CASCADE，与 esign 签名人 / workflow_transitions.actor 同裁——历史是对
+// 真实的人的事实）；整表 append-only（0014 触发器）。要求签名的级别，签名经
+// esign 内核落在 esign_signatures（subjectType = approval_action、subjectId =
+// 本行 id）——签名与裁决行的联结走 subject 引用（docs/audit.md 多态子对象约定），
+// 不在本表加第二份引用列。
+export const approvalActions = pgTable(
+  "approval_actions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    requestId: uuid("request_id")
+      .notNull()
+      .references(() => approvalRequests.id),
+    stepIndex: integer("step_index").notNull(),
+    levelName: text("level_name").notNull(),
+    decision: approvalDecision("decision").notNull(),
+    note: text("note"),
+    actorId: uuid("actor_id")
+      .notNull()
+      .references(() => authUser.id),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    // 一级一裁决：并发路径撞唯一约束与 CAS 抢输同答 409
+    uniqueIndex("approval_actions_request_step_idx").on(t.requestId, t.stepIndex),
+  ],
+);

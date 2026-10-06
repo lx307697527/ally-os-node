@@ -117,10 +117,13 @@ export type SignOutcome =
  * loadRecord 由调用方从可签名注册表取来（esign/registry.ts）；它返回的版本与
  * 快照在此刻定格成 recordHash，之后属主记录怎么演进都不改写这份绑定。
  */
-export async function signSubject(
-  db: Db,
+export async function signSubject<TDb extends Pick<Db, "select" | "insert" | "transaction">>(
+  // 泛型而非具体类型：路由传完整连接与注册表 load（db: Db），审批内核（#221）
+  // 在自己的推进事务里传 PgTransaction 与同一份 load——loadRecord 拿到的 db 与
+  // 调用方传入的同型，绑定语义不会长出第二种
+  db: TDb,
   cmd: SignCommand,
-  loadRecord: (db: Db, subjectId: string) => Promise<SignableRecord | null>,
+  loadRecord: (db: TDb, subjectId: string) => Promise<SignableRecord | null>,
 ): Promise<SignOutcome> {
   const record = await loadRecord(db, cmd.subjectId);
   if (record === null) {

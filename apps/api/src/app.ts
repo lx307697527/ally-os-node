@@ -7,7 +7,9 @@ import type { AppEnv, ResolveSession } from "./auth/session.ts";
 import { sessionMiddleware } from "./auth/session.ts";
 import { authzMiddleware, requireTwoFactorGate } from "./authz/middleware.ts";
 import type { AuthzStore } from "./authz/service.ts";
+import "./approval/registry.ts";
 import { activityRoutes } from "./routes/activity.ts";
+import { approvalsRoutes } from "./routes/approvals.ts";
 import { authProvidersRoutes } from "./routes/auth-providers.ts";
 import { auditEventsRoutes } from "./routes/audit-events.ts";
 import { commentsRoutes } from "./routes/comments.ts";
@@ -104,6 +106,11 @@ export function createApp(deps: AppDeps) {
   // 实例启动是属主域的进程内调用，不开 HTTP 面
   app.route("/", workflowTemplatesRoutes(deps));
   app.route("/", workflowInstancesRoutes(deps));
+  // 审批（#221）：审批线管理（approval.configure 权限点）+ 请求提交/详情/待办/
+  // 裁决（单据可见性门 + 配置点名）。approval/registry.ts 在模块装载时接线三个
+  // 消费方向：工作流门槛积木 approval.passed、esign 的第一个可签名 subject、
+  // approval_action 的可见性门——上面 import 的副作用，顺序在本文件不敏感
+  app.route("/", approvalsRoutes(deps));
   // 实时连接令牌（#110 切片 2）：发还调用者自己会话的令牌给 WS auth 帧用
   app.route("/", realtimeRoutes(deps));
   // 审计日志查询（#29）：audit.read 权限点门（owner/admin 默认）

@@ -42,8 +42,8 @@ export interface AuthzContext {
   permissions: ReadonlySet<Permission>;
 }
 
-/** #23 切片内的两个权限点；随业务模块切片增加，新增必须先进这个注册表 */
-export const PERMISSIONS = ["roles.assign", "label_design", "audit.read", "workflow.configure"] as const;
+/** 权限点清单；随业务模块切片增加，新增必须先进这个注册表 */
+export const PERMISSIONS = ["roles.assign", "label_design", "audit.read", "workflow.configure", "approval.configure"] as const;
 
 export type Permission = (typeof PERMISSIONS)[number];
 
@@ -64,10 +64,14 @@ export const permissionSchema = z.enum(PERMISSIONS);
  *   「灵活性集中做在一个公共的配置工作室里」），改流程 = 改全员的工作方式，
  *   与规则注册表的管理者同一批人（§12 管理员「维护规则注册表中的管理员项」）；
  *   实例的推进不在此权限点后面——能推进谁由属主域的可见性门与模板 roles 裁决。
+ * - approval.configure：老板与管理员（#221）。审批线属配置工作室——改审批路线
+ *   = 改「谁有权裁决什么」（#221「配置审批人（指定人员或角色）」），与流程/规则
+ *   的管理者同一批人；请求的提交与裁决不在此权限点后面——单据可见性门与配置
+ *   点名（users/roles）各裁各的，审批自批合法（R-16-5）。
  */
 export const ROLE_PERMISSIONS: Readonly<Record<Role, readonly Permission[]>> = {
-  owner: ["roles.assign", "audit.read", "workflow.configure"],
-  admin: ["roles.assign", "audit.read", "workflow.configure"],
+  owner: ["roles.assign", "audit.read", "workflow.configure", "approval.configure"],
+  admin: ["roles.assign", "audit.read", "workflow.configure", "approval.configure"],
   sales_lead: [],
   sales: [],
   customer_service: [],
