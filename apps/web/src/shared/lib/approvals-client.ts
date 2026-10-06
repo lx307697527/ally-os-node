@@ -34,6 +34,13 @@ const todoRowSchema = z.object({
   payload: z.unknown(),
   requireSignature: z.boolean(),
   signatureMeaning: z.enum(["reviewed", "approved"]),
+  // Countersign / vote levels (#221): the row carries its own progress so the
+  // page can say "1 of 2 approvals in" and retire the decision buttons once
+  // this operator has voted (acting again would just 409).
+  levelMode: z.enum(["any", "all", "quorum"]),
+  approvedCount: z.number().int(),
+  neededApprovals: z.number().int(),
+  viewerAlreadyActed: z.boolean(),
 });
 
 const actionRowSchema = z.object({

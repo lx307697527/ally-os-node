@@ -697,8 +697,10 @@ export const approvalActions = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
-    // 一级一裁决：并发路径撞唯一约束与 CAS 抢输同答 409
-    uniqueIndex("approval_actions_request_step_idx").on(t.requestId, t.stepIndex),
+    // 一人一级一裁决（#221 会签/票签）：any 模式下同级的第二个裁决人仍由推进
+    // CAS 拒绝（输家 409 不落行）；会签/票签同级多行并存，重复裁决（同一人
+    // 对同级第二次落行）撞本约束与 CAS 抢输同答 409
+    uniqueIndex("approval_actions_request_step_actor_idx").on(t.requestId, t.stepIndex, t.actorId),
   ],
 );
 

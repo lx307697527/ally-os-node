@@ -32,14 +32,23 @@ template / instance / transition 同构。
     "name": "lead review",
     "users": ["<uuid>"],        // 指定人员（最多 20）
     "roles": ["sales_lead"],    // 指定角色（app_role 闭集，customer 拒收）
+    "mode": "any",              // 裁决方式：any 任一即过 | all 会签 | quorum 票签
+    "quorum": 2,                // 仅 mode="quorum"：通过票数（2–50）；其他模式必须缺省
     "requireSignature": false,  // 这级的「同意」是否要求电子签名
     "signatureMeaning": "reviewed" // 签名含义（Part 11.50）：reviewed | approved
   }
 ]
 ```
 
-- 审批人集合 = `users ∪ 持有 roles 的人`，任一命中即可裁决（NocoBase 的
-  多人审批方式——会签/票签——不在本切片，见剩余项）；
+- 审批人集合 = `users ∪ 持有 roles 的人`；裁决方式（#221 会签/票签）：
+  - `any`（默认，旧快照无字段落此值）——任一命中即可裁决（原行为）；
+  - `all` 会签——当前级审批人集合**全员同意**才过；集合以**裁决时刻**为准
+    （角色持有者在飞期间变化，以当下事实算票）；
+  - `quorum` 票签——同意数达到 `quorum` 即过，多余的裁决人可以不裁；
+  - 驳回在任何模式下都是终态（单据回发起人）；票数下限 2（1/N = any，不是
+    第三种语义）。`quorum` 大于实际审批人集合的线永远不会过（fail closed，
+    催办会一直点名没交票的人）——票数是配置责任，保存面不做集合上限校验
+    （角色持有数只有运行时知道）；
 - `requireSignature` 只约束**同意**：驳回不签（回到发起人是内部协作，不是
   监管事实）；签名仪式复用 #219 内核（重输密码 + 双因素 + 幂等 clientToken），
   签名含义取级别配置；
@@ -55,10 +64,12 @@ template / instance / transition 同构。
 4. 要求签名而请求没带 `password`+`clientToken` → 422 `signature_required`；
    密码错 → 401 `invalid_credentials`（**整包回滚**：裁决行、签名行、推进、
    审计全都不存在）；clientToken 重放按 #219 幂等语义返回原行；
-5. 并发裁决同级：action 行的 `(request_id, step_index)` 唯一约束串行化，
-   CAS（UPDATE 带 current_step/status 条件）守住状态迁移 → 输家 409
-   `concurrent_conflict`（晚到读到终态的同答 `request_closed`——不变式是
-   只有一个赢家，不是拒绝理由的唯一性）；
+5. 并发裁决同级：请求行锁（`SELECT … FOR UPDATE`，0027 起唯一约束改
+   `(request_id, step_index, actor_id)` 一人一级一裁决）串行化同级裁决，CAS
+   （UPDATE 带 current_step/status 条件）守住状态迁移。any 模式同级的第二个
+   裁决人、任何模式下同一人的重复表决，都按冲突答 409 `concurrent_conflict`
+   （晚到读到终态的同答 `request_closed`——不变式是只有一个赢家，不是拒绝
+   理由的唯一性）；
 6. 提交时配置不存在/停用 → 404 `config_not_found`；已有在飞请求 → 409
    `already_pending`（附 requestId）；subject 类型未注册 400 / 不可见 404
    （反探测，与评论同扇）。
@@ -102,9 +113,9 @@ template / instance / transition 同构。
 
 - ~~**触发条件与自动进入**~~：机制半边已落地（路由决策表 + R-16-6 消费）；剩余
   是金额域的首次接线（#229/#231）。
-- ~~**pg-boss 执行与提醒**~~：已落地（见下一节）。剩余是会签/票签等需要 pg-boss
-  编排的多人推进形态。
-- **多人审批方式**：会签（全员同意）/票签（多数决）——现在任一命中即过。
+- ~~**pg-boss 执行与提醒**~~：已落地（见文末「通知扇出 + pg-boss 催办」节）；
+  会签/票签也已落地（见上一节追加）。
+- ~~**多人审批方式**~~：已落地（见下一节）——会签（全员同意）/票签（N-of-M）。
 - **配置面管理（#226）**：configKey 替换 = 建新键 + 停用旧行，停用端点与定义
   改写端点随 #226 后续切片；版本台账已进场——审批线创建即记 v1，版本史/差异
   可读（docs/config-versions.md），回滚对该族答 409（无就地改写路径）。
@@ -142,3 +153,33 @@ api 的 approvalLevelsSchema 一处收口；读不准的快照跳过并告警（
 **刻意不做**：审批没有超时拒绝——业务自批（R-16-5）之下没人有权替审批人做决定，
 催办只是把「这儿等着」再递一次。24h 常量目前不进配置面：需要调的人还没有，
 第一个要调的消费域把它抬进审批线配置（expand-only）。
+
+## 已落地：会签/票签（#221 多人裁决形态）
+
+级别长出 `mode`（`any` 任一即过 = 原行为，旧快照缺字段落默认 / `all` 会签 =
+全员同意 / `quorum` 票签 = N-of-M，`quorum` 2–50 仅票签携带）。**推进内核**：
+裁决事务内对请求行 `SELECT … FOR UPDATE`——一级多行之后「最后一张同意票推进」
+必须在锁内数票（并发表决各数各的票，谁都不满足，级永不推进），锁内重读挡住
+「外层读与拿锁之间世界已动」（已终态答 `request_closed`，级别漂移答并发冲突）。
+通过判定 = 本级同意行数 ≥ 所需数（any=1、quorum=配置票数、all=裁决时刻审批人
+集合——角色持有者在飞期间变化，以当下事实算票）；未凑齐的同意照常落行、落
+审计，请求停在本级，不落推进、不落下一级通知（剩余裁决人的 pending 已在提交
+时落行，停滞由催办说话）。驳回在任何模式都是终态。唯一索引换为
+`(request_id, step_index, actor_id)`（0027）——同一人重复表决与 CAS 抢输同答
+409。每张同意票的审计 detail 带 `mode`/`approvedCount`/`neededApprovals`/
+`levelSatisfied`——会签的推进史逐票可溯。
+
+**待办与催办说人话**：待办行带 `levelMode`/`approvedCount`/`neededApprovals`/
+`viewerAlreadyActed`——页面亮「countersign 1/2」进度，已表决的人收起裁决钮
+（「You have already voted on this level」），而不是让他去撞 409 才知道；
+催办跳过本级已同意的人（票已交，等的是没交票的），全员已表决而级仍停滞
+（审批人集合在飞期间收缩等）告警跳过——催办只递「轮到谁还没裁」的事实。
+签名 × 会签逐人成立：每个同意的人各自走 #219 仪式、各绑各的裁决行。
+
+**已知边界（配置责任）**：会签级别以裁决时刻的活集合算票——审批人集合在
+在飞期间收缩（角色被撤）可能造成「数学上已满足、无人再触发判定」的滞留；
+催办会告警暴露，配置 Owner 修复集合后由任一在集者再裁一次即推进。
+**部署注**：0027 是约束替换（drop+create 唯一索引），不是纯 expand——迁移
+跑完到新代码上线之间，旧代码的审批裁决端点会报错（ON CONFLICT 目标索引
+消失）；staging 滚动窗口以分钟计、尚无生产流量，生产发布时迁移与新代码
+须同批次跟进。

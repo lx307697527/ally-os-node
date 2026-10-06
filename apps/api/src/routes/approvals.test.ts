@@ -272,6 +272,8 @@ describe.skipIf(!databaseUrl)("approvals route (#221, integration)", () => {
     name: string;
     users?: string[];
     roles?: string[];
+    mode?: "any" | "all" | "quorum";
+    quorum?: number;
     requireSignature?: boolean;
     signatureMeaning?: "reviewed" | "approved";
   }
@@ -380,6 +382,29 @@ describe.skipIf(!databaseUrl)("approvals route (#221, integration)", () => {
       levels: [{ name: "only", users: [bobId] }],
     });
     expect(badKey.status).toBe(400);
+    // 会签/票签的形状（#221）：票签必须带票数、票数只属于票签、下限 2（1/N =
+    // any 模式，不是第三种语义）
+    const quorumWithoutCount = await post({
+      subjectType: "approval-doc",
+      configKey: "quorum_no_count",
+      name: "Quorum",
+      levels: [{ name: "only", users: [bobId, carolId], mode: "quorum" }],
+    });
+    expect(quorumWithoutCount.status).toBe(422);
+    const quorumOfOne = await post({
+      subjectType: "approval-doc",
+      configKey: "quorum_one",
+      name: "Quorum",
+      levels: [{ name: "only", users: [bobId, carolId], mode: "quorum", quorum: 1 }],
+    });
+    expect(quorumOfOne.status).toBe(422);
+    const countWithoutQuorum = await post({
+      subjectType: "approval-doc",
+      configKey: "any_with_count",
+      name: "Any",
+      levels: [{ name: "only", users: [bobId], mode: "any", quorum: 2 }],
+    });
+    expect(countWithoutQuorum.status).toBe(422);
     await createConfig("twice", [{ name: "only", users: [bobId] }]);
     const duplicate = await post({
       subjectType: "approval-doc",
@@ -961,6 +986,182 @@ describe.skipIf(!databaseUrl)("approvals route (#221, integration)", () => {
     expect(actions).toHaveLength(1);
     const requestRows = await db.select().from(schema.approvalRequests).where(eq(schema.approvalRequests.id, requestId));
     expect(must(requestRows[0]).status).toBe("approved");
+  });
+
+  // ── 会签/票签（#221 多人裁决形态）───────────────────────────────────────
+
+  it("countersign level passes only when every adjudicator has approved", async () => {
+    await createConfig("all_line", [{ name: "unanimous", users: [bobId, carolId], mode: "all" }]);
+    const docId = makeDoc([aliceId, bobId, carolId]);
+    const requestId = ((await (await submit(docId, "all_line")).json()) as { requestId: string }).requestId;
+
+    // 第一票：级别不推进（currentStep 不动、请求仍在飞），下一级不收通知
+    const first = await act(requestId, "bob", { decision: "approved" });
+    expect(first.status).toBe(200);
+    const firstBody = (await first.json()) as { requestStatus: string; currentStep: number };
+    expect(firstBody.requestStatus).toBe("pending");
+    expect(firstBody.currentStep).toBe(0);
+    const requestRows = await db.select().from(schema.approvalRequests).where(eq(schema.approvalRequests.id, requestId));
+    expect(must(requestRows[0]).status).toBe("pending");
+    expect(must(requestRows[0]).currentStep).toBe(0);
+
+    // 待办行自带进度：carol 看 1/2 未表决，bob 看自己已表决
+    const carolTodo = await app.request("/api/approval-requests/todo", {
+      headers: { cookie: must(session.get("carol")) },
+    });
+    const carolRow = must(
+      ((await carolTodo.json()) as {
+        requests: {
+          requestId: string;
+          levelMode: string;
+          approvedCount: number;
+          neededApprovals: number;
+          viewerAlreadyActed: boolean;
+        }[];
+      }).requests.find((r) => r.requestId === requestId),
+    );
+    expect(carolRow.levelMode).toBe("all");
+    expect(carolRow.approvedCount).toBe(1);
+    expect(carolRow.neededApprovals).toBe(2);
+    expect(carolRow.viewerAlreadyActed).toBe(false);
+    const bobTodo = await app.request("/api/approval-requests/todo", {
+      headers: { cookie: must(session.get("bob")) },
+    });
+    const bobRow = must(
+      ((await bobTodo.json()) as { requests: { requestId: string; viewerAlreadyActed: boolean }[] }).requests.find(
+        (r) => r.requestId === requestId,
+      ),
+    );
+    expect(bobRow.viewerAlreadyActed).toBe(true);
+
+    // 已表决的人再裁 → 409（「你已表决」，不落第二行）
+    const again = await act(requestId, "bob", { decision: "approved" });
+    expect(again.status).toBe(409);
+    expect(await db.select().from(schema.approvalActions)).toHaveLength(1);
+
+    // 第二票凑齐：单级请求终审通过
+    const second = await act(requestId, "carol", { decision: "approved" });
+    expect(second.status).toBe(200);
+    const secondBody = (await second.json()) as { requestStatus: string };
+    expect(secondBody.requestStatus).toBe("approved");
+  });
+
+  it("one rejection in a countersign level is terminal and returns the doc to the submitter", async () => {
+    await createConfig("all_reject_line", [{ name: "unanimous", users: [bobId, carolId], mode: "all" }]);
+    const docId = makeDoc([aliceId, bobId, carolId]);
+    const requestId = ((await (await submit(docId, "all_reject_line")).json()) as { requestId: string }).requestId;
+    expect((await act(requestId, "bob", { decision: "approved" })).status).toBe(200);
+    const rejection = await act(requestId, "carol", { decision: "rejected", note: "not yet" });
+    expect(rejection.status).toBe(200);
+    expect(((await rejection.json()) as { requestStatus: string }).requestStatus).toBe("rejected");
+    const requestRows = await db.select().from(schema.approvalRequests).where(eq(schema.approvalRequests.id, requestId));
+    expect(must(requestRows[0]).status).toBe("rejected");
+    // 两行裁决都留痕：会签的历史是逐人的（append-only，不改写）
+    expect(await db.select().from(schema.approvalActions)).toHaveLength(2);
+    // 发起人收终态通知（驳回回到发起人的「回到」是真的递到手上）
+    const notes = await db
+      .select({ eventType: schema.notifications.eventType })
+      .from(schema.notifications)
+      .where(eq(schema.notifications.userId, aliceId));
+    expect(notes.map((n) => n.eventType)).toContain("approval.rejected");
+  });
+
+  it("vote level passes at quorum without every adjudicator", async () => {
+    await createConfig("vote_line", [
+      { name: "two of three", users: [bobId, carolId, daveId], mode: "quorum", quorum: 2 },
+    ]);
+    const docId = makeDoc([aliceId, bobId, carolId, daveId]);
+    const requestId = ((await (await submit(docId, "vote_line")).json()) as { requestId: string }).requestId;
+
+    const first = await act(requestId, "bob", { decision: "approved" });
+    expect(first.status).toBe(200);
+    expect(((await first.json()) as { requestStatus: string }).requestStatus).toBe("pending");
+    // carol 的待办行：票签 1/2
+    const carolTodo = await app.request("/api/approval-requests/todo", {
+      headers: { cookie: must(session.get("carol")) },
+    });
+    const carolRow = must(
+      ((await carolTodo.json()) as { requests: { requestId: string; levelMode: string; approvedCount: number; neededApprovals: number }[] })
+        .requests.find((r) => r.requestId === requestId),
+    );
+    expect(carolRow.levelMode).toBe("quorum");
+    expect(carolRow.approvedCount).toBe(1);
+    expect(carolRow.neededApprovals).toBe(2);
+
+    // 第二票到数即过：dave 从未裁决，行数停在 2
+    const second = await act(requestId, "carol", { decision: "approved" });
+    expect(second.status).toBe(200);
+    expect(((await second.json()) as { requestStatus: string }).requestStatus).toBe("approved");
+    expect(await db.select().from(schema.approvalActions)).toHaveLength(2);
+  });
+
+  it("countersign signatures bind each approver's own action row", async () => {
+    // 会签 × 签名级：每个同意的人各自走仪式、各绑各的裁决行（Part 11 的联结
+    // 签名逐人成立，不是一张级级共享的签名）
+    await createConfig("sig_all_line", [
+      { name: "signed unanimous", users: [bobId, erinId], mode: "all", requireSignature: true },
+    ]);
+    // bob 补 2FA（签名级要求双因素，与 erin 同门）
+    session.set("bob", await enrollTotp(bobId, must(emails.get("bob")), "bob"));
+    const docId = makeDoc([aliceId, bobId, erinId]);
+    const requestId = ((await (await submit(docId, "sig_all_line")).json()) as { requestId: string }).requestId;
+
+    const first = await act(requestId, "erin", {
+      decision: "approved",
+      password: PASSWORD,
+      clientToken: randomUUID(),
+    });
+    expect(first.status).toBe(200);
+    expect(((await first.json()) as { requestStatus: string }).requestStatus).toBe("pending");
+    const second = await act(requestId, "bob", {
+      decision: "approved",
+      password: PASSWORD,
+      clientToken: randomUUID(),
+    });
+    expect(second.status).toBe(200);
+    expect(((await second.json()) as { requestStatus: string }).requestStatus).toBe("approved");
+
+    // 两行签名、各指一行裁决、meaning 同级配置
+    const signatures = await db.select().from(schema.esignSignatures);
+    expect(signatures).toHaveLength(2);
+    const actions = await db.select().from(schema.approvalActions);
+    expect(actions).toHaveLength(2);
+    const signedActions = new Set(signatures.map((s) => s.subjectId));
+    expect(signedActions).toEqual(new Set(actions.map((a) => a.id)));
+    expect(new Set(signatures.map((s) => s.signerId))).toEqual(new Set([bobId, erinId]));
+    for (const signature of signatures) {
+      expect(signature.meaning).toBe("approved");
+    }
+  });
+
+  it("countersign progress rides the audit trail for every partial vote", async () => {
+    await createConfig("all_audit_line", [{ name: "unanimous", users: [bobId, carolId], mode: "all" }]);
+    const docId = makeDoc([aliceId, bobId, carolId]);
+    const requestId = ((await (await submit(docId, "all_audit_line")).json()) as { requestId: string }).requestId;
+    expect((await act(requestId, "bob", { decision: "approved" })).status).toBe(200);
+    expect((await act(requestId, "carol", { decision: "approved" })).status).toBe(200);
+
+    const res = await app.request("/api/audit-events?action=approval.action_recorded", {
+      headers: { cookie: must(session.get("owner")) },
+    });
+    const body = (await res.json()) as { events: { detail: Record<string, unknown> | null }[] };
+    const votes = body.events
+      .filter((e) => e.detail?.requestId === requestId)
+      .map((e) => e.detail)
+      .sort((a, b) => Number(must(a).approvedCount) - Number(must(b).approvedCount));
+    expect(votes).toHaveLength(2);
+    expect(must(votes[0])).toMatchObject({
+      mode: "all",
+      approvedCount: 1,
+      neededApprovals: 2,
+      levelSatisfied: false,
+    });
+    expect(must(votes[1])).toMatchObject({
+      mode: "all",
+      approvedCount: 2,
+      neededApprovals: 2,
+      levelSatisfied: true,
+    });
   });
 
   // ── 审计验收 ────────────────────────────────────────────────────────────

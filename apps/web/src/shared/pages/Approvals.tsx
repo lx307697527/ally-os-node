@@ -128,6 +128,15 @@ export function Approvals(): ReactElement {
                       signs: {meaningLabel(row.signatureMeaning)}
                     </span>
                   ) : null}
+                  {row.levelMode !== "any" ? (
+                    <span
+                      className="font-mono text-[length:var(--fs-meta)] text-ink-soft"
+                      data-testid="approvals-row-progress"
+                    >
+                      {row.levelMode === "all" ? "countersign" : "vote"} {row.approvedCount}/
+                      {row.neededApprovals}
+                    </span>
+                  ) : null}
                   <span className="flex-1" />
                   <Button
                     variant={expanded?.requestId === row.requestId ? "ghost" : "default"}
@@ -256,25 +265,32 @@ function ReviewPanel(props: { row: ApprovalTodoRow; onDecided: (message: string)
         </Paragraph>
       ) : null}
 
-      <div className="mt-3">
-        <label className="block">
-          <span className="mb-1 block text-ui-sm font-semibold text-ink">
-            Note <span className="font-normal text-ink-soft">(optional)</span>
-          </span>
-          <textarea
-            value={note}
-            onChange={(event) => {
-              setNote(event.target.value);
-            }}
-            rows={2}
-            maxLength={2000}
-            placeholder="Why — one line the submitter will read"
-            aria-label="Decision note"
-            data-testid="approvals-row-note"
-            className="block w-full rounded-small border border-line bg-card px-3 py-2 text-ui leading-[var(--lh-ui)] text-ink outline-none placeholder:text-ink-soft focus:border-[var(--control-navy)]"
-          />
-        </label>
-      </div>
+      {props.row.viewerAlreadyActed ? (
+        <Paragraph className="mt-3 text-ink-soft" data-testid="approvals-row-acted">
+          You have already voted on this level — waiting on the remaining
+          approvers.
+        </Paragraph>
+      ) : (
+        <div className="mt-3">
+          <label className="block">
+            <span className="mb-1 block text-ui-sm font-semibold text-ink">
+              Note <span className="font-normal text-ink-soft">(optional)</span>
+            </span>
+            <textarea
+              value={note}
+              onChange={(event) => {
+                setNote(event.target.value);
+              }}
+              rows={2}
+              maxLength={2000}
+              placeholder="Why — one line the submitter will read"
+              aria-label="Decision note"
+              data-testid="approvals-row-note"
+              className="block w-full rounded-small border border-line bg-card px-3 py-2 text-ui leading-[var(--lh-ui)] text-ink outline-none placeholder:text-ink-soft focus:border-[var(--control-navy)]"
+            />
+          </label>
+        </div>
+      )}
 
       {error !== null ? (
         <Paragraph className="mt-2 text-err" data-testid="approvals-action-error">
@@ -282,35 +298,37 @@ function ReviewPanel(props: { row: ApprovalTodoRow; onDecided: (message: string)
         </Paragraph>
       ) : null}
 
-      <div className="mt-3 flex items-center gap-3">
-        <Button
-          variant="primary"
-          size="sm"
-          disabled={busy}
-          onClick={() => {
-            if (props.row.requireSignature) {
-              setSignError(null);
-              setSignOpen(true);
-              return;
-            }
-            void act("approved");
-          }}
-          data-testid="approvals-row-approve"
-        >
-          {busy ? "Saving…" : "Approve"}
-        </Button>
-        <Button
-          variant="danger"
-          size="sm"
-          disabled={busy}
-          onClick={() => {
-            void act("rejected");
-          }}
-          data-testid="approvals-row-reject"
-        >
-          Reject
-        </Button>
-      </div>
+      {props.row.viewerAlreadyActed ? null : (
+        <div className="mt-3 flex items-center gap-3">
+          <Button
+            variant="primary"
+            size="sm"
+            disabled={busy}
+            onClick={() => {
+              if (props.row.requireSignature) {
+                setSignError(null);
+                setSignOpen(true);
+                return;
+              }
+              void act("approved");
+            }}
+            data-testid="approvals-row-approve"
+          >
+            {busy ? "Saving…" : "Approve"}
+          </Button>
+          <Button
+            variant="danger"
+            size="sm"
+            disabled={busy}
+            onClick={() => {
+              void act("rejected");
+            }}
+            data-testid="approvals-row-reject"
+          >
+            Reject
+          </Button>
+        </div>
+      )}
 
       {signOpen ? (
         <SignatureDialog
