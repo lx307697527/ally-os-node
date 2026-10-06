@@ -22,6 +22,7 @@ import { followsRoutes } from "./routes/follows.ts";
 import { healthRoutes } from "./routes/health.ts";
 import { meRoutes } from "./routes/me.ts";
 import { notificationsRoutes } from "./routes/notifications.ts";
+import { numberingRulesRoutes } from "./routes/numbering-rules.ts";
 import { realtimeRoutes } from "./routes/realtime.ts";
 import { tasksRoutes } from "./routes/tasks.ts";
 import { userRolesRoutes } from "./routes/user-roles.ts";
@@ -119,6 +120,10 @@ export function createApp(deps: AppDeps) {
   // 表单 subject 注册表（custom-fields/registry.ts）本切片为空——询价向导和
   // 清场检查表两个消费域进场时注册各自的内置字段
   app.route("/", customFieldsRoutes(deps));
+  // 编号规则（#225）：配置工作室的编号配置面（numbering.configure 权限点）。
+  // 可编号 subject 注册表（numbering/registry.ts）本切片为空——发票/报价/PO 等
+  // 单据域（phase-2+）进场时注册；发号是属主域事务里的进程内调用，无 HTTP 面
+  app.route("/", numberingRulesRoutes(deps));
   // 实时连接令牌（#110 切片 2）：发还调用者自己会话的令牌给 WS auth 帧用
   app.route("/", realtimeRoutes(deps));
   // 审计日志查询（#29）：audit.read 权限点门（owner/admin 默认）

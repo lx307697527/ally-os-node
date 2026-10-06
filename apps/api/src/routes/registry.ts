@@ -99,6 +99,13 @@ export const API_ROUTES: readonly RouteDecl[] = [
   { method: "GET", path: "/api/custom-fields/schema", auth: { kind: "session" } },
   { method: "GET", path: "/api/subjects/:subjectType/:subjectId/custom-fields", auth: { kind: "session" } },
   { method: "PUT", path: "/api/subjects/:subjectType/:subjectId/custom-fields", auth: { kind: "session" } },
+  // 编号规则（#225）：配置工作室的编号配置面，改格式 = 改所有之后发出的单据号，
+  // numbering.configure 权限点门（owner/admin 默认持有）；发号无 HTTP 面——
+  // 分配是属主域创建单据事务里的进程内调用（numbering/service.ts）
+  { method: "POST", path: "/api/numbering-rules", auth: { kind: "permission", permission: "numbering.configure" } },
+  { method: "GET", path: "/api/numbering-rules", auth: { kind: "permission", permission: "numbering.configure" } },
+  { method: "GET", path: "/api/numbering-rules/subjects", auth: { kind: "permission", permission: "numbering.configure" } },
+  { method: "PATCH", path: "/api/numbering-rules/:id", auth: { kind: "permission", permission: "numbering.configure" } },
   // 审计日志查询（#29）：owner / admin（audit.read 权限点）
   { method: "GET", path: "/api/audit-events", auth: { kind: "permission", permission: "audit.read" } },
   // 实时连接令牌（#110 切片 2）：把调用者自己会话的令牌发还给本人，WS auth

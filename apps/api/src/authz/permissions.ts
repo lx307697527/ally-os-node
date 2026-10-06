@@ -43,7 +43,7 @@ export interface AuthzContext {
 }
 
 /** 权限点清单；随业务模块切片增加，新增必须先进这个注册表 */
-export const PERMISSIONS = ["roles.assign", "label_design", "audit.read", "workflow.configure", "approval.configure", "custom_fields.configure"] as const;
+export const PERMISSIONS = ["roles.assign", "label_design", "audit.read", "workflow.configure", "approval.configure", "custom_fields.configure", "numbering.configure"] as const;
 
 export type Permission = (typeof PERMISSIONS)[number];
 
@@ -72,10 +72,14 @@ export const permissionSchema = z.enum(PERMISSIONS);
  *   给对象加字段 = 改所有人的表单与详情页，与流程/审批的管理者同一批人；字段
  *   值的填写不在此权限点后面——能不能写某个字段由字段级 viewableBy/editableBy
  *   与 subject 可见性门裁决，配置权和填写权分离。
+ * - numbering.configure：老板与管理员（#225）。编号规则属配置工作室——改编号
+ *   格式 = 改所有之后发出的单据号（发票/报价/PO），与流程/审批/字段的管理者
+ *   同一批人；发号不在任何权限点后面——分配是属主域创建单据事务里的进程内调用
+ *   （numbering/service.ts），有没有号随单据的可见性门走。
  */
 export const ROLE_PERMISSIONS: Readonly<Record<Role, readonly Permission[]>> = {
-  owner: ["roles.assign", "audit.read", "workflow.configure", "approval.configure", "custom_fields.configure"],
-  admin: ["roles.assign", "audit.read", "workflow.configure", "approval.configure", "custom_fields.configure"],
+  owner: ["roles.assign", "audit.read", "workflow.configure", "approval.configure", "custom_fields.configure", "numbering.configure"],
+  admin: ["roles.assign", "audit.read", "workflow.configure", "approval.configure", "custom_fields.configure", "numbering.configure"],
   sales_lead: [],
   sales: [],
   customer_service: [],

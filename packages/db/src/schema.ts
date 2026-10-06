@@ -1,5 +1,6 @@
 import { desc, sql } from "drizzle-orm";
 import {
+  bigint,
   boolean,
   index,
   integer,
@@ -741,4 +742,84 @@ export const customFieldValues = pgTable(
     // 一记录一字段一值：并发提交撞约束与 upsert 竞态同答（onConflictDoUpdate 兜住）
     uniqueIndex("custom_field_values_unique_idx").on(t.subjectType, t.subjectId, t.fieldDefId),
   ],
+);
+
+// ── 编号规则（#225 切片 1：报表与模板里「自建」的那半边）────────────────────
+// 老系统的单据编号散在各处且形态分裂：发票是专用 sequence（FEAT-060，start 1000，
+// 刻意否决年月前缀——「没有可读性收益，只添跨年重置状态」），询价引用是计数器表
+// （20260825140000），采购单又是另一套——全被触发器/列默认值写死，改格式要发版；
+// 两套语义还分裂过一次（BUG-054：seed 把计数当「下一个要发的号」、mint 当「上一个
+// 已发的号」，首个号被永久跳过）。新设计（#232 §4.6）：编号规则是配置工作室的
+// 数据——前缀、日期段、位宽、起始号皆可配；哪些对象「能有编号」由属主域在
+// numbering/registry.ts 注册（开集，与 workflow/esign/custom-fields 同一裁法），
+// 未注册类型配置面回 400，不出现「能配规则但没人发号」的半开机状态。
+//
+// 唯一性裁决：计数器是唯一性的承担者，每规则一条**单调计数，不按日期段重置**——
+// 老系统 FEAT-060 的同一裁法；日期段只渲染进号串，不做「每期从 1 开始」。按年
+// 重启属于业务裁决，随第一个真实消费方（报价 #229 / 发票等）与 #226 配置版本化
+// 一起进场。改前缀/日期段/位宽只影响之后发出的号，序号继续单调——「改格式后
+// 新单据使用新格式，编号不重复」（#225 验收第 3 条）由单调性结构性保证，不靠
+// 事后查重。
+//
+// 与老系统 sequence 的关键差异：老 nextval 非事务（回滚烧号，gap 是「不把开单
+// 做成串行化点」的代价，FEAT-060 原话）；本计数器是普通表行，随属主事务回滚——
+// 回滚的单据从未存在，号归还后可复用，**已提交的单据之间编号无 gap 不重复**。
+// 代价：分配在属主事务期间持有计数行锁（同规则的并发开单在分配处串行化），
+// 本系统单据量级下可忽略；真要非事务序列由属主域自建 PG sequence，不进本内核。
+export const numberingDateFormat = pgEnum("numbering_date_format", [
+  "YYYY",
+  "YYYYMM",
+  "YYYYMMDD",
+]);
+
+export const numberingRules = pgTable(
+  "numbering_rules",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    // 编号对象（开集 text）：invoice / quote / po / receipt…，须先在
+    // numbering/registry.ts 注册
+    subject: text("subject").notNull(),
+    label: text("label").notNull(),
+    // 号串 = prefix + 日期段（有则后跟 "-"）+ 零填充序号；连字符由前缀自带
+    // （老系统形态 INV-3092 / QR-0001，mockup 的 INV-202608-0001 同构）
+    prefix: text("prefix").notNull().default(""),
+    dateFormat: numberingDateFormat("date_format"),
+    // 序号位宽下限；序号超宽自然加长（padStart 不截断），0 = 不补零
+    padding: integer("padding").notNull().default(4),
+    // 起始号只对「从未发过号」的规则生效；已在发的系列不可改起始号（改了也会被
+    // 既有计数行盖过——语义误导，配置面直接拒绝），重开系列 = 停用旧规则另建
+    startNumber: bigint("start_number", { mode: "number" }).notNull().default(1),
+    active: boolean("active").notNull().default(true),
+    // 版本列此刻恒为 1：#226「配置版本、审计与发布」进场前的预埋（与 workflow /
+    // approval / custom_fields 同一裁法）。编号规则与字段定义不同：格式字段
+    // （前缀/日期段/位宽）允许就地改——改格式 = 改之后发出的号，这正是 #225
+    // 验收第 3 条的题意；改动历史由审计承载，不改建前行的号
+    version: integer("version").notNull().default(1),
+    createdById: uuid("created_by_id").references(() => authUser.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    // 一对象一套在发生效规则（部分唯一索引：停用的历史规则留档，同对象可另建
+    // 新系列——重开编号 = 停旧建新，起始号随之重置）
+    uniqueIndex("numbering_rules_active_subject_idx")
+      .on(t.subject)
+      .where(sql`${t.active}`),
+  ],
+);
+
+// 发号计数：每规则一行，last_issued = 本规则已发出的最大序号。语义一个列只有
+// 一种读法——「已发的最大号」（BUG-054 的教训），首号 = startNumber 由
+// INSERT 分支给出并有专项测试。行锁（ON CONFLICT DO UPDATE）把并发分配串行化。
+export const numberingSequences = pgTable(
+  "numbering_sequences",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    ruleId: uuid("rule_id")
+      .notNull()
+      .references(() => numberingRules.id),
+    lastIssued: bigint("last_issued", { mode: "number" }).notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex("numbering_sequences_rule_idx").on(t.ruleId)],
 );
