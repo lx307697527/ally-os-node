@@ -28,7 +28,7 @@ function rowFor(eventType: string): NotificationRow {
     aggregateType: "task",
     aggregateId: TASK_ID,
     payload:
-      eventType === "comment.mentioned"
+      eventType === "comment.mentioned" || eventType === "comment.created"
         ? { taskTitle: "t", commentId: COMMENT_ID, actorName: "Alice", excerpt: "e" }
         : { taskTitle: "t", actorName: "Alice" },
     isRead: false,
@@ -74,6 +74,11 @@ describe("notification hrefs land on real routes (#110 slice 1)", () => {
 
   it("the mentioned comment's href carries its ?comment= target", () => {
     const face = describeNotification(rowFor("comment.mentioned"));
+    expect(face.href).toBe(`/tasks/${TASK_ID}?comment=${COMMENT_ID}`);
+  });
+
+  it("the follower's comment notification deep-links to the comment too (#110 slice 4)", () => {
+    const face = describeNotification(rowFor("comment.created"));
     expect(face.href).toBe(`/tasks/${TASK_ID}?comment=${COMMENT_ID}`);
   });
 });

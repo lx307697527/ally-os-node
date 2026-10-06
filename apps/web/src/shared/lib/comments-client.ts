@@ -32,6 +32,8 @@ const commentListSchema = z.object({
 const commentCreatedSchema = z.object({
   comment: commentRowSchema,
   mentioned: z.array(personSchema),
+  // 关注扇出（#110 slice 4）：这条评论同时推给了几个关注者（不含被提及者）
+  notifiedFollowers: z.number().int().nonnegative(),
 });
 
 export type Person = z.infer<typeof personSchema>;

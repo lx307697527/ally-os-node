@@ -57,6 +57,11 @@ export const API_ROUTES: readonly RouteDecl[] = [
   // 评论同扇（subjects/registry.ts），登录即可——投影只含该 subject 自己的
   // 行，看得到对象就看得到对象的历史；全公司日志仍走 audit.read
   { method: "GET", path: "/api/activity", auth: { kind: "session" } },
+  // 关注（#110 切片 4）：多态 subject 的行属门在路由内逐域裁决（与评论同一
+  // 扇门），登录即可——看得到才能关注，关注者集合是可见者集合的子集
+  { method: "GET", path: "/api/follows/:subjectType/:subjectId", auth: { kind: "session" } },
+  { method: "PUT", path: "/api/follows/:subjectType/:subjectId", auth: { kind: "session" } },
+  { method: "DELETE", path: "/api/follows/:subjectType/:subjectId", auth: { kind: "session" } },
   // 审计日志查询（#29）：owner / admin（audit.read 权限点）
   { method: "GET", path: "/api/audit-events", auth: { kind: "permission", permission: "audit.read" } },
   // 实时连接令牌（#110 切片 2）：把调用者自己会话的令牌发还给本人，WS auth

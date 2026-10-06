@@ -369,3 +369,29 @@ export const comments = pgTable(
   // 唯一读法：「这条记录上的评论，按时间正序」；作者维度暂无读者，不建索引
   (t) => [index("comments_subject_created_idx").on(t.subjectType, t.subjectId, t.createdAt)],
 );
+
+// ── 关注（#110 切片 4：关注内核）────────────────────────────────────────────
+// 老系统从未建成关注（issue 正文里没有任何对应表/函数，与评论同一处境）；设计
+// 依据是 #232 §11「评论、@、关注与附件：每个业务对象都有」。关注是内核机制：
+// 多态附着（subject_type/subject_id，与 comments 同一形态），合法的 subject
+// 类型与「谁能关注」由 subjects/registry.ts 的同一扇可见性门裁决——看得到才
+// 能关注，关注者集合永远是可见者集合的子集；可见者后来缩小（任务改派）时，
+// 陈旧关注者不越过门（通知扇出按当前可见者过滤，路由内逐域同裁）。
+// 关注者与用户行共生灭（CASCADE，与 comments.authorId 同裁）：关注是协作意图，
+// 不是记录；人删则其关注随之（审计里的 follow.* 行留下，actor 是 text）。
+// 主键即全部读法：「这个 subject 的关注者名单」和「(subject, me) 是否已关注」
+// 都是前缀查询；「我关注的全部对象」暂无读者，不预置第二索引（与 comments
+// 同一裁法）。没有 id 列：行的身份就是三元组本身，审计行的 subject 引用在
+// detail（docs/audit.md 多态子对象约定）。
+export const follows = pgTable(
+  "follows",
+  {
+    subjectType: text("subject_type").notNull(),
+    subjectId: uuid("subject_id").notNull(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => authUser.id, { onDelete: "cascade" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [primaryKey({ columns: [t.subjectType, t.subjectId, t.userId] })],
+);

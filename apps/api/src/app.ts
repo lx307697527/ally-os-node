@@ -12,6 +12,7 @@ import { authProvidersRoutes } from "./routes/auth-providers.ts";
 import { auditEventsRoutes } from "./routes/audit-events.ts";
 import { commentsRoutes } from "./routes/comments.ts";
 import { feedbackRoutes } from "./routes/feedback.ts";
+import { followsRoutes } from "./routes/follows.ts";
 import { healthRoutes } from "./routes/health.ts";
 import { meRoutes } from "./routes/me.ts";
 import { notificationsRoutes } from "./routes/notifications.ts";
@@ -90,6 +91,8 @@ export function createApp(deps: AppDeps) {
   // 活动流（#110 切片 3）：audit_events 的按对象读投影，subject 可见者门
   // （subjects/registry.ts，与评论同一扇），登录即可
   app.route("/", activityRoutes(deps));
+  // 关注（#110 切片 4）：多态 subject 的行属门在路由内逐域裁决，登录即可
+  app.route("/", followsRoutes(deps));
   // 实时连接令牌（#110 切片 2）：发还调用者自己会话的令牌给 WS auth 帧用
   app.route("/", realtimeRoutes(deps));
   // 审计日志查询（#29）：audit.read 权限点门（owner/admin 默认）

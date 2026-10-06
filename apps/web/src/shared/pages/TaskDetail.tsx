@@ -18,12 +18,14 @@ import { Button, Card, Heading, Paragraph } from "@ally/ui";
 
 import { createActivityAdapters, type ActivityRow } from "../lib/activity-client.ts";
 import { createCommentAdapters, type CommentRow, type Person } from "../lib/comments-client.ts";
+import { createFollowAdapters, type FollowState } from "../lib/follows-client.ts";
 import { createTaskAdapters, type TaskRow } from "../lib/tasks-client.ts";
 import { useSession } from "../lib/session.ts";
 
 const taskAdapters = createTaskAdapters();
 const commentAdapters = createCommentAdapters();
 const activityAdapters = createActivityAdapters();
+const followAdapters = createFollowAdapters();
 
 /** The composer pulls one page; a busier subject pages later with the
  *  activity stream. The API's cap is the same 100. */
@@ -92,10 +94,15 @@ function TaskLoaded(props: {
         offset: 0,
       }),
   });
+  const follows = useQuery({
+    queryKey: ["follows", "task", props.taskId],
+    queryFn: () => followAdapters.state("task", props.taskId),
+  });
 
   const taskData = task.data?.ok === true ? task.data.data : undefined;
   const commentsData = comments.data?.ok === true ? comments.data.data : undefined;
   const activityData = activity.data?.ok === true ? activity.data.data : undefined;
+  const followsData = follows.data?.ok === true ? follows.data.data : undefined;
 
   // The deep link's second half: once the comments are on screen, walk to the
   // mentioned one and hold the highlight. A param without a row (deleted, or
@@ -111,6 +118,13 @@ function TaskLoaded(props: {
     // A new comment is also an activity row (comment.created); the delete
     // path lands here too. Both readers of the subject refresh together.
     void queryClient.invalidateQueries({ queryKey: ["comments", "task", props.taskId] });
+    void queryClient.invalidateQueries({ queryKey: ["activity", "task", props.taskId] });
+  }
+
+  // Following and unfollowing are activity rows too (follow.created/deleted),
+  // so the toggle refreshes the timeline along with its own list.
+  function refreshFollows(): void {
+    void queryClient.invalidateQueries({ queryKey: ["follows", "task", props.taskId] });
     void queryClient.invalidateQueries({ queryKey: ["activity", "task", props.taskId] });
   }
 
@@ -140,6 +154,14 @@ function TaskLoaded(props: {
           {taskData.description !== null && taskData.description !== "" ? (
             <Paragraph className="mt-2 text-ink-soft">{taskData.description}</Paragraph>
           ) : null}
+
+          <FollowSection
+            subjectId={props.taskId}
+            state={followsData}
+            loading={follows.isPending}
+            unavailable={follows.data !== undefined && followsData === undefined}
+            onChanged={refreshFollows}
+          />
 
           <CommentsSection
             subjectId={props.taskId}
@@ -220,6 +242,88 @@ function participantsOf(row: TaskRow): Person[] {
   return people;
 }
 
+/**
+ * The follow panel (#110 slice 4): watch a subject so its activity reaches
+ * you — a new comment lands in your bell as a notification. The toggle is
+ * idempotent server-side; the follower line names who else is watching, so
+ * following reads as a shared fact, not a private flag. States are honest:
+ * loading, load failure, or the follower list itself — the toggle only
+ * renders once the state is known.
+ */
+function FollowSection(props: {
+  subjectId: string;
+  state: FollowState | undefined;
+  loading: boolean;
+  unavailable: boolean;
+  onChanged: () => void;
+}): ReactElement {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function toggle(): Promise<void> {
+    if (props.state === undefined) return;
+    setError(null);
+    setBusy(true);
+    const result =
+      props.state.meFollowing
+        ? await followAdapters.unfollow("task", props.subjectId)
+        : await followAdapters.follow("task", props.subjectId);
+    setBusy(false);
+    if (!result.ok) {
+      setError("The change could not be saved. Reload and try again.");
+      return;
+    }
+    props.onChanged();
+  }
+
+  if (props.loading) {
+    return (
+      <div className="mt-3" data-testid="follow-loading">
+        <Paragraph className="font-mono text-[length:var(--fs-meta)] text-ink-soft">
+          Loading…
+        </Paragraph>
+      </div>
+    );
+  }
+  if (props.unavailable || props.state === undefined) {
+    return (
+      <div className="mt-3">
+        <Paragraph className="font-mono text-[length:var(--fs-meta)] text-ink-soft" data-testid="follow-unavailable">
+          The follower list could not be loaded.
+        </Paragraph>
+      </div>
+    );
+  }
+  const followers =
+    props.state.followers.length === 0
+      ? "No followers yet. Follow to hear about new comments in your bell."
+      : `Followed by ${props.state.followers.map((row) => row.name).join(", ")}.`;
+  return (
+    <div className="mt-3 flex flex-wrap items-center gap-2" data-testid="follow-section">
+      <Button
+        variant={props.state.meFollowing ? "ghost" : "primary"}
+        size="sm"
+        aria-pressed={props.state.meFollowing}
+        disabled={busy}
+        onClick={() => {
+          void toggle();
+        }}
+        data-testid="follow-toggle"
+      >
+        {props.state.meFollowing ? "Unfollow" : "Follow"}
+      </Button>
+      <span className="font-mono text-[length:var(--fs-meta)] text-ink-soft" data-testid="follow-state">
+        {followers}
+      </span>
+      {error !== null ? (
+        <Paragraph className="text-ink-soft" data-testid="follow-error">
+          {error}
+        </Paragraph>
+      ) : null}
+    </div>
+  );
+}
+
 function CommentsSection(props: {
   subjectId: string;
   comments: CommentRow[] | undefined;
@@ -260,11 +364,16 @@ function CommentsSection(props: {
       return;
     }
     setDraft("");
-    setNotified(
-      result.data.mentioned.length === 0
-        ? null
-        : `Notified: ${result.data.mentioned.map((p) => p.name).join(", ")}`,
-    );
+    const notifiedParts: string[] = [];
+    if (result.data.mentioned.length > 0) {
+      notifiedParts.push(`Notified: ${result.data.mentioned.map((p) => p.name).join(", ")}`);
+    }
+    if (result.data.notifiedFollowers > 0) {
+      notifiedParts.push(
+        `Reached ${String(result.data.notifiedFollowers)} follower${result.data.notifiedFollowers === 1 ? "" : "s"}`,
+      );
+    }
+    setNotified(notifiedParts.length === 0 ? null : notifiedParts.join(" · "));
     props.onChanged();
   }
 
@@ -495,6 +604,10 @@ function activityText(row: ActivityRow): string {
       return "commented";
     case "comment.deleted":
       return "deleted a comment";
+    case "follow.created":
+      return "started following the task";
+    case "follow.deleted":
+      return "stopped following the task";
     default:
       return row.action;
   }

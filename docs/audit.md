@@ -43,7 +43,10 @@
 - action 是开集，格式 `domain.object.verb`：`role.granted`、`role.revoked`、
   `task.created`、`task.updated`（detail 记 `fields: [...]`）、`task.assigned`、
   `comment.created`（detail 记 `subjectType`/`subjectId`/`mentioned`）、
-  `comment.deleted`（detail 记 `subjectType`/`subjectId`）；
+  `comment.deleted`（detail 记 `subjectType`/`subjectId`）、
+  `follow.created`/`follow.deleted`（关注 #110 切片 4；行无 id，身份是
+  `(subject_type, subject_id, user_id)` 三元组——target 为空，subject 引用在
+  detail，进对象活动流）；
   状态变更类动作在 detail 里带 `from`/`to`（如
   `{ from: "new", to: "contacted" }`），日志页详情列原样展示。
 - detail 放变更细节（授予/撤销了什么、从哪到哪、审批裁决等），不放大对象全文

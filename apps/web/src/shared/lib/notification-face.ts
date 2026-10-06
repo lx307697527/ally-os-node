@@ -20,7 +20,11 @@ export const BELL_RECENT_LIMIT = 20;
 export const UNREAD_BADGE_CAP = 20;
 
 /** 铃铛认得的事件类型：文案与深链只在这张表里，生产者随业务域落地时进来。 */
-export const NOTIFIED_EVENT_TYPES: readonly string[] = ["task.assigned", "comment.mentioned"];
+export const NOTIFIED_EVENT_TYPES: readonly string[] = [
+  "task.assigned",
+  "comment.mentioned",
+  "comment.created",
+];
 
 /** API summary 的一行（zod 校验后的形状，camelCase）。 */
 export interface NotificationRow {
@@ -77,6 +81,13 @@ export function describeNotification(row: NotificationRow): NotificationFace {
     case "comment.mentioned":
       return {
         title: `${actorOf(row.payload)} mentioned you on a task`,
+        detail: stringField(row.payload, "excerpt") ?? stringField(row.payload, "taskTitle") ?? "",
+        href: taskHref(row.aggregateId, stringField(row.payload, "commentId")),
+      };
+    case "comment.created":
+      // 关注扇出（#110 slice 4）：你关注（而非被提及）的对象上有新评论
+      return {
+        title: `${actorOf(row.payload)} commented on a task you follow`,
         detail: stringField(row.payload, "excerpt") ?? stringField(row.payload, "taskTitle") ?? "",
         href: taskHref(row.aggregateId, stringField(row.payload, "commentId")),
       };

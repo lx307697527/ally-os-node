@@ -56,7 +56,7 @@ describe("comments client (#110 slice 1)", () => {
         seen.push({ url: input, body: init.body });
       }
       return Promise.resolve(
-        jsonRes({ comment: COMMENT_ROW, mentioned: [{ id: "u-1", name: "Alice" }] }, 201),
+        jsonRes({ comment: COMMENT_ROW, mentioned: [{ id: "u-1", name: "Alice" }], notifiedFollowers: 0 }, 201),
       );
     });
     const made = await adapters.create({ subjectType: "task", subjectId: "t-1", body: "hi @Alice" });
@@ -64,8 +64,18 @@ describe("comments client (#110 slice 1)", () => {
     expect(JSON.parse(seen[0]?.body ?? "{}")).toEqual({ subjectType: "task", subjectId: "t-1", body: "hi @Alice" });
     expect(made).toEqual({
       ok: true,
-      data: { comment: COMMENT_ROW, mentioned: [{ id: "u-1", name: "Alice" }] },
+      data: { comment: COMMENT_ROW, mentioned: [{ id: "u-1", name: "Alice" }], notifiedFollowers: 0 },
     });
+  });
+
+  it("create parses the follower fan-out count (#110 slice 4)", async () => {
+    const adapters = createCommentAdapters(() =>
+      Promise.resolve(
+        jsonRes({ comment: COMMENT_ROW, mentioned: [], notifiedFollowers: 2 }, 201),
+      ),
+    );
+    const made = await adapters.create({ subjectType: "task", subjectId: "t-1", body: "note" });
+    expect(made).toEqual({ ok: true, data: { comment: COMMENT_ROW, mentioned: [], notifiedFollowers: 2 } });
   });
 
   it("create: 400 conflict、404 notfound、垃圾体 unavailable", async () => {
