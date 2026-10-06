@@ -907,6 +907,8 @@ export const configRevisionSource = pgEnum("config_revision_source", [
   "updated",
   // 经回滚端点恢复到历史版本——回滚本身也是一个新版本,不改写历史
   "rolled_back",
+  // 经发布端点把草稿内容应用为生效版本(#226 切片 2:先试后发,发布即入账)
+  "published",
 ]);
 
 export const configRevisions = pgTable(
@@ -939,5 +941,40 @@ export const configRevisions = pgTable(
     // loud),静默重号比失败严重——版本号是回滚的寻址方式
     uniqueIndex("config_revisions_version_idx").on(t.subjectType, t.subjectId, t.version),
     index("config_revisions_subject_idx").on(t.subjectType, t.subjectId),
+  ],
+);
+
+// ── 配置草稿(#226 切片 2:先在测试环境试,再一键发布到生产)─────────────────────
+// 「测试环境」在本系统里是配置对象上的草稿层,不是另一套部署:草稿存在独立的
+// overlay 表里,活配置的读路径(流程实例解析、审批线快照、表单合成、worker 扫描、
+// 发号)在发布前看不见它——「试」不碰生产行为是结构性保证,不靠读侧自觉过滤。
+// 发布 = 把草稿内容经该族的 applyRevision 接缝(与回滚同一条「快照落列」契约)
+// 前滚成一个 source='published' 的新版本并入账留审计;一对象至多一份草稿,再存
+// 即整份替换(草稿不是版本史, versions 只属于台账)。
+export const configDrafts = pgTable(
+  "config_drafts",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    // 配置族 + 对象 id,与 config_revisions 的 subject 同一多态裁法(开集 text、
+    // 无外键);只有带内容改写路径的族(注册了 draftContentSchema/applyRevision)
+    // 才能有草稿,workflow/approval 的草稿面随其定义改写端点进场
+    subjectType: text("subject_type").notNull(),
+    subjectId: uuid("subject_id").notNull(),
+    // 草稿内容:形状 = 该族快照契约的同一形状(用户可编辑内容,不含 id/键/
+    // 时间戳/审计元数据),保存时经族 schema 收口
+    content: jsonb("content").$type<Record<string, unknown>>().notNull(),
+    // 保存草稿时刻台账里的最新版本号:发布时行版与其不符 = 草稿过期(草稿是在
+    // 旧现状上写的,发布会把期间的线上变更悄悄盖掉),409 拒绝,重存后再发
+    baseVersion: integer("base_version").notNull(),
+    // 草稿意图说明(可选):「这份草稿想改什么、为什么」。发布时随审计留档
+    note: text("note"),
+    createdById: uuid("created_by_id").references(() => authUser.id, { onDelete: "set null" }),
+    updatedById: uuid("updated_by_id").references(() => authUser.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    // 一对象至多一份草稿:草稿是「待发布的下一版」,不是多方案比选板
+    uniqueIndex("config_drafts_subject_idx").on(t.subjectType, t.subjectId),
   ],
 );

@@ -123,6 +123,12 @@ export const API_ROUTES: readonly RouteDecl[] = [
   { method: "GET", path: "/api/config-versions/:subjectType/:subjectId/revisions/:version", auth: { kind: "session" } },
   { method: "GET", path: "/api/config-versions/:subjectType/:subjectId/diff", auth: { kind: "session" } },
   { method: "POST", path: "/api/config-versions/:subjectType/:subjectId/rollback", auth: { kind: "session" } },
+  // 配置草稿与一键发布（#226 切片 2）：存/读/弃/发都是「改那族配置」，同一扇
+  // 动态族门（路由内检查），403 面在 config-drafts.test.ts 覆盖
+  { method: "GET", path: "/api/config-drafts/:subjectType/:subjectId", auth: { kind: "session" } },
+  { method: "PUT", path: "/api/config-drafts/:subjectType/:subjectId", auth: { kind: "session" } },
+  { method: "DELETE", path: "/api/config-drafts/:subjectType/:subjectId", auth: { kind: "session" } },
+  { method: "POST", path: "/api/config-drafts/:subjectType/:subjectId/publish", auth: { kind: "session" } },
   // 审计日志查询（#29）：owner / admin（audit.read 权限点）
   { method: "GET", path: "/api/audit-events", auth: { kind: "permission", permission: "audit.read" } },
   // 实时连接令牌（#110 切片 2）：把调用者自己会话的令牌发还给本人，WS auth

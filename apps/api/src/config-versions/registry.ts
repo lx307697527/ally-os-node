@@ -1,4 +1,5 @@
 import type { Db } from "@ally/db";
+import type { z } from "zod";
 import type { Permission } from "../authz/permissions.ts";
 
 /**
@@ -16,8 +17,8 @@ import type { Permission } from "../authz/permissions.ts";
  * 还回滚不了」，不假装成功。
  */
 
-/** 事务内写台账/回滚用的最小连接面（调用方传 db 或 db.transaction 的 tx 都满足） */
-export type ConfigRevisionTx = Pick<Db, "select" | "insert" | "update">;
+/** 事务内写台账/回滚/草稿用的最小连接面（调用方传 db 或 db.transaction 的 tx 都满足） */
+export type ConfigRevisionTx = Pick<Db, "select" | "insert" | "update" | "delete">;
 
 export interface ConfigSubjectSpec {
   /** 展示名（配置工作室 UI 的族清单；本切片只进日志与测试断言） */
@@ -36,6 +37,15 @@ export interface ConfigSubjectSpec {
     snapshot: Record<string, unknown>,
     version: number,
   ) => Promise<boolean>;
+  /**
+   * 草稿内容契约（#226 切片 2：draft → publish）。形状 = 该族快照的同一形状
+   * （用户可编辑内容），但校验强度对齐各族配置面的**业务**校验（不只 JSONB
+   * 结构）——草稿存进去的必须是「发布后能直接生效」的内容，发布面不做比保存
+   * 面更弱的第二次放行。缺省 = 该族没有内容改写路径（workflow/approval），草稿
+   * 与发布端点对它答 409 publish_unsupported，与回滚的 rollback_unsupported
+   * 同一裁法：宁可明说「这族还不能」，不假装成功。
+   */
+  draftContentSchema?: z.ZodType<Record<string, unknown>>;
 }
 
 const CONFIG_SUBJECTS: Record<string, ConfigSubjectSpec> = {};
