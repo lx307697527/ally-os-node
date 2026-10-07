@@ -745,8 +745,9 @@ export const customFieldDefs = pgTable(
     viewableBy: jsonb("viewable_by").$type<string[]>().notNull().default([]),
     editableBy: jsonb("editable_by").$type<string[]>().notNull().default([]),
     active: boolean("active").notNull().default(true),
-    // 版本列 = 配置版本台账（#226）里的最新版本号；定义一经创建不改写（内容
-    // 改写端点随 #226 后续切片），停用/恢复 = active 翻转，每次翻转记一个新版本
+    // 版本列 = 配置版本台账（#226）里的最新版本号；fieldKey/subjectType 是身份
+    // 创建后不改写，其余内容走就地 PATCH（真变更才 bump 版本记台账，#222 配置
+    // 面切片），停用/恢复 = active 翻转，每次真变更记一个新版本
     version: integer("version").notNull().default(1),
     createdById: uuid("created_by_id").references(() => authUser.id, { onDelete: "set null" }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),

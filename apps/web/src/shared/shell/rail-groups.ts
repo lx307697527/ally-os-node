@@ -109,6 +109,7 @@ export const RAIL_GROUPS: readonly RailGroup[] = [
       { to: "/system/workflows", label: "Workflow templates", nav: "workflow-templates" },
       { to: "/system/rules", label: "Rules registry", nav: "rules-registry" },
       { to: "/system/automations", label: "Automation rules", nav: "automation-rules", icon: "bolt" },
+      { to: "/system/custom-fields", label: "Custom fields", nav: "custom-fields", icon: "fields" },
     ],
   },
 ];

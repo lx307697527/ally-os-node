@@ -86,8 +86,12 @@
   `subjectType`/`fieldKey`/`fieldType`/`required`/`viewableBy`/`editableBy`
   ——字段级权限配了哪些角色一眼可查）、
   `custom_fields.field_activated`/`custom_fields.field_deactivated`（字段停用
-  与恢复 #222；target = 定义行 id——定义一经创建不改写，active 翻转是唯一的
-  状态路（内容改写端点随 #226 后续切片），每次翻转同时记台账新版本）、
+  与恢复 #222；target = 定义行 id——纯 active 翻转沿用这两个词，每次翻转同时
+  记台账新版本）、
+  `custom_fields.field_updated`（字段定义就地改写 #222/#226；target = 定义行
+  id，detail 记 `subjectType`/`fieldKey`/`changes`（逐字段 from/to）——真变更
+  才动行，无实效变更的 PATCH 幂等返回不留审计；内容与 active 同时改落一条
+  `field_updated`，不拆两行）、
   `custom_fields.values_updated`（字段值提交 #222；target = subject id，
   detail 记 `subjectType`/`subjectId`/`title`/`fieldKeys`——subject 引用在
   detail，进对象的活动流时间线；值行本身可 upsert，审计行记「谁在何时写了

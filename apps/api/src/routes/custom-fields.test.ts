@@ -571,6 +571,203 @@ describe.skipIf(!databaseUrl)("custom field endpoints (#222 slice 1, integration
     expect(missing.status).toBe(404);
   });
 
+  it("in-place content rewrite: row updated, version bumped, ledger revision + field_updated audit (#222)", async () => {
+    const def = await createField(adminHeaders, {
+      subjectType: "task",
+      fieldKey: "po_number",
+      label: "PO 号",
+      fieldType: "text",
+    });
+    const defBody = (await def.json()) as { id?: string };
+    const id = must(defBody.id);
+
+    const res = await app.request(`/api/custom-fields/${id}`, {
+      method: "PATCH",
+      headers: { ...jsonHeaders, ...adminHeaders },
+      body: JSON.stringify({ label: "采购订单号", required: true, viewableBy: ["sales", "finance"] }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      field?: { label: string; required: boolean; viewableBy: string[]; version: number };
+    };
+    expect(body.field?.label).toBe("采购订单号");
+    expect(body.field?.required).toBe(true);
+    expect(body.field?.viewableBy).toEqual(["sales", "finance"]);
+    expect(body.field?.version).toBe(2);
+
+    const history = await app.request(`/api/config-versions/custom_field_def/${id}`, {
+      headers: adminHeaders,
+    });
+    expect(history.status).toBe(200);
+    const historyBody = (await history.json()) as {
+      revisions: { version: number; source: string; changes: Record<string, { from: unknown; to: unknown }> }[];
+    };
+    expect(historyBody.revisions).toHaveLength(2);
+    expect(historyBody.revisions[0]?.version).toBe(2);
+    expect(historyBody.revisions[0]?.source).toBe("updated");
+    expect(historyBody.revisions[0]?.changes).toMatchObject({
+      label: { from: "PO 号", to: "采购订单号" },
+      required: { from: false, to: true },
+      viewableBy: { from: [], to: ["sales", "finance"] },
+    });
+
+    const auditRows = await db.select({ action: schema.auditEvents.action }).from(schema.auditEvents);
+    expect(auditRows.some((row) => row.action === "custom_fields.field_updated")).toBe(true);
+  });
+
+  it("PATCH validates the select-options rule against the effective type+options pair", async () => {
+    const textDef = await createField(adminHeaders, {
+      subjectType: "task",
+      fieldKey: "po_number",
+      label: "PO 号",
+      fieldType: "text",
+    });
+    const textId = must(((await textDef.json()) as { id?: string }).id);
+    const selDef = await createField(adminHeaders, {
+      subjectType: "task",
+      fieldKey: "tier",
+      label: "客户分级",
+      fieldType: "select",
+      options: ["a", "b"],
+    });
+    const selId = must(((await selDef.json()) as { id?: string }).id);
+
+    async function patch(id: string, body: Record<string, unknown>) {
+      return app.request(`/api/custom-fields/${id}`, {
+        method: "PATCH",
+        headers: { ...jsonHeaders, ...adminHeaders },
+        body: JSON.stringify(body),
+      });
+    }
+
+    // text 字段配选项：现类型带选项 → 422
+    const optionsOnText = await patch(textId, { options: ["x"] });
+    expect(optionsOnText.status).toBe(422);
+    // select 化但不带选项 → 422
+    const selectWithoutOptions = await patch(textId, { fieldType: "select" });
+    expect(selectWithoutOptions.status).toBe(422);
+    // select 化带重复选项 → 422
+    const selectWithDupes = await patch(textId, { fieldType: "select", options: ["a", "a"] });
+    expect(selectWithDupes.status).toBe(422);
+    // select 字段清掉选项 → 422（select 必须保持非空选项）
+    const clearedSelect = await patch(selId, { options: null });
+    expect(clearedSelect.status).toBe(422);
+    // select → text 且显式 null：合法改型，行里 options 归 null
+    const toText = await patch(selId, { fieldType: "text", options: null });
+    expect(toText.status).toBe(200);
+    const toTextBody = (await toText.json()) as { field?: { fieldType: string; options: string[] | null } };
+    expect(toTextBody.field?.fieldType).toBe("text");
+    expect(toTextBody.field?.options).toBeNull();
+  });
+
+  it("a no-op PATCH is idempotent: same version, no new revision, no extra audit", async () => {
+    const def = await createField(adminHeaders, {
+      subjectType: "task",
+      fieldKey: "tier",
+      label: "客户分级",
+      fieldType: "select",
+      options: ["a"],
+      viewableBy: ["sales"],
+    });
+    const id = must(((await def.json()) as { id?: string }).id);
+
+    const res = await app.request(`/api/custom-fields/${id}`, {
+      method: "PATCH",
+      headers: { ...jsonHeaders, ...adminHeaders },
+      body: JSON.stringify({
+        label: "客户分级",
+        fieldType: "select",
+        options: ["a"],
+        required: false,
+        viewableBy: ["sales"],
+        editableBy: [],
+        active: true,
+      }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { field?: { version: number } };
+    expect(body.field?.version).toBe(1);
+
+    const history = await app.request(`/api/config-versions/custom_field_def/${id}`, {
+      headers: adminHeaders,
+    });
+    const historyBody = (await history.json()) as { revisions: unknown[] };
+    expect(historyBody.revisions).toHaveLength(1);
+
+    const auditRows = await db
+      .select({ action: schema.auditEvents.action })
+      .from(schema.auditEvents);
+    expect(auditRows.map((row) => row.action)).toEqual(["custom_fields.field_created"]);
+  });
+
+  it("active-only flips keep their audit actions; content+active lands as one field_updated", async () => {
+    const def = await createField(adminHeaders, {
+      subjectType: "task",
+      fieldKey: "po_number",
+      label: "PO 号",
+      fieldType: "text",
+    });
+    const id = must(((await def.json()) as { id?: string }).id);
+
+    async function patch(body: Record<string, unknown>) {
+      return app.request(`/api/custom-fields/${id}`, {
+        method: "PATCH",
+        headers: { ...jsonHeaders, ...adminHeaders },
+        body: JSON.stringify(body),
+      });
+    }
+    async function auditActions(): Promise<string[]> {
+      const rows = await db.select({ action: schema.auditEvents.action }).from(schema.auditEvents);
+      return rows.map((row) => row.action);
+    }
+
+    const off = await patch({ active: false });
+    expect(off.status).toBe(200);
+    expect(await auditActions()).toEqual([
+      "custom_fields.field_created",
+      "custom_fields.field_deactivated",
+    ]);
+
+    const relabelAndOn = await patch({ label: "采购订单号", active: true });
+    expect(relabelAndOn.status).toBe(200);
+    const actions = await auditActions();
+    expect(actions).toContain("custom_fields.field_updated");
+    expect(actions).not.toContain("custom_fields.field_activated");
+    const updatedRows = await db
+      .select({ detail: schema.auditEvents.detail })
+      .from(schema.auditEvents)
+      .where(eq(schema.auditEvents.action, "custom_fields.field_updated"));
+    const detail = must(updatedRows[0]?.detail) as { changes?: Record<string, unknown> };
+    expect(detail.changes).toMatchObject({
+      label: { from: "PO 号", to: "采购订单号" },
+      active: { from: false, to: true },
+    });
+  });
+
+  it("content PATCH stays behind custom_fields.configure and refuses unknown body keys", async () => {
+    const def = await createField(adminHeaders, {
+      subjectType: "task",
+      fieldKey: "po_number",
+      label: "PO 号",
+      fieldType: "text",
+    });
+    const id = must(((await def.json()) as { id?: string }).id);
+
+    const forbidden = await app.request(`/api/custom-fields/${id}`, {
+      method: "PATCH",
+      headers: { ...jsonHeaders, ...alice },
+      body: JSON.stringify({ label: "x" }),
+    });
+    expect(forbidden.status).toBe(403);
+
+    const unknownKey = await app.request(`/api/custom-fields/${id}`, {
+      method: "PATCH",
+      headers: { ...jsonHeaders, ...adminHeaders },
+      body: JSON.stringify({ fieldKey: "new_key" }),
+    });
+    expect(unknownKey.status).toBe(400);
+  });
+
   it("field config list filters by subjectType", async () => {
     await createField(adminHeaders, {
       subjectType: "task",
