@@ -14,6 +14,7 @@ import { AuditLog } from "./shared/pages/AuditLog.tsx";
 import { Approvals } from "./shared/pages/Approvals.tsx";
 import { NotificationSettings } from "./shared/pages/NotificationSettings.tsx";
 import { NumberingRules } from "./shared/pages/NumberingRules.tsx";
+import { RulesRegistry } from "./shared/pages/RulesRegistry.tsx";
 import { TaskDetail } from "./shared/pages/TaskDetail.tsx";
 import { Tasks } from "./shared/pages/Tasks.tsx";
 import { TwoFactorSettings } from "./shared/pages/TwoFactorSettings.tsx";
@@ -138,6 +139,10 @@ export function App(): ReactElement {
               门，定义 JSON 编辑 + 实时流程图预览，四道保存门在服务端——预览画得
               出来不等于保存过得去。 */}
           <Route path="/system/workflows" element={<WorkflowTemplates />} />
+          {/* 规则注册表（#233）：配置工作室的规则面；读面全公司可见（业务参数
+              不是敏感数据），改权逐规则裁决——页面把 403 的角色与 400 的逐格
+              编译错误原样说话；硬底线在代码里，本页无「新建」。 */}
+          <Route path="/system/rules" element={<RulesRegistry />} />
           {/* 2FA 自助（#24）：强制门把未绑定的管理员引到这里的合同,绑定流程
               本身不需要新的 API 面——走的都是 /api/auth/two-factor/*。 */}
           <Route path="/settings/two-factor" element={<TwoFactorSettings />} />

@@ -111,4 +111,27 @@ source='created' 的 v1，使「行.version = 台账最新版」从第一行成�
 - **规则效果周报**（§4.8 每周汇总）：#225 报表域。
 - **改治理本身**（changeableBy/enableBy/riskFlag 的编辑）与规则的新增/退役面：
   治理变更 = 改裁决，随 #226 受监管变更控制（#206）一起裁。
-- **前端配置工作室 UI**。
+- ~~**前端配置工作室 UI**~~：见下节。
+
+## 配置工作室 UI（`/system/rules`，#233 前端切片）
+
+规则面进配置工作室（System 区 rail「Rules registry」），与 numbering/workflows
+同款页面纪律：数据层适配器把每个失败模式报告成话（`rules-client.ts`），页面每个
+状态自己开口（加载/不可达/空表/史被拒），服务端永远是唯一权威。
+
+- **读面全公司可见，写面逐规则裁决**：列表/详情登录即可（业务参数不是敏感数据，
+  与 API 读面同裁）；「Change value」面板把 403 的 `roles` 与 400 的 `issues`
+  原样说话——决策表的逐格编译错误直接给到编辑者，不翻译成一句「无权/无效」。
+- **改值表单按值类型出题**：number/text/boolean（开关 on/off，带 enableBy 确认
+  提示）/两种 list（一行一项）/json/decision_table（JSON 文本 + 实时只读表格
+  预览，预览≠保存权威——四道 zod+编译探针门都在服务端）。依据 refs 逐行至少
+  一条，客户端缺依据/坏值不发请求；可选未来时刻 = 定时生效（面板显示待生效
+  变更与依据，明说 worker 到点前滚、此前现值照活）。switch 无「清回待填」路
+  （内核对 switch 拒 null）。
+- **台账史与一键回滚**（#226 `registry_rule` 族）：每版带 source/changedBy/
+  逐字段 from→to 摘要；回滚 = 恢复版记为新版、历史不改写、可带原因，回滚同时
+  清掉待生效变更（families.ts 既有语义）。无 rules.configure 的账号在页面里
+  得到「史与回滚需要配置工作室权限」的明确答复，表照用。
+- **刻意没有**：「新建」（硬底线在代码里，规则随裁决进场）与「草稿/发布」
+  （registry_rule 族对草稿答 409 publish_unsupported）。
+
