@@ -17,6 +17,7 @@ import { NumberingRules } from "./shared/pages/NumberingRules.tsx";
 import { TaskDetail } from "./shared/pages/TaskDetail.tsx";
 import { Tasks } from "./shared/pages/Tasks.tsx";
 import { TwoFactorSettings } from "./shared/pages/TwoFactorSettings.tsx";
+import { WorkflowTemplates } from "./shared/pages/WorkflowTemplates.tsx";
 import { ForgotPassword } from "./shared/pages/ForgotPassword.tsx";
 import { Login } from "./shared/pages/Login.tsx";
 import { ResetPassword } from "./shared/pages/ResetPassword.tsx";
@@ -133,6 +134,10 @@ export function App(): ReactElement {
           {/* 编号规则（#225）：配置工作室的编号配置面；服务端 numbering.configure
               门，改格式只影响之后发出的号——页面把这条说在前头。 */}
           <Route path="/system/numbering" element={<NumberingRules />} />
+          {/* 流程模板（#220）：配置工作室的流程配置面；服务端 workflow.configure
+              门，定义 JSON 编辑 + 实时流程图预览，四道保存门在服务端——预览画得
+              出来不等于保存过得去。 */}
+          <Route path="/system/workflows" element={<WorkflowTemplates />} />
           {/* 2FA 自助（#24）：强制门把未绑定的管理员引到这里的合同,绑定流程
               本身不需要新的 API 面——走的都是 /api/auth/two-factor/*。 */}
           <Route path="/settings/two-factor" element={<TwoFactorSettings />} />
