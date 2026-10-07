@@ -1187,6 +1187,56 @@ export const registryRules = pgTable(
   ],
 );
 
+// ── 规则效果周报（#225：#232 §4.8「每周汇总给老板和销售主管」的投递台账）──────────
+// registry_rules 上的三个运行数据计数（§4.8）是开机以来的累计值；周报要的是
+// 「本期增量」（§4.8 例：「本周 8 张报价低于成本」），增量只能由差分得出。这里
+// 不另立逐事件明细表（recordRuleOutcome 是计数器不是事件流，追不回历史），而是
+// 每期落一行「计算时刻的全量快照 + 冻结的报告内容」：下一期的 from = 上一行的
+// 快照，重试重发同一份冻结内容而不是重算（发过信再崩 → 重发同一封，at-least-once，
+// 每周一封 × 收件人个位数的重复无害——通知摘要有行级 exactly-once 台账，这里的
+// 复杂度不值那个价）。run 行本身就是周报的历史，不写审计（报表不是业务变更，
+// 与 automations due 合成语境同裁）。
+export const rulesEffectDigestStatus = pgEnum("rules_effect_digest_status", [
+  "pending", // 已计算、已冻结、待发送；发送成功前的状态，重试重发同一份
+  "sent",
+]);
+
+/** 周报里一条有活动的规则（渲染前冻结在 run 行上） */
+export interface RuleEffectDigestEntry {
+  key: string;
+  label: string;
+  category: string;
+  /** 本期增量 */
+  delta: { triggered: number; exception: number; override: number };
+  /** 期末累计 */
+  totals: { triggered: number; exception: number; override: number };
+}
+
+export const rulesEffectDigestRuns = pgTable("rules_effect_digest_runs", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  // 本期 = (weekStart, weekEnd]：起点 = 上一条 run 的 weekEnd；首期起点是纪元
+  // （from 全零），首报即「上线以来」的追账
+  weekStart: timestamp("week_start", { withTimezone: true }).notNull(),
+  weekEnd: timestamp("week_end", { withTimezone: true }).notNull(),
+  status: rulesEffectDigestStatus("status").notNull().default("pending"),
+  // 计算时刻全部规则的三计数快照：键 = 规则 key，值 = [triggered, exception,
+  // override]。下一期增量的唯一出处——entries 只存有活动的规则，不够当 from
+  countersAt: jsonb("counters_at")
+    .$type<Record<string, [number, number, number]>>()
+    .notNull(),
+  // 报告内容：delta 非零的规则，key 序（确定性渲染）；空数组 = 安静的一周，照发短报
+  entries: jsonb("entries").$type<RuleEffectDigestEntry[]>().notNull(),
+  // 计算时刻在册的规则总数（「N of M rules」的 M）
+  totalRules: integer("total_rules").notNull(),
+  // 计算时刻冻结的收件人（owner + sales_lead 持有者去重）：重发名单不随角色
+  // 变动漂移，本周的报告是「算给这些人」的
+  recipients: jsonb("recipients")
+    .$type<{ userId: string; email: string }[]>()
+    .notNull(),
+  sentAt: timestamp("sent_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
 // ── 发票内核（#192 切片 1：草稿状态机 + 整数分金额 + 触发点幂等）─────────────────
 // #232 §10「所有发票由系统出草稿，财务确认后才发出」（R-12-6）。老系统对照
 // billing.invoices（20260724143856）：类型/状态两个 frozen 枚举、numeric(14,2)

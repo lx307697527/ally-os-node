@@ -337,10 +337,12 @@ describe("rulesJobs registration", () => {
     const jobs = rulesJobs({
       db: stubDb,
       pool: { query: () => Promise.resolve(undefined) },
+      mailer: { send: () => Promise.resolve() },
+      webAppUrl: undefined,
       logger,
     });
-    expect(jobs).toHaveLength(1);
-    expect(jobs[0]?.name).toBe("rules-pending-reminder");
-    expect(jobs[0]?.cron).toBe("0 13 * * *");
+    expect(jobs.map((job) => job.name)).toContain("rules-pending-reminder");
+    const reminder = jobs.find((job) => job.name === "rules-pending-reminder");
+    expect(reminder?.cron).toBe("0 13 * * *");
   });
 });

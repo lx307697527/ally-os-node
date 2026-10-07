@@ -74,6 +74,29 @@ source='created' 的 v1，使「行.version = 台账最新版」从第一行成�
   `system:rules-registry`（非 uuid actor 的先例是 `automation:<runId>`）——系统
   行为不署名给任何用户。任务/通知文案英文（RULE-010）。
 
+## 规则效果周报（#225，#232 §4.8「每周汇总给老板和销售主管」）
+
+- **增量由差分得出，不另立事件表**：`recordRuleOutcome` 是计数器不是事件流，
+  「本周 N 次」（§4.8 原文例）追不回历史——每期落一行 `rules_effect_digest_runs`
+  （migration 0031，expand-only）：全量三计数快照（下一期的 from）+ 冻结的报告
+  条目 + 冻结的收件人 + pending/sent 状态。首期 from 全零，首报即「上线以来」
+  的追账，邮件明说 first report。
+- **节奏**（`apps/worker/src/rules/effect-digest.ts`，每周一 14:00 UTC 的
+  `rules-effect-digest` 任务）：收件人 = owner + sales_lead 持有者去重（§4.8
+  「老板和销售主管」），逐人一封经 `@ally/mailer`（未配 Resend key 时日志模式，
+  与通知摘要同）。安静的一周照发短报——「周报还活着」本身就是信息。
+- **投递语义 at-least-once，刻意比通知摘要简单**：发送失败 run 留 pending，
+  下次扫描重发同一份冻结内容而不是重算——重算会让「发过一半」的那期数据永远
+  报不出来；信已出而盖章前崩溃 → 下周重发同一封。每周一封 × 收件人个位数，
+  重复无害，行级 exactly-once 台账的复杂度不值（通知摘要有，因为它每日跑、
+  按人隔离）。worker 停机错过一个周一 → 下周一的扫描把跨越的整段一起报出来
+  （from 是上一期快照，数据不丢）。
+- **收件人在计算时刻冻结**：本周的报告是算给「当时在场的人」的，重发名单不随
+  角色变动漂移；没有收件人（owner/sales_lead 都不在）→ 不建 run、不落快照、
+  告警跳过——没人收的报告是假成功，等收件人出现的那期把跨越的整段一起报。
+- **run 行不写审计**：周报是报表不是业务变更（与 automations due 合成语境同
+  裁），行本身就是台账。
+
 ## 决策表值类型（#233 × #221，审批路线首个消费域）
 
 - **形状**（`apps/api/src/rules/decision-table-schema.ts`）：值 = 一张 GoRules ZEN
@@ -108,7 +131,8 @@ source='created' 的 v1，使「行.version = 台账最新版」从第一行成�
   随第一个消费域一起接（同 workflow due scan 的裁法——内核先行，交付归 worker）。
   结构性前提：内核现居 apps/api，worker 不跨 app 依赖——接线那天内核随消费域
   一起下沉共享包（automations 内核居 packages/automations 同一先例）。
-- **规则效果周报**（§4.8 每周汇总）：#225 报表域。
+- ~~**规则效果周报**~~（§4.8 每周汇总）：已落 worker（见上节「规则效果周报」，
+  #225 切片）；#225 本身的报表面（Superset 部署、模板管理）仍 open。
 - **改治理本身**（changeableBy/enableBy/riskFlag 的编辑）与规则的新增/退役面：
   治理变更 = 改裁决，随 #226 受监管变更控制（#206）一起裁。
 - ~~**前端配置工作室 UI**~~：见下节。
