@@ -7,13 +7,16 @@
 // API says so, an empty list says what would fill it (the adapter reports the
 // failure mode — see tasks-client.ts). Status is the old system's checkbox
 // read: tick = done, untick = open; cancel is a separate verb, never a
-// checkbox state.
+// checkbox state. Delete (#29 slice 2) is the creator's verb and gets the
+// undo window (#129): the row leaves the list at once, the server hears about
+// it only after the window — undo is free, accidents are cheap.
 import type { ReactElement } from "react";
 import { useState } from "react";
 import { Link } from "react-router-dom";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Button, Card, Heading, Input, Paragraph } from "@ally/ui";
+import { useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
+import { Button, Card, Heading, Input, Paragraph, Toast, ToastViewport } from "@ally/ui";
 
+import { useDeleteWithUndo, UNDO_WINDOW_MS } from "../lib/use-delete-with-undo.ts";
 import {
   createTaskAdapters,
   type AssigneeOption,
@@ -41,6 +44,28 @@ function formatDue(iso: string | null): string {
 
 function isOverdue(row: TaskRow): boolean {
   return row.dueAt !== null && row.status === "open" && new Date(row.dueAt).getTime() < Date.now();
+}
+
+/** Dismissing the toast early only hides it — the undo window keeps running
+ *  and the delete commits when it closes. Nothing to do on dismiss. */
+function dismissUndoToast(): void {
+  // Hiding is the Toast's own state; the window is the undo hook's.
+}
+
+/** Optimistic removal across every cached task list (all scope/status/page
+ *  keys hold the row); the assignee-options cache has no `tasks` array and
+ *  is skipped by the shape check. */
+function removeTaskFromCaches(queryClient: QueryClient, taskId: string): void {
+  for (const query of queryClient.getQueryCache().findAll({ queryKey: ["tasks"] })) {
+    const data = query.state.data as { tasks: TaskRow[]; total: number } | undefined;
+    if (data === undefined || !Array.isArray(data.tasks)) continue;
+    if (!data.tasks.some((task) => task.id === taskId)) continue;
+    queryClient.setQueryData(query.queryKey, {
+      ...data,
+      tasks: data.tasks.filter((task) => task.id !== taskId),
+      total: data.total - 1,
+    });
+  }
 }
 
 export function Tasks(): ReactElement {
@@ -96,6 +121,27 @@ export function Tasks(): ReactElement {
     }
     refresh();
   }
+
+  // Delete (#29 slice 2): the row leaves every cached list at once (remove),
+  // the server hears about it when the window closes (commit), and undo puts
+  // it back by refetching — the server never saw anything, so a refetch is
+  // the whole restore.
+  const deleteUndo = useDeleteWithUndo<TaskRow>({
+    remove: (row) => {
+      setError(null);
+      removeTaskFromCaches(queryClient, row.id);
+    },
+    restore: () => {
+      refresh();
+    },
+    commit: async (row) => {
+      const result = await taskAdapters.remove(row.id);
+      if (!result.ok) {
+        setError("The task could not be deleted. Reload and try again.");
+      }
+      refresh();
+    },
+  });
 
   return (
     <div className="w-full" data-page="tasks" data-testid="tasks-root">
@@ -233,6 +279,22 @@ export function Tasks(): ReactElement {
                       Cancel task
                     </Button>
                   ) : null}
+                  {/* Delete is the creator's verb (#29 slice 2): it lives in the
+                      "created" scope where the creator reads their own rows.
+                      The row leaves the list at once; the server hears when the
+                      undo window closes. */}
+                  {scope === "created" ? (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => {
+                        deleteUndo.request(row);
+                      }}
+                      data-testid="tasks-row-delete"
+                    >
+                      Delete
+                    </Button>
+                  ) : null}
                 </li>
               ))}
             </ul>
@@ -270,6 +332,22 @@ export function Tasks(): ReactElement {
           </>
         )}
       </Card>
+      {/* The undo window's face (#129 slice 4, first business consumer):
+          the row is already out of the list; the server hears about the
+          delete only when this toast's timer runs out. */}
+      {deleteUndo.pending !== null ? (
+        <ToastViewport position="bottom-right">
+          <Toast
+            message={`Deleted "${deleteUndo.pending.title}"`}
+            autoDismissMs={UNDO_WINDOW_MS}
+            onUndo={() => {
+              deleteUndo.undo();
+            }}
+            onDismiss={dismissUndoToast}
+            data-testid="tasks-delete-toast"
+          />
+        </ToastViewport>
+      ) : null}
     </div>
   );
 }

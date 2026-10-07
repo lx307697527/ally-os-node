@@ -83,12 +83,19 @@ export type AssigneeOptionsResult =
   | { ok: true; data: AssigneeOption[] }
   | { ok: false; reason: "unavailable" };
 
+/** Delete (#29 slice 2): the creator's verb — soft delete + ledger snapshot.
+ * 403 is the assignee trying, 404 is gone-or-not-yours (same answer as get). */
+export type TaskDeleteResult =
+  | { ok: true }
+  | { ok: false; reason: "forbidden" | "notfound" | "unavailable" };
+
 export interface TaskAdapters {
   list(query: TaskListQuery): Promise<TaskListResult>;
   get(id: string): Promise<TaskGetResult>;
   assigneeOptions(): Promise<AssigneeOptionsResult>;
   create(input: TaskCreateInput): Promise<TaskResult>;
   patch(id: string, input: TaskPatchInput): Promise<TaskResult>;
+  remove(id: string): Promise<TaskDeleteResult>;
 }
 
 export function createTaskAdapters(fetchFn: typeof fetch = fetch): TaskAdapters {
@@ -181,6 +188,18 @@ export function createTaskAdapters(fetchFn: typeof fetch = fetch): TaskAdapters 
           return { ok: false, reason: "unavailable" };
         }
         return { ok: true, data: parsed.data.task };
+      } catch {
+        return { ok: false, reason: "unavailable" };
+      }
+    },
+
+    async remove(id: string): Promise<TaskDeleteResult> {
+      try {
+        const res = await fetchFn(`/api/tasks/${encodeURIComponent(id)}`, { method: "DELETE" });
+        if (res.status === 403) return { ok: false, reason: "forbidden" };
+        if (res.status === 404) return { ok: false, reason: "notfound" };
+        if (!res.ok) return { ok: false, reason: "unavailable" };
+        return { ok: true };
       } catch {
         return { ok: false, reason: "unavailable" };
       }
