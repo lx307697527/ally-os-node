@@ -17,6 +17,9 @@ const COMMENT_ROW = {
   author: { id: "u-2", name: "Bob" },
   createdAt: "2026-10-06T08:00:00.000Z",
   editedAt: null,
+  attachments: [
+    { id: "a-1", fileName: "spec.pdf", contentType: "application/pdf", sizeBytes: 24, createdAt: "2026-10-06T08:01:00.000Z" },
+  ],
 };
 
 describe("comments client (#110 slice 1)", () => {
@@ -145,7 +148,7 @@ describe("comments client (#110 slice 1)", () => {
     await expect(dead.edit("c-1", "x")).resolves.toEqual({ ok: false, reason: "unavailable" });
   });
 
-  it("rows carry editedAt (nullable) so the page can render the edited marker", async () => {
+  it("rows carry editedAt (nullable) so the page can render the edited marker", () => {
     const adapters = createCommentAdapters(() =>
       Promise.resolve(
         jsonRes({
@@ -154,11 +157,89 @@ describe("comments client (#110 slice 1)", () => {
         }),
       ),
     );
-    await expect(
+    return expect(
       adapters.list({ subjectType: "task", subjectId: "t-1", limit: 50, offset: 0 }),
     ).resolves.toEqual({
       ok: true,
       data: { comments: [{ ...COMMENT_ROW, editedAt: "2026-10-06T09:00:00.000Z" }], total: 1 },
     });
+  });
+
+  // ── attachments (#110) ────────────────────────────────────────────────────
+
+  it("attach posts multipart without a manual content-type header and parses the admission refusal code", async () => {
+    const seen: { url: string; contentType: string | null; files: number }[] = [];
+    const adapters = createCommentAdapters((input, init) => {
+      if (typeof input === "string" && init?.body instanceof FormData) {
+        seen.push({
+          url: input,
+          // the browser (or undici) builds the boundary — a hand-set header
+          // would shadow it and break the parse
+          contentType: typeof init.headers === "object" && !Array.isArray(init.headers)
+            ? ((init.headers as Record<string, string>)["content-type"] ?? null)
+            : null,
+          files: init.body.getAll("files").length,
+        });
+      }
+      return Promise.resolve(jsonRes({ attachments: COMMENT_ROW.attachments }, 201));
+    });
+    const file = new File([new Uint8Array(4)], "spec.pdf", { type: "application/pdf" });
+    const made = await adapters.attach("c-1", [file, file]);
+    expect(seen[0]).toEqual({ url: "/api/comments/c-1/attachments", contentType: null, files: 2 });
+    expect(made).toEqual({ ok: true, data: { attachments: COMMENT_ROW.attachments } });
+
+    const refused = createCommentAdapters(() => Promise.resolve(jsonRes({ error: "invalid_request", code: "file_too_large" }, 400)));
+    await expect(refused.attach("c-1", [file])).resolves.toEqual({
+      ok: false,
+      reason: "conflict",
+      code: "file_too_large",
+    });
+    // an unknown/absent code stays a conflict with a null code (page shows the
+    // generic sentence), never a crash
+    const opaque = createCommentAdapters(() => Promise.resolve(jsonRes({ error: "invalid_request" }, 400)));
+    await expect(opaque.attach("c-1", [file])).resolves.toEqual({
+      ok: false,
+      reason: "conflict",
+      code: null,
+    });
+    const forbidden = createCommentAdapters(() => Promise.resolve(jsonRes({ error: "x" }, 403)));
+    await expect(forbidden.attach("c-1", [file])).resolves.toEqual({ ok: false, reason: "forbidden" });
+  });
+
+  it("attachmentUrl mints the short-lived download URL on demand; 404 is notfound", async () => {
+    const payload = {
+      url: "http://storage.test/get/comment-attachments/c-1/uuid?X-Amz-Expires=900",
+      fileName: "spec.pdf",
+      contentType: "application/pdf",
+      sizeBytes: 24,
+      expiresInSeconds: 900,
+    };
+    const adapters = createCommentAdapters((input) => {
+      if (typeof input === "string") {
+        expect(input).toBe("/api/comments/c-1/attachments/a-1/url");
+      }
+      return Promise.resolve(jsonRes(payload));
+    });
+    await expect(adapters.attachmentUrl("c-1", "a-1")).resolves.toEqual({ ok: true, data: payload });
+
+    const gone = createCommentAdapters(() => Promise.resolve(jsonRes({ error: "x" }, 404)));
+    await expect(gone.attachmentUrl("c-1", "a-1")).resolves.toEqual({ ok: false, reason: "notfound" });
+    const dead = createCommentAdapters(() => Promise.reject(new Error("down")));
+    await expect(dead.attachmentUrl("c-1", "a-1")).resolves.toEqual({ ok: false, reason: "unavailable" });
+  });
+
+  it("removeAttachment deletes and maps 403/404 like the other author verbs", async () => {
+    const seen: { url: string; method: string }[] = [];
+    const ok = createCommentAdapters((input, init) => {
+      if (typeof input === "string") seen.push({ url: input, method: init?.method ?? "" });
+      return Promise.resolve(jsonRes({ deleted: true }));
+    });
+    await expect(ok.removeAttachment("c-1", "a-1")).resolves.toEqual({ ok: true });
+    expect(seen[0]).toEqual({ url: "/api/comments/c-1/attachments/a-1", method: "DELETE" });
+
+    const forbidden = createCommentAdapters(() => Promise.resolve(jsonRes({ error: "x" }, 403)));
+    await expect(forbidden.removeAttachment("c-1", "a-1")).resolves.toEqual({ ok: false, reason: "forbidden" });
+    const gone = createCommentAdapters(() => Promise.resolve(jsonRes({ error: "x" }, 404)));
+    await expect(gone.removeAttachment("c-1", "a-1")).resolves.toEqual({ ok: false, reason: "notfound" });
   });
 });

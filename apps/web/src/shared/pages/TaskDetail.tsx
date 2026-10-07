@@ -9,7 +9,7 @@
 // anti-probe 404 renders as "not available to you", it does not guess which).
 // Mentions resolve against the task's participants — the composer says who
 // can be mentioned, so a silent no-op mention is never a surprise.
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ReactElement } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -17,7 +17,13 @@ import { z } from "zod";
 import { Button, Card, Heading, Paragraph } from "@ally/ui";
 
 import { createActivityAdapters, type ActivityRow } from "../lib/activity-client.ts";
-import { createCommentAdapters, type CommentRow, type Person } from "../lib/comments-client.ts";
+import {
+  createCommentAdapters,
+  type AttachmentRejectionCode,
+  type AttachmentRow,
+  type CommentRow,
+  type Person,
+} from "../lib/comments-client.ts";
 import { createFollowAdapters, type FollowState } from "../lib/follows-client.ts";
 import { createTaskAdapters, type TaskRow } from "../lib/tasks-client.ts";
 import { useSession } from "../lib/session.ts";
@@ -36,6 +42,39 @@ const COMMENTS_PAGE = 100;
 const ACTIVITY_PAGE = 50;
 
 const COMMENT_BODY_MAX = 5000;
+
+// The file picker's hint, mirroring the server's closed allowlist — the
+// server's admission remains the only authority; this just spares the user a
+// doomed pick. Same numbers as the API: 10 MiB per file, 5 per comment.
+const ATTACH_ACCEPT = ".png,.jpg,.jpeg,.gif,.webp,.pdf,.txt,.csv,.md,.json,.doc,.docx,.xls,.xlsx,.ppt,.pptx";
+
+function formatBytes(sizeBytes: number): string {
+  if (sizeBytes < 1024) return `${String(sizeBytes)} B`;
+  if (sizeBytes < 1024 * 1024) return `${(sizeBytes / 1024).toFixed(1)} KB`;
+  return `${(sizeBytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+/** The server's admission codes said as sentences — codes never reach the user. */
+function rejectionSentence(code: AttachmentRejectionCode | null): string {
+  switch (code) {
+    case "file_too_large":
+      return "That file is over the 10 MiB per-file limit.";
+    case "file_type_not_allowed":
+      return "That file type is not on the allowed list.";
+    case "too_many_files":
+      return "A comment can hold at most 5 attachments.";
+    case "empty_file":
+      return "That file is empty.";
+    case "invalid_file_name":
+      return "That file name can't be used.";
+    // a missing/unparseable body and a multipart-only defect read the same to
+    // the user: the pick was rejected, check type and size
+    case "no_files":
+    case "not_a_file":
+    case null:
+      return "The file was rejected — check its type and size and try again.";
+  }
+}
 
 const taskIdSchema = z.uuid();
 
@@ -345,6 +384,78 @@ function CommentsSection(props: {
   const [editDraft, setEditDraft] = useState("");
   const [savingEdit, setSavingEdit] = useState(false);
   const [editError, setEditError] = useState<string | null>(null);
+  // #110 attachments: the upload in flight (comment id) and the one refusal or
+  // failure being said (per comment — a stale error must not haunt another row)
+  const [attachingId, setAttachingId] = useState<string | null>(null);
+  const [attachmentError, setAttachmentError] = useState<{ commentId: string; text: string } | null>(null);
+  // one hidden file input per own comment row; the row's button clicks it (a
+  // <button> inside a <label> would swallow the label's activation)
+  const attachInputRefs = useRef(new Map<string, HTMLInputElement>());
+
+  function openFilePicker(commentId: string): void {
+    attachInputRefs.current.get(commentId)?.click();
+  }
+
+  async function attachFiles(row: CommentRow, fileList: FileList | null): Promise<void> {
+    setAttachmentError(null);
+    const files = fileList === null ? [] : Array.from(fileList);
+    if (files.length === 0) return;
+    setAttachingId(row.id);
+    const result = await commentAdapters.attach(row.id, files);
+    setAttachingId(null);
+    if (!result.ok) {
+      setAttachmentError({
+        commentId: row.id,
+        text:
+          result.reason === "forbidden"
+            ? "Only the author can attach files."
+            : result.reason === "conflict"
+              ? rejectionSentence(result.code)
+              : "The file could not be uploaded. Reload and try again.",
+      });
+      return;
+    }
+    // An attachment is also an activity row (comment.attachment_added); the
+    // list read carries the new row.
+    props.onChanged();
+  }
+
+  async function downloadAttachment(row: CommentRow, attachment: AttachmentRow): Promise<void> {
+    setAttachmentError(null);
+    const result = await commentAdapters.attachmentUrl(row.id, attachment.id);
+    if (!result.ok) {
+      setAttachmentError({
+        commentId: row.id,
+        text: "The download link could not be created. Reload and try again.",
+      });
+      return;
+    }
+    // The signed URL is short-lived and was minted for this click; the anchor's
+    // download attribute restores the original file name.
+    const anchor = document.createElement("a");
+    anchor.href = result.data.url;
+    anchor.download = result.data.fileName;
+    anchor.rel = "noopener";
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+  }
+
+  async function removeAttachment(row: CommentRow, attachment: AttachmentRow): Promise<void> {
+    setAttachmentError(null);
+    const result = await commentAdapters.removeAttachment(row.id, attachment.id);
+    if (!result.ok) {
+      setAttachmentError({
+        commentId: row.id,
+        text:
+          result.reason === "forbidden"
+            ? "Only the author can remove an attachment."
+            : "The attachment could not be removed. Reload and try again.",
+      });
+      return;
+    }
+    props.onChanged();
+  }
 
   function startEdit(row: CommentRow): void {
     setError(null);
@@ -527,12 +638,86 @@ function CommentsSection(props: {
                 ) : (
                   <>
                     <span className="block text-ui leading-[var(--lh-ui)] text-ink">{row.body}</span>
+                    {row.attachments.length > 0 ? (
+                      <ul className="mt-1 grid gap-1" data-testid="comment-attachments">
+                        {row.attachments.map((attachment) => (
+                          <li
+                            key={attachment.id}
+                            className="flex items-center gap-2 font-mono text-[length:var(--fs-meta)] text-ink-soft"
+                            data-testid="comment-attachment-row"
+                          >
+                            <span className="truncate">
+                              {attachment.fileName} · {formatBytes(attachment.sizeBytes)}
+                            </span>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => {
+                                void downloadAttachment(row, attachment);
+                              }}
+                              data-testid="comment-attachment-download"
+                            >
+                              Download
+                            </Button>
+                            {mine ? (
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => {
+                                  void removeAttachment(row, attachment);
+                                }}
+                                data-testid="comment-attachment-remove"
+                              >
+                                Remove
+                              </Button>
+                            ) : null}
+                          </li>
+                        ))}
+                      </ul>
+                    ) : null}
                     <span className="mt-0.5 block font-mono text-[length:var(--fs-meta)] text-ink-soft">
                       {row.author?.name ?? "—"} · {formatDay(row.createdAt)}
                       {row.editedAt !== null ? " · (edited)" : ""}
                     </span>
+                    {attachmentError?.commentId === row.id ? (
+                      <Paragraph className="text-ink-soft" data-testid="comment-attachment-error">
+                        {attachmentError.text}
+                      </Paragraph>
+                    ) : null}
                     {mine ? (
                       <span className="mt-1 flex gap-2">
+                        <input
+                          type="file"
+                          multiple
+                          accept={ATTACH_ACCEPT}
+                          className="sr-only"
+                          disabled={attachingId === row.id}
+                          onChange={(event) => {
+                            const files = event.target.files;
+                            void attachFiles(row, files);
+                            // reset so picking the same file again still fires change
+                            event.target.value = "";
+                          }}
+                          ref={(node) => {
+                            if (node === null) {
+                              attachInputRefs.current.delete(row.id);
+                            } else {
+                              attachInputRefs.current.set(row.id, node);
+                            }
+                          }}
+                          data-testid="comment-attach-input"
+                        />
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          disabled={attachingId === row.id}
+                          onClick={() => {
+                            openFilePicker(row.id);
+                          }}
+                          data-testid="comment-attach"
+                        >
+                          {attachingId === row.id ? "Uploading…" : "Attach file"}
+                        </Button>
                         <Button
                           variant="ghost"
                           size="sm"
