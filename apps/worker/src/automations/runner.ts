@@ -1,11 +1,17 @@
 import { and, eq } from "drizzle-orm";
-import { ruleSpecSchema, type ActionResult, type ActionSpec } from "@ally/automations";
+import {
+  ruleSpecSchema,
+  type ActionResult,
+  type ActionSpec,
+  type TriggerSpec,
+} from "@ally/automations";
 import { schema, type Db } from "@ally/db";
 import {
   executeCreateTask,
   executeNotify,
   executeSendEmail,
   executeSendWebhook,
+  executeUpdateField,
   type ActionContext,
   type ActionDeps,
   type ActionServices,
@@ -40,7 +46,28 @@ type RuleLoad =
   | { kind: "gone" }
   | { kind: "no-rule" }
   | { kind: "bad-spec" }
-  | { kind: "ready"; actions: ActionSpec[]; ctx: ActionContext };
+  | { kind: "ready"; actions: ActionSpec[]; ctx: ActionContext; triggerTarget: string | null };
+
+/**
+ * 触发语境的 target：due 触发不写审计行，合成 target（subjectType:subjectId）
+ * 由 trigger 重建；event 触发回审计行取（审计不可删，行不在 = 手工动过库，
+ * target 落 null，需要 target 的动作自己 fail loud）。
+ */
+async function loadTriggerTarget(
+  db: Db,
+  trigger: TriggerSpec,
+  sourceEventId: string,
+): Promise<string | null> {
+  if (trigger.kind === "due") {
+    return `${trigger.subjectType}:${sourceEventId}`;
+  }
+  const events = await db
+    .select({ target: schema.auditEvents.target })
+    .from(schema.auditEvents)
+    .where(eq(schema.auditEvents.id, sourceEventId))
+    .limit(1);
+  return events[0]?.target ?? null;
+}
 
 async function loadRuleSpec(db: Db, runId: string): Promise<RuleLoad> {
   const runRows = await db
@@ -66,6 +93,11 @@ async function loadRuleSpec(db: Db, runId: string): Promise<RuleLoad> {
     actions: rule.actions,
   });
   if (!parsed.success) return { kind: "bad-spec" };
+  // 触发语境的 target：due 触发不写审计行，合成 target（subjectType:subjectId）
+  // 由 trigger 重建；event 触发回审计行取（审计不可删，行不在 = 手工动过库，
+  // target 落 null，需要 target 的动作自己 fail loud）
+  const trigger = parsed.data.trigger;
+  const triggerTarget = await loadTriggerTarget(db, trigger, run.sourceEventId);
   return {
     kind: "ready",
     actions: parsed.data.actions,
@@ -75,11 +107,11 @@ async function loadRuleSpec(db: Db, runId: string): Promise<RuleLoad> {
       createdById: rule.createdById,
       runId: run.id,
     },
+    triggerTarget,
   };
 }
 
-function baseResults(actionResults: unknown): ActionResult[] {
-  if (!Array.isArray(actionResults)) return [];
+function baseResults(actionResults: unknown): ActionResult[] {  if (!Array.isArray(actionResults)) return [];
   return actionResults.filter(
     (item): item is ActionResult =>
       typeof item === "object" &&
@@ -167,6 +199,9 @@ export async function runAutomationRun(deps: ActionDeps, data: AutomationRunJobD
               break;
             case "send_webhook":
               result = await executeSendWebhook(services, rule.ctx, action);
+              break;
+            case "update_field":
+              result = await executeUpdateField(tx, services, rule.ctx, action, rule.triggerTarget);
               break;
           }
           await tx

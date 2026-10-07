@@ -476,6 +476,54 @@ describe("spec draft round trip (#224)", () => {
     );
   });
 
+  it("update_field: drafts structured, builds the config, and round-trips through the edit form", () => {
+    const spec = {
+      trigger: { kind: "due", subjectType: "task", anchorField: "dueAt", direction: "after", offsetMinutes: 60 },
+      conditions: [],
+      actions: [
+        { type: "update_field", config: { subjectType: "task", field: "status", value: "cancelled" } },
+      ],
+    };
+    const draft = specToDraft(spec);
+    expect(draft.actions[0]).toEqual({
+      type: "update_field",
+      subjectType: "task",
+      field: "status",
+      valueText: JSON.stringify("cancelled", null, 2),
+    });
+    expect(buildActions(draft.actions)).toEqual({ ok: true, value: spec.actions });
+
+    // null 值往返(显式 null 是值,不是缺值)
+    const nullValue = specToDraft({
+      trigger: { kind: "event", action: "x" },
+      conditions: [],
+      actions: [{ type: "update_field", config: { subjectType: "task", field: "dueAt", value: null } }],
+    });
+    expect(nullValue.actions[0]).toMatchObject({ type: "update_field", valueText: "null" });
+    expect(buildActions(nullValue.actions)).toEqual({
+      ok: true,
+      value: [{ type: "update_field", config: { subjectType: "task", field: "dueAt", value: null } }],
+    });
+
+    expectError(
+      buildActions([{ type: "update_field", subjectType: " ", field: "status", valueText: '"done"' }]),
+      /needs a subject type/,
+    );
+    expectError(
+      buildActions([{ type: "update_field", subjectType: "task", field: "", valueText: '"done"' }]),
+      /needs a field name/,
+    );
+    // 空框不是值:作者忘了写目标值要在保存前被拦住,不是存一个形状非法的规则
+    expectError(
+      buildActions([{ type: "update_field", subjectType: "task", field: "status", valueText: "" }]),
+      /must be valid JSON/,
+    );
+    expectError(
+      buildActions([{ type: "update_field", subjectType: "task", field: "status", valueText: "{broken" }]),
+      /must be valid JSON/,
+    );
+  });
+
   it("buildSpec: composes the three builders; first failure wins", () => {
     const good = emptySpecDraft();
     good.trigger = { kind: "event", action: "task.created" };

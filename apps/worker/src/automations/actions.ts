@@ -12,11 +12,18 @@ import type {
   NotifyAction,
   SendEmailAction,
   SendWebhookAction,
+  UpdateFieldAction,
 } from "@ally/automations";
-import { AUTOMATION_ACTOR_PREFIX, isWebhookHostAllowed, isWebhookIpAllowed } from "@ally/automations";
+import {
+  AUTOMATION_ACTOR_PREFIX,
+  isWebhookHostAllowed,
+  isWebhookIpAllowed,
+  subjectIdFromTarget,
+} from "@ally/automations";
 import { escapeHtml, htmlToPlainText, type Mailer } from "@ally/mailer";
-import { inArray } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { schema, type Db } from "@ally/db";
+import { updatableSubjectSpec, type FieldWriteTx } from "./field-registry.ts";
 
 /**
  * 动作执行器（#224 的内核动作：建任务、发通知、发邮件）。
@@ -324,4 +331,78 @@ export async function executeSendWebhook(
   // 成功不读响应体:2xx 状态即投递事实,流直接取消释放连接
   await response.body?.cancel().catch(() => undefined);
   return { type: "send_webhook", status: "succeeded" };
+}
+
+/**
+ * update_field 动作（#224 切片 6）：把触发语境指向的那一行上的一个字段改成规则
+ * 作者保存时点死的值。目标永远是最多一个行（触发语境的 target，subjectId 从
+ * target 解析，见 subjectIdFromTarget）——自动化批量改写是另一档危险，本动作
+ * 不做。每道闸都 fail loud（抛错 = 动作失败进重试，耗尽终判 failed + 告警）：
+ *
+ * 1. subjectType / field 必须在属主域注册的声明式白名单里（field-registry，
+ *    与 due 锚点同裁：保存面看不到 worker 注册表，未注册的配置存得进、执行必败）；
+ * 2. target 必须能无歧义地解析成配置 subjectType 的行 id——带别的 subject 前缀
+ *    = 作者配错了对象，拒绝（改错行比不改更糟）；
+ * 3. 签名锁定（#219）：有电子签名的记录一律拒改——与人手 PATCH 的 record_signed
+ *    （routes/tasks.ts）同一裁决，自动化不例外。签名表 append-only、按 subject
+ *    前缀查询，注册表为空的今天任务上不可能有签名（恒通过），第一个把 task
+ *    注册为可签名的域进场那天这行检查即生效。
+ *
+ * 值的域校验与写行、审计、no-op 语义都在 field spec（field-registry.ts）——属主
+ * 域的写法属主域自己写，本函数只管把闸落齐、把派发做成。执行事实（ref = 被改的
+ * 行 id）在 automation_runs 的 action_results；行上的变更痕迹是域自己的审计。
+ */
+export async function executeUpdateField(
+  tx: FieldWriteTx,
+  services: ActionServices,
+  ctx: ActionContext,
+  action: UpdateFieldAction,
+  triggerTarget: string | null,
+): Promise<ActionResult> {
+  const config = action.config;
+  const spec = updatableSubjectSpec(config.subjectType);
+  if (spec === undefined) {
+    throw new Error(`update_field subject type is not registered: ${config.subjectType}`);
+  }
+  const field = spec.fields[config.field];
+  if (field === undefined) {
+    throw new Error(
+      `update_field field is not registered for ${config.subjectType}: ${config.field}`,
+    );
+  }
+  const resolved = subjectIdFromTarget(triggerTarget, config.subjectType);
+  if (!resolved.ok) {
+    throw new Error(`update_field cannot resolve its target row: ${resolved.reason}`);
+  }
+  const signed = await tx
+    .select({ id: schema.esignSignatures.id })
+    .from(schema.esignSignatures)
+    .where(
+      and(
+        eq(schema.esignSignatures.subjectType, config.subjectType),
+        eq(schema.esignSignatures.subjectId, resolved.subjectId),
+      ),
+    )
+    .limit(1);
+  if (signed[0] !== undefined) {
+    throw new Error(
+      `update_field refused: ${config.subjectType} ${resolved.subjectId} is signed — records are locked once signed`,
+    );
+  }
+  await field.apply(tx, resolved.subjectId, config.value, {
+    ruleId: ctx.ruleId,
+    ruleName: ctx.ruleName,
+    runId: ctx.runId,
+  });
+  services.logger.info(
+    {
+      ruleId: ctx.ruleId,
+      runId: ctx.runId,
+      subjectType: config.subjectType,
+      field: config.field,
+      subjectId: resolved.subjectId,
+    },
+    "automation field update",
+  );
+  return { type: "update_field", status: "succeeded", ref: resolved.subjectId };
 }

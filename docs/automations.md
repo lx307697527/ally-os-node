@@ -124,6 +124,34 @@ pg_cron + pg_net 定时任务里（#32）：逻辑分散在 887 个迁移文件�
   （at-least-once、payload 无模板）说在前头；headers 编辑是「Name: Value」
   每行一条，密钥提示明说「存在规则配置里、不进运行错误」。
 
+## 已落地：update_field 动作（#224 切片 6，改字段与属主域写白名单）
+
+- **形状**：`{ type: "update_field", config: { subjectType(1..100), field(1..100),
+  value(显式 JSON,键缺席即拒,null 是值) } }`，进共享 discriminated union——零
+  migration、零新路由。目标永远是**触发语境自己的那一行**（event 触发 = 审计
+  target 裸行 id；due 触发 = `subjectType:subjectId` 由 trigger 重建，
+  `subjectIdFromTarget` 解析：带别的 subject 前缀 = 作者配错了对象，拒绝）——
+  自动化批量改写是另一档危险，本动作不做。
+- **可写面是属主域的声明式白名单**（`apps/worker/src/automations/field-registry.ts`）：
+  「哪张表的哪个字段容许自动化改、值域是什么、改完留什么痕迹」只有属主域知道——
+  与 due 锚点、可签名 subject 同一裁法，内核接缝 + 属主域注册。保存面（API）看
+  不到 worker 注册表，所以**未注册的 subjectType/field 存得进、执行必败并告警**
+  （fail closed，due 未注册锚点同一条裁决；UI 编辑器第一段明说）。第一个成员
+  **task.status**（值域 open/done/cancelled）：行锁下读旧值 → 值没变 = no-op
+  （不动行、不写审计——反复命中的规则不能把审计流刷成自己的转发日志）→ 真变化
+  才 UPDATE + `task.status_changed` 审计（与人手 PATCH 同词表 from/to，actor 带
+  `automation:<runId>` 前缀——扫描器跳过、活动流可见、detail 署名规则）。
+  assigneeId/dueAt 刻意不在首组白名单：改经办人要带「可分配面」裁决（进 worker
+  会第二份实现）、静态到期时刻写进规则是必然过期的脚枪，等真实规则需求进场再议。
+- **签名锁定不豁免**（#219）：有电子签名的记录一律拒改——与人手 PATCH 的
+  `record_signed` 同一裁决，执行器对 esign_signatures 按 subject 前缀查询（签名
+  表 append-only，「有签名行 = 锁定」）。注册表为空的今天任务上不可能有签名
+  （恒通过），第一个把 task 注册为可签名的域进场那天这道闸即生效。
+- **执行事实**在 automation_runs 的 action_results（`ref` = 被改的行 id，可从
+  运行记录跳到产物）；行上的变更痕迹是域自己的审计（`task.status_changed`）。
+  每道闸（注册、target 解析、签名锁、值域、行存在）都 fail loud 抛错进重试协议
+  ——重试耗尽终判 failed + 告警，「少改一个字段」必须有人看见。
+
 ## 关键裁决
 
 - **触发统一为「审计事件 action 精确命中」（event）/「日期字段 × 偏移」（due，
@@ -164,8 +192,9 @@ pg_cron + pg_net 定时任务里（#32）：逻辑分散在 887 个迁移文件�
 
 ## 剩余项（#224 保持 open）
 
-1. 动作类型扩展：事务短信（等 SMS 通道进场；邮件、出站 webhook 已落，见上节）、
-   改字段、报名序列、AI 步骤
+1. 动作类型扩展：事务短信（等 SMS 通道进场；邮件、出站 webhook、改字段已落，
+   见上节）、报名序列、AI 步骤；update_field 的更多可写 subject/field 随属主域
+   进场注册（改经办人要先把「可分配面」裁决挪到共享位置，不复制第二份）
 2. 条件积木复用 workflow 的注册表形态（跨对象条件、自定义字段条件——
    custom_field_values 按字段键查询已备好）
 3. 规则效果度量（触发/例外/越过计数，§4.8 周报）与 #233 规则注册表的接驳
