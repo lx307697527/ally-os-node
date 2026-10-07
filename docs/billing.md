@@ -1,12 +1,14 @@
-# 发票内核(#192)
+# 发票内核（#192）
 
-设计权威:#232 §10「模块五 财务」——「所有发票由系统出草稿,**财务确认后才发出**」
-(R-12-6);尾款按批开票(R-11-6);金额按整数分计算。issue:#192(发票草稿 +
-财务确认),所属模块 #190(M5 财务)。
+设计权威：#232 §10「模块五 财务」——「所有发票由系统出草稿，**财务确认后才发出**」
+（R-12-6）；尾款按批开票（R-11-6）；金额按整数分计算。issue：#192（发票草稿 +
+财务确认），所属模块 #190（M5 财务）。
 
-老系统对照:`billing.*`(20260724143856_billing_core.sql)——发票靠手工创建/拆期
-(#88),`amount_due numeric(14,2)` 快照列;行合计 `total_price` 是 SQL 生成列(本
-内核沿用这一裁决)。
+老系统对照：`billing.*`（20260724143856_billing_core.sql）——发票靠手工创建/拆期
+（#88），`amount_due numeric(14,2)` 快照列；行合计 `total_price` 是 SQL 生成列（本
+内核沿用这一裁决）。收款对照 `billing.payments` + `record_payment_atomic`
+（20260724181634）——`UNIQUE(provider, external_id)` 幂等、到账自动推进
+invoice_status（draft 跳 sent、按 SUM 落 paid/partially_paid）。
 
 ## 已落地:发票内核(切片 1)
 
@@ -56,9 +58,10 @@ draft ──confirm(finance)──▶ issued        draft ──void(finance)─
   confirm 幂等返回 `already`,审计不落第二行(no-op 不写审计)。
 - **void**:只对草稿(作废 = 行随 CASCADE 留存,票可查不可用);issued 票
   409 `not_voidable`;重复作废幂等。
-- 付款态(paid/partially_paid)随收款切片(#193 webhook 面)expand 进场;
-  发出后的通知(到期提醒 R-12-7、逾期不自动催款)随客户门户与渠道层接线——
-  本内核零通知,没有收件人的邮件不存在。
+- **付款态不 expand 进 invoice_status**(0023 注释里的预告被收款切片推翻,
+  裁决见下「收款内核」):invoice_status 只回答「单据走到哪一步」,「钱收了
+  多少」是收款台账对实时 SUM 的回答。发出后的通知(到期提醒 R-12-7、逾期不
+  自动催款)随客户门户与渠道层接线——本内核零通知,没有收件人的邮件不存在。
 
 ### 权限:`invoices.manage`(finance / owner)
 
@@ -109,15 +112,74 @@ totalCents)、`invoice.updated`(fields:["lines"] + lineCount/totalCents,no-op
 (`invoice_exists` / `numbering_not_configured` / `not_draft` / `invoice_voided`
 / `not_voidable`)。
 
+## 已落地:收款内核(切片 2)
+
+设计权威:#232 §10「Stripe / PayPal 以 webhook 为准,幂等记账并自动匹配发票」;
+付款方式三种(R-12-1,不收支票)。issue 位置:#192 剩余第 2 条「收款与 paid 态」;
+webhook 消费面是 #193。
+
+### 数据模型(packages/db/src/schema.ts,0032)
+
+- **`payments`**:`payment_method` 枚举(card / paypal / wire_ach)、
+  `amount_cents` 整数分、`currency` 从发票行抄录(收款行自描述,#181 QuickBooks
+  推送的路标)、`received_at`(钱实际到账的时刻,电汇可能是昨天到的;不未来)、
+  `note`(电汇流水号等)、`recorded_by_id`(手工记账是财务本人;webhook 记账
+  null)。
+- **source 幂等与发票同构**:(source_type, source_key) 唯一索引——webhook
+  重放在结构上只可能有一行;手工记账两列皆 null 不受约束(PG NULLS DISTINCT)。
+- **void 三列**(voided_at/voided_by_id/void_reason):钱行永不 DELETE/改写,
+  误录用 void 更正(SUM 剔除、审计留痕);退款是 #240 的独立流程(原路退回),
+  不是对本行的冲销。
+
+### 两个核心裁决(与老系统刻意差异)
+
+1. **付款态是派生值,不落 invoice_status**。`computePaymentStatus(total, paid)`
+   (billing/payments.ts)是唯一权威定义:paid(含超收)/ partial / unpaid;
+   total = 0 的票 vacuously paid(没有可收的钱,财务不追 $0 的票)。两个输入
+   各自结构性无漂移(行合计是生成列、发出后行锁定;收款行只增不删),落列则
+   每个写方都得记得重算——漏一个写方就是一条卡在「paid」的发票,财务会信它
+   (老 bug554 快照漂移家族的收款版)。门槛跨越的「事实」由 `payment.recorded`
+   审计的 `paymentStatus` 携带;#241 发货门槛等消费方读同一个函数,不各算各的。
+2. **到账不推进发票状态**。老系统 `record_payment_atomic` 收到款把 draft 票
+   自动跳 sent 再落 paid;本系统财务确认(R-12-6「核对后发出」)是人的闸门,
+   到账不替财务放行——draft/void 票记账 fail closed(409 `not_issued` /
+   `invoice_voided`),webhook 靠 provider 重试等财务确认(老系统「未知发票
+   返回 NULL 让 provider 重试」同一去向,只是多分了两种可读码)。
+
+### 权限与 webhook 接缝
+
+全部在 `invoices.manage` 后(finance/owner,#232 §12 财务「认领收款」)。跨票
+的收款总览与「待认领银行流水」随 #181 进场。**#193 的 webhook 不走 HTTP 面**:
+验签 + 规范化后在自己的业务事务里调 `billing/payments.ts` 的 `recordPayment`
+传 source(如 `("stripe", "<event_id>")`);`PaymentExistsError` 对 webhook 是
+「重放,已记账成功」(吃掉回 2xx),对 HTTP 面映射 409。
+
+锁纪律:recordPayment / voidPayment 都先锁发票行再动钱——同票动词串行,审计
+里记账后的付款态是精确值,不依赖隔离级别的善意。
+
+## 端点
+
+| 方法与路径 | 门 | 语义 |
+| --- | --- | --- |
+| `POST /api/invoices/:id/payments` | invoices.manage | 记一笔款(手工;webhook 走服务接缝);409 `not_issued` / `invoice_voided` / `payment_exists` |
+| `GET /api/invoices/:id/payments` | invoices.manage | 一张票的收款台账(totalCents/paidCents/paymentStatus + 行) |
+| `POST /api/payments/:id/void` | invoices.manage | 作废误录(reason 必填);幂等 `already` |
+
+发票读写面(列表/详情)随本切片带 `paidCents` + `paymentStatus`(列表合计按
+票分组两次查询取齐——drizzle 在 sql`` 模板里渲染不带表限定的裸列名,相关
+子查询会被内层表影子化,实测 total 恒 0,故不用)。付款态错误码:409 表示
+「票/款在但状态不允许」,与发票端点同一约定。
+
 ## 剩余(#192 保持 open,Part of #192)
 
 1. **触发点接线**(属主域各自进场):打样/调味费(#238)、定金(#231,比例
    50%–100%,低于 50% 走财务审批 R-08-2——审批线 #221 已可表达)、每批尾款
    (完工 + 实际产量 + 运营确认 R-11-6;结算量 = min(实际, 报价×110%),少产
    超 10% 拦开票 R-11-4)——调 `createDraftInvoice` 传 source 幂等键;
-2. 收款与发票状态(paid/partially_paid)、Stripe/PayPal webhook(#193)、附加费
-   规则(R-12-2/3,规则注册表 #233 已就绪);
+2. Stripe/PayPal webhook(#193,记账接缝已就绪:验签后调 `recordPayment`)、
+   附加费规则(R-12-2/3,规则注册表 #233 已就绪);
 3. 到期前提醒(R-12-7,渠道层 + due 扫描)、收款状态回写订单/批次(#241 发货
-   门槛)、QuickBooks 推送(#181);
+   门槛,读 `computePaymentStatus`)、QuickBooks 推送(#181,含银行流水认领)、
+   第一笔款到账转正式客户(R-02-5)等收款触发业务;
 4. PDF 存档(#128 统一 PDF 服务)、分期/更正/贷项(红冲动词)、财务确认页
    (web)。

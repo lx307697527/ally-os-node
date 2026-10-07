@@ -225,6 +225,13 @@
       "when": 1791387032354,
       "tag": "0031_thin_toxin",
       "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1791389754801,
+      "tag": "0032_tearful_spirit",
+      "breakpoints": true
     }
   ]
 }

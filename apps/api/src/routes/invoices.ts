@@ -1,4 +1,4 @@
-import { asc, eq } from "drizzle-orm";
+import { asc, eq, isNull, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import type { Context } from "hono";
 import type { Logger } from "pino";
@@ -19,6 +19,7 @@ import {
   updateDraftLines,
   voidInvoice,
 } from "../billing/service.ts";
+import { computePaymentStatus, sumPaidCents } from "../billing/payments.ts";
 import { NoActiveRuleError } from "../numbering/service.ts";
 
 /**
@@ -107,6 +108,7 @@ function presentInvoice(
     updatedAt: Date;
   },
   totalCents: number,
+  paidCents: number,
   lines?: {
     id: string;
     lineNumber: number;
@@ -127,6 +129,9 @@ function presentInvoice(
         ? { type: row.subjectType, id: row.subjectId }
         : null,
     totalCents,
+    // 付款态是派生值（billing/payments.ts）：draft/void 票没有付款行，恒 unpaid
+    paidCents,
+    paymentStatus: computePaymentStatus(totalCents, paidCents),
     issuedAt: row.issuedAt,
     voidedAt: row.voidedAt,
     voidReason: row.voidReason,
@@ -206,15 +211,37 @@ export function invoicesRoutes(deps: { db: Db; logger: Logger }) {
   app.get("/api/invoices", requireInvoicesManage, async (c) => {
     const status = z.enum(invoiceStatusValues).safeParse(c.req.query("status"));
     const where = status.success ? eq(schema.invoices.status, status.data) : undefined;
+    // 合计两次分组查询取齐（行合计、有效收款各自按票 SUM）+ 头行，共三条固定
+    // 查询不随票数增长——付款态进列表是本切片的财务主读法（哪些票没收齐钱）。
+    // 不用相关子查询：drizzle 在 sql`` 模板里渲染不带表限定的裸列名，多表关联
+    // 会被内层表影子化（实测 total 恒 0）。
     const rows = await deps.db
       .select()
       .from(schema.invoices)
       .where(where)
       .orderBy(asc(schema.invoices.createdAt));
-    const withTotals = await Promise.all(
-      rows.map(async (row) => presentInvoice(row, await sumLineTotals(deps.db, row.id))),
-    );
-    return c.json({ invoices: withTotals });
+    const lineSums = await deps.db
+      .select({
+        invoiceId: schema.invoiceLines.invoiceId,
+        total: sql<string>`coalesce(sum(${schema.invoiceLines.lineTotalCents}), 0)`,
+      })
+      .from(schema.invoiceLines)
+      .groupBy(schema.invoiceLines.invoiceId);
+    const paidSums = await deps.db
+      .select({
+        invoiceId: schema.payments.invoiceId,
+        paid: sql<string>`coalesce(sum(${schema.payments.amountCents}), 0)`,
+      })
+      .from(schema.payments)
+      .where(isNull(schema.payments.voidedAt))
+      .groupBy(schema.payments.invoiceId);
+    const totals = new Map(lineSums.map((row) => [row.invoiceId, Number(row.total)]));
+    const paids = new Map(paidSums.map((row) => [row.invoiceId, Number(row.paid)]));
+    return c.json({
+      invoices: rows.map((row) =>
+        presentInvoice(row, totals.get(row.id) ?? 0, paids.get(row.id) ?? 0),
+      ),
+    });
   });
 
   app.get("/api/invoices/:id", requireInvoicesManage, async (c) => {
@@ -244,7 +271,8 @@ export function invoicesRoutes(deps: { db: Db; logger: Logger }) {
       .where(eq(schema.invoiceLines.invoiceId, row.id))
       .orderBy(asc(schema.invoiceLines.lineNumber));
     const totalCents = lines.reduce((sum, line) => sum + line.lineTotalCents, 0);
-    return c.json(presentInvoice(row, totalCents, lines));
+    const paidCents = await sumPaidCents(deps.db, row.id);
+    return c.json(presentInvoice(row, totalCents, paidCents, lines));
   });
 
   app.patch("/api/invoices/:id", requireInvoicesManage, async (c) => {

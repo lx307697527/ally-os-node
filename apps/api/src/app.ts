@@ -31,6 +31,7 @@ import { invoicesRoutes } from "./routes/invoices.ts";
 import { meRoutes } from "./routes/me.ts";
 import { notificationsRoutes } from "./routes/notifications.ts";
 import { numberingRulesRoutes } from "./routes/numbering-rules.ts";
+import { paymentsRoutes } from "./routes/payments.ts";
 import { realtimeRoutes } from "./routes/realtime.ts";
 import { rulesRoutes } from "./routes/rules.ts";
 import { tasksRoutes } from "./routes/tasks.ts";
@@ -173,6 +174,10 @@ export function createApp(deps: AppDeps) {
   // 点，finance/owner 默认持有）。触发点的系统生成不走 HTTP——属主域在自己的
   // 业务事务里调 billing/service.ts，草稿与触发事实同事务生灭
   app.route("/", invoicesRoutes(deps));
+  // 收款台账（#192 切片 2）：发票锚定的记账面 + 更正动词（invoices.manage 同
+  // 门）。#193 的 webhook 不走 HTTP——验签后在自己的业务事务里调
+  // billing/payments.ts 的 recordPayment，source 幂等键兜重放
+  app.route("/", paymentsRoutes(deps));
 
   return app;
 }

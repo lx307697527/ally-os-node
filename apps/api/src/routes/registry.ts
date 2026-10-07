@@ -165,6 +165,12 @@ export const API_ROUTES: readonly RouteDecl[] = [
   { method: "PATCH", path: "/api/invoices/:id", auth: { kind: "permission", permission: "invoices.manage" } },
   { method: "POST", path: "/api/invoices/:id/confirm", auth: { kind: "permission", permission: "invoices.manage" } },
   { method: "POST", path: "/api/invoices/:id/void", auth: { kind: "permission", permission: "invoices.manage" } },
+  // 收款台账（#192 切片 2）：发票锚定的记账/读法与更正动词，invoices.manage
+  // 同门（#232 §12 财务「认领收款」）。#193 的 webhook 记账是进程内接缝
+  // （billing/payments.ts recordPayment），不走 HTTP 面
+  { method: "POST", path: "/api/invoices/:id/payments", auth: { kind: "permission", permission: "invoices.manage" } },
+  { method: "GET", path: "/api/invoices/:id/payments", auth: { kind: "permission", permission: "invoices.manage" } },
+  { method: "POST", path: "/api/payments/:id/void", auth: { kind: "permission", permission: "invoices.manage" } },
   // 实时连接令牌（#110 切片 2）：把调用者自己会话的令牌发还给本人，WS auth
   // 帧用（cookie HttpOnly，浏览器拿不到）——session 门，令牌即会话本身
   { method: "GET", path: "/api/realtime/token", auth: { kind: "session" } },
