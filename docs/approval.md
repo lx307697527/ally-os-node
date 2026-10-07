@@ -201,8 +201,16 @@ strict 收口 `name`/`levels`/`active`）。纪律与 numbering PATCH 同构：�
 用保存面同一道 zod；subjectType/configKey 不在快照——回滚「别的键」是语义
 错误）。`POST /api/config-versions/approval_config/:id/rollback` 从 409
 `rollback_unsupported` 变为可用：回滚 = 前滚一个 `rolled_back` 新版本，历史
-不改写；审批线无草稿面（drafts 仍答 409 `publish_unsupported`——就地 PATCH
-即生效，不需要第二层）。
+不改写。
+
+**草稿契约随 #226 切片 3 开放**：审批线的「先试后上」= 在旧线上离线改一版
+levels——`PUT /api/config-drafts/approval_config/:id` 存草稿（内容过与
+POST/PATCH 同一道 `approvalLevelsSchema`，name 同 PATCH 收口；形状 = 快照
+{ name, levels, active } 整体替换），GET 草稿答相对现状的顶层差异，
+`POST .../publish` 前滚一个 `published` 新版本（`config.published` 审计随
+档）。发布只改**之后提交**走的路线：在飞请求带提交时刻的级别快照，改版、
+发布、回滚都不改写在飞请求的审批人（集成测试钉住：发布换审批人后，旧请求
+仍在原审批人待办、可照常裁决，新提交走新路线）。
 
 **Web 配置页**：`/system/approvals`（System 区「Approval lines」，服务端
 `approval.configure` 门、403 页面直说）。列表（subject type / key / name /

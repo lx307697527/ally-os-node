@@ -12,9 +12,8 @@ import type { Permission } from "../authz/permissions.ts";
  * 注册。注册同时声明读史/回滚走的权限点：配置版本属于各族配置的一部分，回滚
  * = 改配置，不能比配置面本身更宽松（动态按族裁决，不用单一权限点一刀切）。
  *
- * applyRevision 缺省 = 该族尚无就地改写路径（approval 的内容端点在 #221 后续
- * 切片），回滚端点对其答 409 rollback_unsupported——宁可明确说「这族
- * 还回滚不了」，不假装成功。
+ * applyRevision 缺省 = 该族尚无就地改写路径（夹具、未来新族未接前），回滚端点
+ * 对其答 409 rollback_unsupported——宁可明确说「这族还不能」，不假装成功。
  */
 
 /** 事务内写台账/回滚/草稿用的最小连接面（调用方传 db 或 db.transaction 的 tx 都满足） */
@@ -63,9 +62,10 @@ export interface ConfigSubjectSpec {
    * 草稿内容契约（#226 切片 2：draft → publish）。形状 = 该族快照的同一形状
    * （用户可编辑内容），但校验强度对齐各族配置面的**业务**校验（不只 JSONB
    * 结构）——草稿存进去的必须是「发布后能直接生效」的内容，发布面不做比保存
-   * 面更弱的第二次放行。缺省 = 该族没有内容改写路径（approval），草稿
-   * 与发布端点对它答 409 publish_unsupported，与回滚的 rollback_unsupported
-   * 同一裁法：宁可明说「这族还不能」，不假装成功。
+   * 面更弱的第二次放行。缺省 = 该族没有草稿面（registry_rule 刻意不带：定时
+   * 生效是它的「先试后上」，见 #233），草稿与发布端点对它答 409
+   * publish_unsupported，与回滚的 rollback_unsupported 同一裁法：宁可明说
+   * 「这族还不能」，不假装成功。
    */
   draftContentSchema?: z.ZodType<Record<string, unknown>>;
 }
