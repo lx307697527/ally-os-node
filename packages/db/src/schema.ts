@@ -774,7 +774,9 @@ export const customFieldValues = pgTable(
       .notNull()
       .references(() => customFieldDefs.id),
     // 形状由 service 层按字段定义的 zod 校验后入库（number/boolean/date/select
-    // 不可能是别的形状；text 上限 10k）；null = 显式清值（仅可选字段）
+    // 不可能是别的形状；text 上限 10k）。NOT NULL 是跨模块契约：行在场即有 JSON
+    // 值，行不在场 = 未填或已清（可选字段的显式 null 走删行，不存 SQL NULL——
+    // worker 的 custom_field 条件块按「没写过值」同一档裁决）
     value: jsonb("value").$type<unknown>().notNull(),
     updatedById: uuid("updated_by_id").references(() => authUser.id, { onDelete: "set null" }),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),

@@ -105,8 +105,18 @@ export interface ValueIssue {
   detail?: string;
 }
 
+/**
+ * 一条已解析的字段写入：可选字段的显式 null 解析成 clear（删值行）而不是
+ * value: null——值列 NOT NULL（worker 的 custom_field 条件块依赖「行在场即有
+ * JSON 值」，sql null 撞约束是 23502），「未填」与「已清」共用行不在场这一态。
+ * 调用方按 action 分支落库，联合形状让漏掉 clear 分支在类型层就编不过。
+ */
+export type ValueWrite =
+  | { action: "set"; def: CustomFieldDefLike; value: unknown }
+  | { action: "clear"; def: CustomFieldDefLike };
+
 export type ValueParseResult =
-  | { ok: true; writes: { def: CustomFieldDefLike; value: unknown }[] }
+  | { ok: true; writes: ValueWrite[] }
   | { ok: false; issues: ValueIssue[] };
 
 /**
@@ -115,10 +125,11 @@ export type ValueParseResult =
  * - 「对该角色可见」的必填字段必须出现在提交里——例外：对该角色不可见的必填
  *   字段不强制（不能要求提交者填一个看不见的字段；这类配置本身应配成可见），
  *   属主域在做整单校验时可以用管理员语境调本函数拿到全域视角；
- * - 提供了值的按字段 zod 逐个校验；可选字段缺省 = 不改既有值，显式 null = 清值。
+ * - 提供了值的按字段 zod 逐个校验；可选字段缺省 = 不改既有值，显式 null = 清值
+ *   （删值行，见 ValueWrite）。
  *
- * 返回 writes（def + 已解析的值）而不是直接写库：调用方决定事务边界（多行
- * upsert 与审计同事务）。
+ * 返回 writes（set/clear 判别联合）而不是直接写库：调用方决定事务边界（多行
+ * upsert / 删行与审计同事务）。
  */
 export function parseValueSubmission(
   defs: readonly CustomFieldDefLike[],
@@ -132,7 +143,7 @@ export function parseValueSubmission(
   const values = parsed.data;
   const byKey = new Map(defs.map((def) => [def.fieldKey, def]));
   const issues: ValueIssue[] = [];
-  const writes: { def: CustomFieldDefLike; value: unknown }[] = [];
+  const writes: ValueWrite[] = [];
 
   for (const [key, value] of Object.entries(values)) {
     const def = byKey.get(key);
@@ -154,7 +165,12 @@ export function parseValueSubmission(
       });
       continue;
     }
-    writes.push({ def, value: parsedValue.data });
+    // 可选字段的显式 null（进程内接缝传入的 undefined 同义）= 清值
+    if (parsedValue.data === null || parsedValue.data === undefined) {
+      writes.push({ action: "clear", def });
+    } else {
+      writes.push({ action: "set", def, value: parsedValue.data });
+    }
   }
 
   // 必填检查只对「可见且可写」的字段强制：可见但被 editableBy 挡住的必填字段是

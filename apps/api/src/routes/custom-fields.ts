@@ -348,7 +348,23 @@ export function customFieldsRoutes(deps: { db: Db; logger: Logger }) {
       return c.json({ error: "invalid_values", issues: result.issues }, 422);
     }
     const updated = await deps.db.transaction(async (tx) => {
+      const clearedFieldKeys: string[] = [];
       for (const write of result.writes) {
+        if (write.action === "clear") {
+          // 显式 null 清值 = 删值行，不是写 SQL NULL：值列 NOT NULL（worker 的
+          // custom_field 条件块依赖「行在场即有 JSON 值」），行不在场 = 未填或已清
+          await tx
+            .delete(schema.customFieldValues)
+            .where(
+              and(
+                eq(schema.customFieldValues.subjectType, subjectType),
+                eq(schema.customFieldValues.subjectId, subjectId.data),
+                eq(schema.customFieldValues.fieldDefId, write.def.id),
+              ),
+            );
+          clearedFieldKeys.push(write.def.fieldKey);
+          continue;
+        }
         await tx
           .insert(schema.customFieldValues)
           .values({
@@ -380,6 +396,7 @@ export function customFieldsRoutes(deps: { db: Db; logger: Logger }) {
           subjectId: subjectId.data,
           title: subject.title,
           fieldKeys: result.writes.map((write) => write.def.fieldKey),
+          ...(clearedFieldKeys.length > 0 ? { clearedFieldKeys } : {}),
         },
       });
       return result.writes.length;

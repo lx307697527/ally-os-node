@@ -91,7 +91,8 @@
   `custom_fields.values_updated`（字段值提交 #222；target = subject id，
   detail 记 `subjectType`/`subjectId`/`title`/`fieldKeys`——subject 引用在
   detail，进对象的活动流时间线；值行本身可 upsert，审计行记「谁在何时写了
-  哪些键」）、
+  哪些键」；提交含显式 null 清值（= 删值行）时 detail 另记
+  `clearedFieldKeys`，「这值为什么没了」沿审计流可查）、
   `automations.rule_created`/`automations.rule_updated`/`automations.rule_deleted`
   （自动化规则 #224；target = 规则行 id，detail 记 `name` 与 spec 摘要
   （trigger/conditions/actions），spec 变更再记 `version`/`from`/`to`——规则的
