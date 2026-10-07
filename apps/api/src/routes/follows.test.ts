@@ -63,6 +63,7 @@ describe.skipIf(!databaseUrl)("follow endpoints (#110 slice 4, integration)", ()
   const nudged: string[][] = [];
 
   const app = createApp({
+    stripe: undefined,
     logger,
     db,
     corsOrigins: ["http://localhost:5173"],

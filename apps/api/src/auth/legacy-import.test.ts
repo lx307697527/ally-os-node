@@ -67,6 +67,7 @@ describe.skipIf(!databaseUrl)("legacy user import (#22 slice 5, integration)", (
     logger,
   });
   const app = createApp({
+    stripe: undefined,
     logger,
     db,
     corsOrigins: ["http://localhost:5173"],

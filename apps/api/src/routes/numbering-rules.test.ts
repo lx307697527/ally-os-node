@@ -80,6 +80,7 @@ describe.skipIf(!databaseUrl)("numbering rule endpoints (#225 slice 1, integrati
   admin.pool.on("error", () => {});
 
   const app = createApp({
+    stripe: undefined,
     logger,
     db,
     corsOrigins: ["http://localhost:5173"],

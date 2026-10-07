@@ -119,6 +119,7 @@ describe.skipIf(!databaseUrl)("config drafts: draft → one-click publish (#226 
   admin.pool.on("error", () => {});
 
   const app = createApp({
+    stripe: undefined,
     logger,
     db,
     corsOrigins: ["http://localhost:5173"],

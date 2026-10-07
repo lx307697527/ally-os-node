@@ -47,6 +47,7 @@ describe.skipIf(!databaseUrl)("shadow account: CRM 预建用户 (#25, integratio
     logger,
   });
   const app = createApp({
+    stripe: undefined,
     logger,
     db,
     corsOrigins: ["http://localhost:5173"],

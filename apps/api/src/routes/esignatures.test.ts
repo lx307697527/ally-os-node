@@ -98,6 +98,7 @@ describe.skipIf(!databaseUrl)("esignatures route (#219, integration)", () => {
     logger,
   });
   const app = createApp({
+    stripe: undefined,
     logger,
     db,
     corsOrigins: ["http://localhost:5173"],

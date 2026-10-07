@@ -170,14 +170,78 @@ webhook 消费面是 #193。
 子查询会被内层表影子化,实测 total 恒 0,故不用)。付款态错误码:409 表示
 「票/款在但状态不允许」,与发票端点同一约定。
 
+## 已落地:Stripe 渠道(#193)
+
+设计权威:#232 §10「Stripe / PayPal 以 webhook 为准,幂等记账并自动匹配发票」;
+付款方式信用卡走 Stripe(R-12-1)。issue:#193;记账本体是上节的 recordPayment
+接缝,本渠道是它的第一个消费方。
+
+### 渠道内核(billing/stripe.ts)
+
+- **无 SDK,fetch 适配器**(mailer 同裁):`StripeGateway` 是域内接口,生产实现
+  POST 表单到 `checkout/sessions`,响应 zod 校验;测试注入假网关。一个调用不值得
+  引入 SDK 依赖,业务代码不见 HTTP 细节(AGENTS.md「依赖注入、无厂商锁定」)。
+- **先验签后解析**(老系统同一铁律):HMAC 只对原始字节有意义,先 parse 就给了
+  「改字段带旧签名」的口子。`Stripe-Signature` 的 HMAC-SHA256 用 node:crypto
+  常数时间比较,密钥轮换的多 v1 候选任一命中即过;300 秒重放窗双向拒绝
+  (垃圾时间戳 NaN 用正向提问 `<= window` 读成「不新鲜」,fail closed 方向,
+  老系统同款注释)。
+- **金额无客户端入口**(#193 验收「篡改金额被拒」的结构性答案):checkout session
+  的金额 = 发票行实时合计(发出后行锁定),币种从发票行抄录;webhook 记的金额 =
+  事件里的 `amount_received ?? amount_total`(Stripe 签过名的银行事实)。全程
+  没有一个字段叫「客户端提交的金额」。
+- **幂等键 = payment_intent ?? 对象 id**:completed 与 succeeded 对同一笔钱各发
+  一次,externalId 归一到 PaymentIntent(银行借记无 intent 回退 session id),
+  第二发撞 `payments_source_idx` → `PaymentExistsError` → 200「已记账成功」。
+- **事件信封 zod 收口**:paid 事件缺可信整数金额 / 缺外部 id → unparsable(502,
+  拿不准的钱不确认);metadata 缺 invoice_id → 200 ack(不是本系统建的 session,
+  认领面随 #181 进场);invoice_id 非 UUID(有人在 Stripe 侧动过元数据)→ 502 响。
+  失败类(async_payment_failed / payment_failed)与退款类(refund.*,#240 流程)
+  显式 no-op。
+
+### 端点与响应契约
+
+| 方法与路径 | 门 | 语义 |
+| --- | --- | --- |
+| `POST /api/invoices/:id/stripe-checkout` | invoices.manage | 给已发出的票建支付链接(财务过渡面);409 `not_issued` / `invoice_voided` / `nothing_to_collect`($0 票无可收);渠道未配置 500 `misconfigured` |
+| `POST /api/webhooks/stripe` | Stripe-Signature 验签 | provider 面,挂在会话中间件**之前**(Stripe 无本系统会话,验签即认证);POST-only 405 |
+
+checkout 的 success/cancel 回跳 = `${WEB_APP_URL}/portal/invoices/:id`,成功带
+`{CHECKOUT_SESSION_ID}` 占位符;**付款状态以 webhook 为准,回跳页只做提示**
+(#193 要点原文)。WEB_APP_URL 随渠道启用成为必配(@ally/config 成对校验,Google
+同裁:只配一个启动即失败)。
+
+webhook 响应契约(Stripe 按非 2xx 重投):
+
+- **200** `received: true`——记账成功 / 幂等重放 / 无关事件 / 无锚点入账;
+- **502**——钱到了但这边记不了:票未确认(`not_issued`)、已作废
+  (`invoice_voided`)、找不到(`invoice_not_found`)、事件读不出可信金额。
+  **绝不 2xx 确认记不了的钱**——确认一次,Stripe 永远不再投,这笔钱就丢了;
+  502 让 provider 重试,等财务确认(R-12-6 人的闸门,webhook 靠重试跨过它)。
+  集成测试钉住整条链:草稿票 502 → confirm → 重投 200 paid。
+
+审计与记账**同事务**(webhook 面):recordPayment + `payment.recorded`(actor
+null,detail 带 `eventType`)一个 commit——「钱记了、审计没了」的中间态不存在,
+重投从原点重来。财务面的手工记账(现有端点)审计在事务外,行为不变。
+
+### 门户与渠道的分工(现状)
+
+客户门户(M1 #186)还没有登录身份与发票归属映射(发票 → 客户要等订单域 #231
+给出 subject 锚点),「支付他人发票被拒」的归属门随门户面进场;本切片把同一
+服务路径先开给财务(invoices.manage)——财务确认后把链接发给客户是当下就成立
+的收款动作。门户将来复用同一 `StripeGateway`,不新增第二套建会话的路径。
+
 ## 剩余(#192 保持 open,Part of #192)
 
 1. **触发点接线**(属主域各自进场):打样/调味费(#238)、定金(#231,比例
    50%–100%,低于 50% 走财务审批 R-08-2——审批线 #221 已可表达)、每批尾款
    (完工 + 实际产量 + 运营确认 R-11-6;结算量 = min(实际, 报价×110%),少产
    超 10% 拦开票 R-11-4)——调 `createDraftInvoice` 传 source 幂等键;
-2. Stripe/PayPal webhook(#193,记账接缝已就绪:验签后调 `recordPayment`)、
-   附加费规则(R-12-2/3,规则注册表 #233 已就绪);
+2. Stripe webhook 已落地(#193:checkout 链接 + 验签消费 + 幂等记账);剩
+   PayPal 渠道(同一接缝,sourceType paypal)、附加费规则(R-12-2/3,规则注册表
+   #233 已就绪,session 金额带 principal/surcharge 拆分——老系统 splitSurchargedCapture
+   的教训带过去)、失败付款/银行借记拒付的站内提醒(老系统 Sentry/Slack 分流在新
+   系统走通知域);
 3. 到期前提醒(R-12-7,渠道层 + due 扫描)、收款状态回写订单/批次(#241 发货
    门槛,读 `computePaymentStatus`)、QuickBooks 推送(#181,含银行流水认领)、
    第一笔款到账转正式客户(R-02-5)等收款触发业务;
