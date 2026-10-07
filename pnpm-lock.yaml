@@ -50,6 +50,9 @@ importers:
       '@ally/realtime':
         specifier: workspace:*
         version: link:../../packages/realtime
+      '@ally/storage':
+        specifier: workspace:*
+        version: link:../../packages/storage
       '@gorules/zen-engine':
         specifier: ^2.1.2
         version: 2.1.2(@emnapi/core@1.11.3)(@emnapi/runtime@1.11.3)
