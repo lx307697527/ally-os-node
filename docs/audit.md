@@ -118,6 +118,13 @@
   记 `fields: ["lines"]`（草稿换行整体替换，无实效变更的幂等 PATCH 不落此行）；
   confirmed 记财务确认时刻的金额（R-12-6「谁确认发出了多少」的查询面）；voided
   另记可选 `reason`——作废只对草稿，已发出的票走后续的红冲动词）、
+  `payment.recorded`/`payment.voided`
+  （收款台账 #192 切片 2；target = 收款行 id，detail 恒记 `invoiceId`/
+  `invoiceNumber`（钱挂在哪张票上）、`amountCents`/`method` 与记账/作废后该票
+  的 `paymentStatus`/`paidCents`（实时付款态——**门槛跨越的事实在此**：
+  「尾款到账→该批可发货」（R-12-4）等收款触发业务的消费域沿这条审计行接线）；
+  recorded 另记 webhook 幂等键 `sourceType`/`sourceKey`（有则记）；voided 另记
+  必填 `reason`（误录更正要说清为什么）——退款不在此词表，是 #240 的独立流程）、
   状态变更类动作在 detail 里带 `from`/`to`（如
   `{ from: "new", to: "contacted" }`），日志页详情列原样展示。
 - detail 放变更细节（授予/撤销了什么、从哪到哪、审批裁决等），不放大对象全文

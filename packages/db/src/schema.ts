@@ -1256,10 +1256,11 @@ export const rulesEffectDigestRuns = pgTable("rules_effect_digest_runs", {
 //    「先查后插」。两列 null 的手工票不受约束（PG NULLS DISTINCT）。
 //
 // 状态机刻意只有三态：draft → issued（财务确认，R-12-6「确认后发出」）、
-// draft → void（作废）。paid/partially_paid 随收款切片（#193 webhook 面）
-// expand 进场；issued 行不可再改——更正/贷项（红冲）是 #192 后续切片的
-// 新动词，不改写已发出的行。收件人通知（到期提醒 R-12-7）随客户门户与
-// 渠道层接线，本内核零通知——没有收件人的邮件不存在。
+// draft → void（作废）。付款态不 expand 进本枚举（0023 时的预告被收款切片
+// 推翻，裁决见 payments 表注释）：invoice_status 只回答「单据走到哪一步」，
+// 「钱收了多少」是收款台账对实时 SUM 的回答。issued 行不可再改——更正/贷项
+// （红冲）是 #192 后续切片的新动词，不改写已发出的行。收件人通知（到期提醒
+// R-12-7）随客户门户与渠道层接线，本内核零通知——没有收件人的邮件不存在。
 export const invoiceType = pgEnum("invoice_type", [
   "deposit", // 定金（R-08-2，#231）
   "balance", // 每批尾款（R-11-6，运费实报实销进尾款 R-10-4）
@@ -1331,4 +1332,64 @@ export const invoiceLines = pgTable(
       .generatedAlwaysAs(sql`round(quantity * unit_price_cents)`),
   },
   (t) => [index("invoice_lines_invoice_id_idx").on(t.invoiceId, t.lineNumber)],
+);
+
+// ── 收款台账（#192 切片 2：收款与 paid 态）────────────────────────────────────
+// #232 §10「Stripe / PayPal 以 webhook 为准，幂等记账并自动匹配发票」。老系统
+// 对照 billing.payments（UNIQUE(provider, external_id) 幂等）+ record_payment_atomic
+// （到账推进 invoice_status：draft 自动跳 sent、按 SUM 落 paid/partially_paid）。
+// 本内核与老系统的三处刻意差异：
+//
+// 1. **付款态是派生值，不落 invoice_status**（老系统 paid/partially_paid 快照列
+//    的裁决被推翻）：付款态 = f(发票合计, 有效收款 SUM) 的纯函数，两个输入各自
+//    结构性无漂移（行合计是生成列、发出后行锁定；收款行只增不删、更正走 void）。
+//    落列则每个写方都要记得重算——漏一个写方就是一条卡在「paid」的发票，财务
+//    会信它（老 bug554 快照漂移家族的收款版）。门槛跨越的「事实」由审计携带
+//    （payment.recorded 的 paymentStatus），#241 发货门槛等消费方读共享的
+//    computePaymentStatus，不各算各的。
+// 2. **到账不自动推进发票状态**：老系统收到款把 draft 票自动跳 sent 再落 paid。
+//    本系统财务确认（R-12-6「核对后发出」）是人的闸门，到账不替财务放行——
+//    对 draft/void 票记账 fail closed（409 not_issued / invoice_voided），
+//    webhook 面靠 provider 重试等财务确认（老系统「未知发票返回 NULL 让
+//    provider 重试」同一去向）。
+// 3. **金额整数分**（发票同裁），method 用 R-12-1 的三种付款方式（不收支票），
+//    currency 从发票行原样抄录（收款行自描述，#181 QuickBooks 推送的路标）。
+//
+// source 幂等与发票同构：(source_type, source_key) 唯一索引，webhook 重放在
+// 结构上只可能有一行（#193 的 webhook 层把 PaymentExistsError 当「已记账成功」，
+// HTTP 面映射 409）；手工记账两列皆 null 不受约束（PG NULLS DISTINCT）。
+// 更正动词是 void（带原因、留审计、SUM 剔除），钱行永不 DELETE/改写——
+// 退款是 #240 的独立流程（原路退回），不是对本行的冲销。
+export const paymentMethod = pgEnum("payment_method", [
+  "card", // 信用卡（Stripe，附加费 R-12-2/3 随 #193）
+  "paypal", // PayPal（附加费 R-12-2/3 随 #193）
+  "wire_ach", // 电汇 / ACH（#181 银行流水认领）
+]);
+
+export const payments = pgTable(
+  "payments",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    invoiceId: uuid("invoice_id").notNull().references(() => invoices.id),
+    method: paymentMethod("method").notNull(),
+    amountCents: integer("amount_cents").notNull(),
+    currency: text("currency").notNull().default("USD"),
+    sourceType: text("source_type"),
+    sourceKey: text("source_key"),
+    // 钱实际到账的时刻（电汇可能是昨天到的，记账是今天）——路由收口不未来
+    receivedAt: timestamp("received_at", { withTimezone: true }).notNull(),
+    note: text("note"),
+    // webhook 记账无用户上下文（#193），null；手工记账是财务本人
+    recordedById: uuid("recorded_by_id").references(() => authUser.id, { onDelete: "set null" }),
+    voidedAt: timestamp("voided_at", { withTimezone: true }),
+    voidedById: uuid("voided_by_id").references(() => authUser.id, { onDelete: "set null" }),
+    voidReason: text("void_reason"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    // 财务「这张票收了哪些款」主读法；发票无删除路径（只 void），NO ACTION 即底线
+    index("payments_invoice_id_idx").on(t.invoiceId),
+    // webhook 幂等（见上）；手工行 (null, null) 不受约束
+    uniqueIndex("payments_source_idx").on(t.sourceType, t.sourceKey),
+  ],
 );
