@@ -86,6 +86,27 @@ describe("automations page rulings (#224)", () => {
     expect(collapsedPage).toContain("a deleted recipient fails the action");
   });
 
+  it("send_webhook 编辑面把目标与投递裁决说在前头:https 公网、执行时含 DNS 复查、at-least-once", () => {
+    // 类型进选择器,编辑器/展示各有结构化分支
+    expect(page).toContain('<option value="send_webhook">Webhook (outbound)</option>');
+    expect(page).toContain('data-testid="automations-action-send-webhook"');
+    expect(page).toContain("automations-${prefix}-action-webhook-url");
+    expect(page).toContain("automations-${prefix}-action-webhook-method");
+    expect(page).toContain("automations-${prefix}-action-webhook-headers");
+    expect(page).toContain("automations-${prefix}-action-webhook-body");
+    // SSRF 闸在配置面就有答案:保存闸 + 执行时复查(含 DNS 逐地址)
+    expect(collapsedPage).toContain("The target must be https on a public host");
+    expect(collapsedPage).toContain("loopback, private ranges, and *.local / *.internal names are refused");
+    expect(collapsedPage).toContain("re-checked (DNS included, every resolved address) at send time");
+    // at-least-once 的重复窗口说在前头;负载是保存时点死的静态 JSON,无模板
+    expect(collapsedPage).toContain("the same payload may arrive twice");
+    expect(collapsedPage).toContain("exactly as saved — no templating");
+    // headers 里的密钥不进运行错误
+    expect(collapsedPage).toContain("never appear in run errors");
+    // client 侧 buildActions 只挡明显坏形,服务端 zod 仍是唯一权威
+    expect(client).toContain("needs an https URL on a public host");
+  });
+
   it("写失败按内核 reason 说话,编辑区分「无实效变化」与「真变更」", () => {
     expect(collapsedPage).toContain("No effective change — version");
     expect(collapsedPage).toContain("is live now, the ledger has the change");

@@ -418,6 +418,64 @@ describe("spec draft round trip (#224)", () => {
     );
   });
 
+  it("send_webhook: drafts structured, builds the config, and round-trips through the edit form", () => {
+    const spec = {
+      trigger: { kind: "event", action: "approval.completed" },
+      conditions: [],
+      actions: [
+        {
+          type: "send_webhook",
+          config: {
+            url: "https://hooks.example.com/services/ally/123",
+            method: "POST",
+            headers: { authorization: "Bearer tok_abc" },
+            body: { event: "approval.completed" },
+          },
+        },
+      ],
+    };
+    const draft = specToDraft(spec);
+    expect(draft.actions[0]).toEqual({
+      type: "send_webhook",
+      url: "https://hooks.example.com/services/ally/123",
+      method: "POST",
+      headersText: "authorization: Bearer tok_abc",
+      bodyText: JSON.stringify({ event: "approval.completed" }, null, 2),
+    });
+    expect(buildActions(draft.actions)).toEqual({ ok: true, value: spec.actions });
+
+    // 无 headers / 无 body 的最小形状往返(method 缺省按 POST 处理)
+    const minimal = specToDraft({
+      trigger: { kind: "event", action: "x" },
+      conditions: [],
+      actions: [{ type: "send_webhook", config: { url: "https://hooks.example.com/hook", method: "PUT" } }],
+    });
+    expect(minimal.actions[0]).toEqual({
+      type: "send_webhook",
+      url: "https://hooks.example.com/hook",
+      method: "PUT",
+      headersText: "",
+      bodyText: "",
+    });
+    expect(buildActions(minimal.actions)).toEqual({
+      ok: true,
+      value: [{ type: "send_webhook", config: { url: "https://hooks.example.com/hook", method: "PUT" } }],
+    });
+
+    expectError(
+      buildActions([{ type: "send_webhook", url: " ", method: "POST", headersText: "", bodyText: "" }]),
+      /needs an https URL/,
+    );
+    expectError(
+      buildActions([{ type: "send_webhook", url: "https://example.com/h", method: "POST", headersText: "NoColon", bodyText: "" }]),
+      /Name: Value/,
+    );
+    expectError(
+      buildActions([{ type: "send_webhook", url: "https://example.com/h", method: "POST", headersText: "", bodyText: "{broken" }]),
+      /not valid JSON/,
+    );
+  });
+
   it("buildSpec: composes the three builders; first failure wins", () => {
     const good = emptySpecDraft();
     good.trigger = { kind: "event", action: "task.created" };

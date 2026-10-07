@@ -5,6 +5,7 @@ import {
   executeCreateTask,
   executeNotify,
   executeSendEmail,
+  executeSendWebhook,
   type ActionContext,
   type ActionDeps,
   type ActionServices,
@@ -163,6 +164,9 @@ export async function runAutomationRun(deps: ActionDeps, data: AutomationRunJobD
               break;
             case "send_email":
               result = await executeSendEmail(tx, services, rule.ctx, action);
+              break;
+            case "send_webhook":
+              result = await executeSendWebhook(services, rule.ctx, action);
               break;
           }
           await tx

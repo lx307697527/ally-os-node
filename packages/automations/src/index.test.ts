@@ -253,6 +253,119 @@ describe("ruleSpecSchema", () => {
         .success,
     ).toBe(false);
   });
+
+  it("accepts a send_webhook action to a public https host, method defaults to POST", () => {
+    const parsed = ruleSpecSchema.safeParse({
+      trigger: { kind: "event", action: "approval.completed" },
+      actions: [
+        {
+          type: "send_webhook",
+          config: {
+            url: "https://hooks.example.com/services/ally/123",
+            headers: { authorization: "Bearer secret-token", "x-ally-rule": "approval-done" },
+            body: { event: "approval.completed", id: "a-1" },
+          },
+        },
+      ],
+    });
+    expect(parsed.success).toBe(true);
+    if (parsed.success) {
+      const action = parsed.data.actions[0];
+      expect(
+        action?.type === "send_webhook" ? action.config.method : undefined,
+      ).toBe("POST");
+    }
+  });
+
+  it("accepts PUT/PATCH methods and public IPv6 literals", () => {
+    const parse = (config: Record<string, unknown>) =>
+      ruleSpecSchema.safeParse({
+        trigger: { kind: "event", action: "x" },
+        actions: [{ type: "send_webhook", config: { url: "https://example.com/hook", ...config } }],
+      });
+    expect(parse({ method: "PUT" }).success).toBe(true);
+    expect(parse({ method: "PATCH" }).success).toBe(true);
+    expect(parse({ url: "https://[2606:4700::6810:85e5]/hook", method: "POST" }).success).toBe(true);
+  });
+
+  it("rejects a send_webhook action whose url is not https or points at a private host", () => {
+    const parse = (url: string) =>
+      ruleSpecSchema.safeParse({
+        trigger: { kind: "event", action: "x" },
+        actions: [{ type: "send_webhook", config: { url } }],
+      });
+    // 明文 http 不过闸：负载可能带密钥，出站一律加密
+    expect(parse("http://hooks.example.com/hook").success).toBe(false);
+    // 回环与本机名
+    expect(parse("https://localhost/hook").success).toBe(false);
+    expect(parse("https://sub.localhost/hook").success).toBe(false);
+    expect(parse("https://127.0.0.1/hook").success).toBe(false);
+    expect(parse("https://[::1]/hook").success).toBe(false);
+    expect(parse("https://[::]/hook").success).toBe(false);
+    // 私网段（RFC1918、CGNAT、链路本地含云元数据、ULA、基准测试、0/8）
+    expect(parse("https://10.1.2.3/hook").success).toBe(false);
+    expect(parse("https://172.16.0.9/hook").success).toBe(false);
+    expect(parse("https://172.31.255.1/hook").success).toBe(false);
+    expect(parse("https://192.168.1.1/hook").success).toBe(false);
+    expect(parse("https://100.64.0.1/hook").success).toBe(false);
+    expect(parse("https://169.254.169.254/latest/meta-data/").success).toBe(false);
+    expect(parse("https://[fc00::1]/hook").success).toBe(false);
+    expect(parse("https://[fd12:3456::1]/hook").success).toBe(false);
+    expect(parse("https://[fe80::1]/hook").success).toBe(false);
+    expect(parse("https://[::ffff:10.0.0.5]/hook").success).toBe(false);
+    expect(parse("https://198.18.0.1/hook").success).toBe(false);
+    expect(parse("https://0.0.0.0/hook").success).toBe(false);
+    // mDNS / 内部解析域
+    expect(parse("https://printer.local/hook").success).toBe(false);
+    expect(parse("https://db.internal/hook").success).toBe(false);
+    // 垃圾 url
+    expect(parse("not a url").success).toBe(false);
+    expect(parse("ftp://hooks.example.com/hook").success).toBe(false);
+    // url 是唯一必填:缺了就拒
+    expect(
+      ruleSpecSchema.safeParse({
+        trigger: { kind: "event", action: "x" },
+        actions: [{ type: "send_webhook", config: {} }],
+      }).success,
+    ).toBe(false);
+    // WHATWG URL 的 IPv4 规范化:十六进制/缩写变体落成点分十进制后照样过闸
+    expect(parse("https://0x7f000001/hook").success).toBe(false);
+    expect(parse("https://2130706433/hook").success).toBe(false);
+  });
+
+  it("rejects send_webhook headers with injection-shaped values, bad names, or more than ten", () => {
+    const parse = (headers: unknown) =>
+      ruleSpecSchema.safeParse({
+        trigger: { kind: "event", action: "x" },
+        actions: [{ type: "send_webhook", config: { url: "https://hooks.example.com/hook", headers } }],
+      });
+    // 值里带 CR/LF/NUL = 头部注入
+    expect(parse({ "x-ok": "value\r\nX-Evil: injected" }).success).toBe(false);
+    expect(parse({ "x-ok": "line1\nline2" }).success).toBe(false);
+    expect(parse({ "x-ok": "null\u0000byte" }).success).toBe(false);
+    // 名字必须是 RFC 7230 token:冒号、空格、控制字符进不了
+    expect(parse({ "x: y": "v" }).success).toBe(false);
+    expect(parse({ "bad name": "v" }).success).toBe(false);
+    expect(parse({ "": "v" }).success).toBe(false);
+    // 值长上界 1024
+    expect(parse({ "x-long": "a".repeat(1025) }).success).toBe(false);
+    expect(parse({ "x-ok": "a".repeat(1024) }).success).toBe(true);
+    // 最多 10 个头
+    const eleven = Object.fromEntries(Array.from({ length: 11 }, (_, i) => [`x-h${i}`, "v"]));
+    expect(parse(eleven).success).toBe(false);
+  });
+
+  it("rejects a send_webhook action with an unknown method", () => {
+    const parse = (method: string) =>
+      ruleSpecSchema.safeParse({
+        trigger: { kind: "event", action: "x" },
+        actions: [{ type: "send_webhook", config: { url: "https://hooks.example.com/hook", method } }],
+      });
+    expect(parse("GET").success).toBe(false);
+    expect(parse("DELETE").success).toBe(false);
+    // 出站 webhook 是写语义的调用,读方法不属于这个动作
+    expect(parse("post").success).toBe(false);
+  });
 });
 
 describe("AUTOMATION_ACTOR_PREFIX", () => {

@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { lookup } from "node:dns/promises";
 import type { PgBoss } from "pg-boss";
 import type { Logger } from "pino";
 import { z } from "zod";
@@ -39,6 +40,10 @@ export function automationJobs(deps: AutomationJobsDeps): JobDefinition[] {
     logger: deps.logger,
     instanceId: `automation-worker-${randomUUID()}`,
     mailer: deps.mailer,
+    // send_webhook 的出站接缝:全局 fetch + node:dns 解析(SSRF 闸的第二道,
+    // 集成测试注入假实现,这里没有可配置面)
+    webhookFetcher: fetch,
+    dnsLookup: (host) => lookup(host, { all: true }),
   };
   const sendRunJob = async (runId: string): Promise<void> => {
     // singletonKey 去重：同一 run 的执行任务在排队/在途时，重复发送自动忽略

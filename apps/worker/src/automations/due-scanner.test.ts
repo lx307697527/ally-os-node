@@ -66,6 +66,8 @@ describe.skipIf(!databaseUrl)("automation due scan (#224 slice 2, integration)",
     logger,
     instanceId: "worker-due-test",
     mailer: { send: () => Promise.resolve() },
+    webhookFetcher: () => Promise.resolve(new Response(null, { status: 200 })),
+    dnsLookup: () => Promise.resolve([{ address: "203.0.113.10", family: 4 }]),
   };
   const sendRunJob = (runId: string): Promise<void> => {
     sent.push(runId);
