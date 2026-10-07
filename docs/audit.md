@@ -45,6 +45,11 @@
   （R-16-6；直接执行 detail 记 `role`，经审批生效 detail 记
   `role`/`via: "approval"`/`requestId`/`submittedBy`，actor 记终审批准人）、
   `task.created`、`task.updated`（detail 记 `fields: [...]`）、`task.assigned`、
+  `task.deleted`（软删 #29 切片 2；target = 任务行 id，detail 记 `title`——删除
+  同事务落台账快照，见「删除记录」一节；删除不投递通知，理由见同节）、
+  `task.restored`（恢复 #29 切片 2；target = 任务行 id，detail 记 `title`/
+  `ledgerId` 与可选 `reason`——target 即 subject 引用，恢复后记录的活动流
+  能看到 deleted → restored 的完整圈）、
   `comment.created`（detail 记 `subjectType`/`subjectId`/`mentioned`）、
   `comment.updated`（#110 切片 5；detail 记 `subjectType`/`subjectId`/
   `fields: ["body"]`；正文未变的幂等提交不落此行）、
@@ -163,12 +168,48 @@
   正在断言的行）——需要空表的测试文件自开临时库（`routes/audit-events.test.ts`
   是样板），不需要空表的用带唯一前缀的行、不清理（`packages/db/src/index.test.ts`）。
 
+## 删除记录：软删 + 台账快照 + 恢复（#29 切片 2）
+
+issue 迁移要点「删除操作统一改为软删除 + 快照」与验收第 2 条「已删除的记录
+可以查看和恢复」的落点。老-老系统用触发器逐表抄行（176 个，新设计已抛弃），
+上一代老系统的 FEAT-527 商机软删明确把恢复划出边界（「本单边界：不做恢复」）
+——本切片把两半都补齐，形态是：
+
+| 部分 | 位置 | 说明 |
+| --- | --- | --- |
+| 软删列 | `tasks.deleted_at/deleted_by`（0030，expand-only） | 删除动词置列，**一切读面统一 `is null` 过滤**——行属也看不到已删行；恢复 = 清列 |
+| 台账 | `deleted_records`（同 migration） | 一行 = 一次删除的事实：谁删的、何时、删除时刻的全行快照（JSON 投影）。恢复不删台账行——原地补 `restored_*`，删除史是记录史的一部分（与审计同一纪律：发生过的事不改写） |
+| 写入口 | `apps/api/src/records/deleted-records.ts` `recordDeletion()` | 删除动词的业务事务显式调用，与 `recordAudit` 同一写纪律——失败则业务失败，不做静默降级 |
+| 恢复器注册表 | 同文件 + `records/task-restorer.ts` | 「怎么救一行」只有属主域知道（task = 清软删列，原子 UPDATE … WHERE deleted_at IS NOT NULL 收口并发）。未注册类型存得进、恢复必拒 409 `restore_unsupported`（fail closed，与 due 锚点/可写字段同一裁法）；属主域在新切片里照此注册 |
+| 端点 | `apps/api/src/routes/deleted-records.ts` | `GET /api/deleted-records`（列表 + 快照原样）与 `POST /api/deleted-records/:id/restore`，都在 `audit.read` 权限点后。恢复在台账行锁内进行：已恢复/未注册/行已不在各答各的 409（`restored_already`/`restore_unsupported`/`subject_missing`），恢复成功落属主域词表的审计（如 `task.restored`） |
+| 页面 | `apps/web/src/shared/pages/DeletedRecords.tsx` → `/system/deleted-records` | System 区第二页：删除时刻/类型/标题/删除人/状态 + 快照展开 + Restore。恢复冲突逐词翻译，四种读状态不撒谎（与审计页同一纪律） |
+
+**首个消费域是 task**（创建人动词 `DELETE /api/tasks/:id`）：任务是本仓库第一
+个有真实删除需求的记录域（评论是对话性内容、作者硬删是既定裁决，不翻案）。
+
+裁决三条：
+
+- **动词属创建人**（403 `delete_creator_only`）。经办人是受托执行——改内容/
+  状态、取消是经办人的逃生门；删除是行属对记录本身的处置。签名锁定与 PATCH
+  同门（#219）：签过名的记录一律拒改，删除是最彻底的改。
+- **删除不投递通知。**删除把可见性门关上（subjects/registry.ts 的 task 加载器
+  对软删行返回 null，评论/活动流/关注/自定义字段同一扇门一起关闭），投递只能
+  深链到 404 的详情页——给收件人一条点不开的通知比不通知更糟。误删的即时面
+  是 web 撤销窗（#129 的 undo-window 机制在此第一次接上业务面：行先出列表，
+  撤销窗到期才发 DELETE，撤销免费），事后面是本恢复台。
+- **门在 `audit.read`。**恢复是「把全公司可见性已关闭的行重新打开」的合规面
+  动词，查看与恢复同门（owner/admin 默认持有）；不随第一个消费域给行属开
+  Trash 入口——那是真实需求出现时属主域自己的面，门自己配。
+
+worker 侧同一纪律：due 扫描、规则待填提醒对账、update_field 行锁读对软删行
+一律按不存在处理（删掉的任务不再触发自动化、提醒可重建、改已删行 fail loud）。
+
 ## 剩余（#29 后续切片）
 
 - 业务域接线：每个域的真实变更调 `recordAudit`（第一个是 #227 线索状态变更，
   detail 带 from/to）——验收「修改线索状态、删除记录后日志页可见」随之可验。
-- 删除记录 + 快照 + 恢复：软删除基础设施随第一个有真实删除的业务域落地
-  （快照进 deleted-records,恢复走 API,全记审计）。
+- ~~删除记录 + 快照 + 恢复~~：已随切片 2 落地（首个消费域 task，见下一节）；
+  新业务域要删除动词时照同一形态接入（软删列 + recordDeletion + 恢复器注册）。
 - 状态变更日志投影（老 `crm.status_change_log` 的对应物）：状态变更行多了以后
   的跨记录读法,随 CRM 域评估是视图还是查询端点。
 - 按表触发的兜底审计:随 Part 11 监管表(#203/#204)逐表评估,评估记录回本文件。
