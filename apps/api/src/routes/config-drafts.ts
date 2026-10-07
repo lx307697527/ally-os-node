@@ -29,11 +29,12 @@ import { ConfigSubjectNotFoundError } from "../config-versions/service.ts";
  * 端点全部在「各族配置面的同一权限点」后面（与 config-versions 的动态按族裁
  * 决共用 config-versions/http.ts 的检查）——存草稿/发发布 = 改那族的配置。
  *
- * 错误码与回滚面同一风格：未注册族 404 unregistered_subject；无内容改写路径的
- * 族（approval）409 publish_unsupported——宁可明说「这族还不能」，
- * 不假装成功；草稿过期 409 draft_stale（重存后再发，无盲发）；发布内容与现状
- * 一致 409 publish_no_change（不记假变更）；台账唯一索引兜住的并发发布撞号转
- * 409 publish_conflict（fail loud 的竞态给可重试的语义）。
+ * 错误码与回滚面同一风格：未注册族 404 unregistered_subject；无草稿面的族
+ * （registry_rule：定时生效是它的「先试后上」，见 #233）409
+ * publish_unsupported——宁可明说「这族还不能」，不假装成功；草稿过期 409
+ * draft_stale（重存后再发，无盲发）；发布内容与现状一致 409 publish_no_change
+ * （不记假变更）；台账唯一索引兜住的并发发布撞号转 409 publish_conflict
+ * （fail loud 的竞态给可重试的语义）。
  *
  * 发布是写操作：事务里 applyRevision + 记一版 published + 删草稿，提交后写审计
  * （config.published，带 reason/草稿 note 可选）——审计失败照全局纪律让操作失败。

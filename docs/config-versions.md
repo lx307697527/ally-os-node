@@ -51,7 +51,8 @@
   的内容必须过该族草稿契约（`draftContentSchema`，registry 接缝）——形状 =
   快照形状（strict，未知键 400），校验强度 = 各族配置面的**业务**校验
   （automation 复用 `ruleSpecSchema`、custom-field 带 select 选项规则、
-  numbering 同 PATCH 面）。存进去的必须是「发布后能直接生效」的内容，发布面
+  approval 的 levels 过与 POST/PATCH 同一道 `approvalLevelsSchema`、numbering
+  同 PATCH 面）。存进去的必须是「发布后能直接生效」的内容，发布面
   不做比保存面更弱的第二次放行。可选 `note` 记草稿意图，发布时随审计留档。
 - **一键发布 = 前滚一个 `published` 新版本**：`POST .../publish` 在一个事务里
   走该族的 `applyRevision` 接缝（与回滚同一条「快照落列」契约，零新机制）——
@@ -71,11 +72,14 @@
   在这一行上串行化）。
 - **能力随内容改写路径走**：只有注册了 `draftContentSchema` + `applyRevision`
   的族能存草稿（automation_rule / custom_field_def / numbering_rule /
-  workflow_template 四族——workflow 的定义改写面随 #220/#226 进场，definition
-  的草稿校验与 POST/PATCH 同一道四门）；approval 的就地 PATCH 随 #221 配置
-  UI 切片进场但**没有草稿面**（即改即生效，不需要第二层），草稿与发布对它
-  答 409 `publish_unsupported`；回滚则随 applyRevision 对它开放。权限 = 各族
-  配置面的同一权限点（动态按族裁决，与台账读面共用 config-versions/http.ts）。
+  workflow_template / approval_config 五族——workflow 的定义改写面随 #220/#226
+  进场，definition 的草稿校验与 POST/PATCH 同一道四门；approval 的草稿契约随
+  #226 切片 3 进场，levels 与保存面同一道 `approvalLevelsSchema`，发布只改
+  之后提交走的路线、在飞请求带提交时刻的级别快照不受影响）；registry_rule
+  刻意**没有草稿面**——它的「先试后上」由待生效变更（定时生效）承担，草稿
+  会长出第二套同一机制（#233），草稿与发布对它答 409 `publish_unsupported`；
+  回滚则随 applyRevision 对它开放。权限 = 各族配置面的同一权限点（动态按族
+  裁决，与台账读面共用 config-versions/http.ts）。
 
 ## 记账协议（写入侧纪律）
 
@@ -106,10 +110,12 @@
   （§4.5「计算结构」硬底线），配置面只收参数且全部 strict zod（多打的未知键
   400）；定价规则 #223（phase-2）进场时公式结构同样在代码里，可配的只有费率
   表与分档（GoRules 决策表值类型，#233）。
-- ~~**workflow / approval 的定义改写端点**~~：均已进场——workflow 随 #220/#226
-  （PATCH + 草稿发布 + 回滚），approval 随 #221 配置 UI 切片（就地 PATCH +
-  回滚，无草稿面）。生产六族现都带 applyRevision；没有改写路径的族（夹具、
-  未来新族未接前）注册时不带 applyRevision / draftContentSchema，回滚答 409
-  `rollback_unsupported`、草稿与发布答 409 `publish_unsupported`。
+- ~~**workflow / approval 的定义改写端点 + 草稿契约**~~：均已进场——workflow
+  随 #220/#226（PATCH + 草稿发布 + 回滚），approval 随 #221 配置 UI 切片（就地
+  PATCH + 回滚）加 #226 切片 3（草稿契约）。生产六族现都带 applyRevision，五族
+  带草稿契约；registry_rule 刻意两者都只带回滚（定时生效是它的「先试后上」）。
+  没有改写路径的族（夹具、未来新族未接前）注册时不带 applyRevision /
+  draftContentSchema，回滚答 409 `rollback_unsupported`、草稿与发布答 409
+  `publish_unsupported`。
 - **配置工作室 UI**：subjects/史/差异/草稿/发布端点已就绪，前端随配置工作室
   切片进场。

@@ -27,9 +27,13 @@ import { registerConfigSubject, type ConfigSubjectSpec } from "./registry.ts";
  * #220/#226 进场）。没有改写路径的族（夹具、未来新族未接前）注册时不带
  * applyRevision，回滚端点对其答 409 rollback_unsupported。
  *
- * 草稿内容契约（切片 2）只随 applyRevision 走：草稿校验对齐各族配置面的
- * **业务**校验（strict + select 选项规则 + ruleSpecSchema），存进去的必须是
- * 「发布后能直接生效」的内容——发布面不做比保存面更弱的第二次放行。
+ * 草稿内容契约（切片 2 起，逐族进场）只随 applyRevision 走：草稿校验对齐各族
+ * 配置面的**业务**校验（strict + approvalLevelsSchema + select 选项规则 +
+ * ruleSpecSchema），存进去的必须是「发布后能直接生效」的内容——发布面不做比
+ * 保存面更弱的第二次放行。现覆盖五族（automation_rule / custom_field_def /
+ * numbering_rule / workflow_template / approval_config）；registry_rule 刻意
+ * 不带——它的「先试后上」由待生效变更（定时生效）承担，草稿会长出第二套同一
+ * 机制（#233），草稿面对它答 409 publish_unsupported。
  */
 
 // ── 流程模板（#220）────────────────────────────────────────────────────────
@@ -91,6 +95,18 @@ const approvalConfigSnapshotSchema = z.object({
   levels: approvalLevelsSchema,
   active: z.boolean(),
 });
+
+// 草稿内容 = 快照同一形状（整体替换，三键必填）；levels 过与 POST/PATCH 面同一道
+// approvalLevelsSchema——发布后要能直接被提交面解析成审批路线，语义不合格的
+// levels 不能借草稿面绕过保存面的 422；name 与 PATCH 面同一收口（trim）。在飞
+// 请求不受发布影响（级别快照在提交时刻），草稿试的是「之后的提交」走的路线。
+export const approvalConfigDraftContentSchema = z
+  .object({
+    name: z.string().trim().min(1).max(200),
+    levels: approvalLevelsSchema,
+    active: z.boolean(),
+  })
+  .strict();
 
 // ── 自定义字段（#222）──────────────────────────────────────────────────────
 const customFieldDefSnapshotSchema = z.object({
@@ -455,6 +471,10 @@ const approvalConfigSpec: ConfigSubjectSpec = {
       .returning({ id: schema.approvalConfigs.id });
     return updated.length > 0;
   },
+  // 草稿契约随 #226 切片 3 进场：审批线的「先试后上」= 在旧线上离线改一版
+  // levels，看得见差异、发布才生效；在飞请求带提交时刻的级别快照，发布只改
+  // 之后的提交走的路线
+  draftContentSchema: approvalConfigDraftContentSchema,
 };
 
 // 模块装载时注册（生产路径：app.ts 的 side-effect import；测试注入夹具族走

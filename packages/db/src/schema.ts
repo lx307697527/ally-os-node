@@ -609,7 +609,7 @@ export const approvalConfigs = pgTable(
     id: uuid("id").primaryKey().defaultRandom(),
     subjectType: text("subject_type").notNull(),
     // 审批线键（如 role_grant、quote_discount）：一个 subject 类型下键唯一，
-    // 与 workflow_templates_key_idx 同构；定义改写/停用端点随 #226 后续切片进场
+    // 与 workflow_templates_key_idx 同构；键是身份、PATCH/草稿面都不收它
     configKey: text("config_key").notNull(),
     name: text("name").notNull(),
     // 有序级别数组（[{ name, users, roles, requireSignature, signatureMeaning }]），
