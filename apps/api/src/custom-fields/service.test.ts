@@ -120,7 +120,26 @@ describe("parseValueSubmission (#222 必填与权限的服务端校验)", () => 
         "tier",
       ]);
       const revenue = result.writes.find((w) => w.def.fieldKey === "annual_revenue");
-      expect(revenue?.value).toBe(120_000);
+      expect(revenue).toMatchObject({ action: "set", value: 120_000 });
+    }
+  });
+
+  it("parses an explicit null on an optional field as a clear write, not a value", () => {
+    const result = parseValueSubmission(defs, ["sales"], { po_number: "PO-1", tier: null });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const tier = result.writes.find((w) => w.def.fieldKey === "tier");
+      expect(tier?.action).toBe("clear");
+      expect(tier).not.toHaveProperty("value");
+    }
+  });
+
+  it("an explicit null on a required field is invalid, not a clear", () => {
+    const result = parseValueSubmission(defs, ["sales"], { po_number: null });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      const po = result.issues.find((issue) => issue.fieldKey === "po_number");
+      expect(po?.code).toBe("invalid");
     }
   });
 

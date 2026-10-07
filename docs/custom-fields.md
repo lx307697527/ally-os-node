@@ -40,8 +40,11 @@ copy"）、SQL 函数签名与 CHECK 约束四处手工同步，靠 parity 测�
 ## 提交语义
 
 完整提交（表单整张交上来）：必填的可见字段必须出现；可选字段缺省 = 不改既有值，
-显式 `null` = 清值。值 upsert（一记录一字段一行，唯一索引兜并发），updated_by /
-updated_at 随写更新，审计行与值写入同事务。
+显式 `null` = 清值 = **删值行**（不存 SQL NULL：`value` 列 NOT NULL 是跨模块契约
+——worker 的 `custom_field` 条件块依赖「行在场即有 JSON 值」，行不在场 = 未填或
+已清，`eq`/`ne` 不满足、`exists` 表达「必须有/没有」）。值 upsert（一记录一字段
+一行，唯一索引兜并发），updated_by / updated_at 随写更新，审计行与值写入同事务
+（含清值时 detail 的 `clearedFieldKeys`）。
 
 ## 刻意不在这切片里的（#222 保持 open）
 

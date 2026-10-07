@@ -440,6 +440,91 @@ describe.skipIf(!databaseUrl)("custom field endpoints (#222 slice 1, integration
     expect(carol.status).toBe(404);
   });
 
+  it("explicit null on an optional field deletes the value row instead of 500 (#222)", async () => {
+    const notes = await createField(adminHeaders, {
+      subjectType: "task",
+      fieldKey: "notes",
+      label: "备注",
+      fieldType: "text",
+    });
+    expect(notes.status).toBe(201);
+    const taskId = await createTask(alice, USERS.bob);
+
+    async function putValues(values: Record<string, unknown>) {
+      return app.request(`/api/subjects/task/${taskId}/custom-fields`, {
+        method: "PUT",
+        headers: { ...jsonHeaders, ...alice },
+        body: JSON.stringify({ values }),
+      });
+    }
+    async function storedRows() {
+      return db.select({ fieldKey: schema.customFieldDefs.fieldKey })
+        .from(schema.customFieldValues)
+        .innerJoin(schema.customFieldDefs, eq(schema.customFieldValues.fieldDefId, schema.customFieldDefs.id));
+    }
+
+    // 先有值
+    const set = await putValues({ notes: "first" });
+    expect(set.status).toBe(200);
+
+    // 显式 null = 清值：200、值行物理删除——行不在场 = 未填或已清（worker 的
+    // custom_field 条件块依赖「行在场即有 JSON 值」的 NOT NULL 不变式），GET 读回 null
+    const clear = await putValues({ notes: null });
+    expect(clear.status).toBe(200);
+    expect(await storedRows()).toHaveLength(0);
+    const view = await getSubjectFields(alice, "task", taskId);
+    expect(view.fields.find((field) => field.fieldKey === "notes")?.value).toBeNull();
+
+    // 审计同事务：两次提交（set + clear）各一行，清值那次 detail 记 cleared 键
+    const auditRows = await db
+      .select({ detail: schema.auditEvents.detail })
+      .from(schema.auditEvents)
+      .where(eq(schema.auditEvents.action, "custom_fields.values_updated"));
+    expect(auditRows).toHaveLength(2);
+    const clearAudit = auditRows.find(
+      (row) => (row.detail as { clearedFieldKeys?: string[] }).clearedFieldKeys !== undefined,
+    )?.detail as { fieldKeys?: string[]; clearedFieldKeys?: string[] } | undefined;
+    expect(clearAudit).toMatchObject({
+      subjectType: "task",
+      fieldKeys: ["notes"],
+      clearedFieldKeys: ["notes"],
+    });
+
+    // 清一个从未写过值的字段：幂等 200，仍然零行
+    const clearNeverSet = await putValues({ notes: null });
+    expect(clearNeverSet.status).toBe(200);
+    expect(await storedRows()).toHaveLength(0);
+
+    // 清后再写：值行回来
+    const reset = await putValues({ notes: "second" });
+    expect(reset.status).toBe(200);
+    const rows = await storedRows();
+    expect(rows).toHaveLength(1);
+    const reread = await getSubjectFields(alice, "task", taskId);
+    expect(reread.fields.find((field) => field.fieldKey === "notes")?.value).toBe("second");
+  });
+
+  it("explicit null on a required field is still a 422, not a clear (#222)", async () => {
+    const poNumber = await createField(adminHeaders, {
+      subjectType: "task",
+      fieldKey: "po_number",
+      label: "PO 号",
+      fieldType: "text",
+      required: true,
+    });
+    expect(poNumber.status).toBe(201);
+    const taskId = await createTask(alice, USERS.bob);
+    const res = await app.request(`/api/subjects/task/${taskId}/custom-fields`, {
+      method: "PUT",
+      headers: { ...jsonHeaders, ...alice },
+      body: JSON.stringify({ values: { po_number: null } }),
+    });
+    expect(res.status).toBe(422);
+    const body = (await res.json()) as { issues?: { fieldKey: string; code: string }[] };
+    const poIssue = body.issues?.find((issue) => issue.fieldKey === "po_number");
+    expect(poIssue?.code).toBe("invalid");
+  });
+
   it("unregistered subject types and invisible subjects get 400 / 404 on the values face", async () => {
     const unregistered = await getSubjectFields(alice, "no_such_subject", randomUUID());
     expect(unregistered.status).toBe(400);
