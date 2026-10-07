@@ -199,6 +199,9 @@ export async function runRulesPendingReminderScan(
       and(
         eq(schema.tasks.subjectType, RULE_REMINDER_SUBJECT_TYPE),
         eq(schema.tasks.status, "open"),
+        // 软删行不可见（#29 切片 2）：删掉的提醒不参与销账对账——它的规则若
+        // 仍待填，确保阶段会重建一条，与「提前 done 而值仍空」同一纪律
+        isNull(schema.tasks.deletedAt),
       ),
     );
   const pendingIds = new Set(pending.map((rule) => rule.id));
@@ -255,6 +258,7 @@ export async function runRulesPendingReminderScan(
           eq(schema.tasks.subjectType, RULE_REMINDER_SUBJECT_TYPE),
           eq(schema.tasks.subjectId, rule.id),
           eq(schema.tasks.status, "open"),
+          isNull(schema.tasks.deletedAt),
         ),
       );
     const covered = new Set(

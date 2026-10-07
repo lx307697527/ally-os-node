@@ -118,6 +118,7 @@ describe.skipIf(!databaseUrl)("task endpoints (#113 slice 1, integration)", () =
     await db.execute(sql`truncate table ${schema.follows}`);
     await db.execute(sql`truncate table ${schema.notifications}`);
     await db.execute(sql`truncate table ${schema.auditEvents}`);
+    await db.execute(sql`truncate table ${schema.deletedRecords}`);
     nudged.length = 0;
   });
 
@@ -130,6 +131,7 @@ describe.skipIf(!databaseUrl)("task endpoints (#113 slice 1, integration)", () =
 
   const alice = { "x-test-user": "alice" };
   const bob = { "x-test-user": "bob" };
+  const carol = { "x-test-user": "carol" };
 
   interface TaskRow {
     id: string;
@@ -459,6 +461,99 @@ describe.skipIf(!databaseUrl)("task endpoints (#113 slice 1, integration)", () =
     const bobNotesAfterCombo = await notificationsFor(USERS.bob);
     expect(bobNotesAfterCombo.map((n) => n.eventType)).toEqual(["task.assigned", "task.assigned"]);
     expect(nudged).toEqual([[USERS.bob], [USERS.bob]]);
+  });
+
+  // ── 删除（#29 切片 2）：软删 + 台账快照 + 审计，一个事务 ──────────────────
+  it("创建人删除任务：行从一切读面消失，台账一行快照，审计 task.deleted", async () => {
+    const { task } = await createTask(alice, {
+      title: "待删任务",
+      description: "删了要能查到",
+      assigneeId: USERS.bob,
+    });
+    const id = task?.id;
+    expect(id).toBeTruthy();
+    // 创建即指派的 task.assigned 通知先落定，断言只盯删除本身
+    nudged.length = 0;
+
+    const del = await app.request(`/api/tasks/${id}`, { method: "DELETE", headers: alice });
+    expect(del.status).toBe(200);
+    expect(((await del.json()) as { deleted?: boolean }).deleted).toBe(true);
+
+    // 一切读面不可见：列表（assigned/created 两扇）、详情，同答 404/缺席
+    const detail = await app.request(`/api/tasks/${id}`, { method: "GET", headers: alice });
+    expect(detail.status).toBe(404);
+    const created = await app.request("/api/tasks?scope=created", { headers: alice });
+    const createdJson = (await created.json()) as { tasks: { id: string }[] };
+    expect(createdJson.tasks.map((t) => t.id)).not.toContain(id);
+    const assigned = await app.request("/api/tasks?scope=assigned", { headers: bob });
+    const assignedJson = (await assigned.json()) as { tasks: { id: string }[] };
+    expect(assignedJson.tasks.map((t) => t.id)).not.toContain(id);
+
+    // 台账一行 = 删除的事实：标题、快照（删除时刻的行投影）、删除人
+    const ledger = await db.select().from(schema.deletedRecords);
+    expect(ledger).toHaveLength(1);
+    expect(ledger[0]?.subjectType).toBe("task");
+    expect(ledger[0]?.subjectId).toBe(id);
+    expect(ledger[0]?.title).toBe("待删任务");
+    expect(ledger[0]?.deletedBy).toBe(USERS.alice);
+    expect(ledger[0]?.restoredAt).toBeNull();
+    const snapshot = ledger[0]?.snapshot as Record<string, unknown>;
+    expect(snapshot.id).toBe(id);
+    expect(snapshot.title).toBe("待删任务");
+    expect(snapshot.description).toBe("删了要能查到");
+    expect(snapshot.assigneeId).toBe(USERS.bob);
+
+    // 审计一行 task.deleted（词表 target = 任务行 id，detail 带标题）
+    const deleted = await auditRows("task.deleted");
+    expect(deleted).toHaveLength(1);
+
+    // 删除不投递（裁决：可见性门已关，投递只能深链到 404；即时面是撤销窗）——
+    // bob 的通知停在创建时的 task.assigned，没有因删除新增任何一行
+    expect(nudged).toEqual([]);
+    const bobNotes = await notificationsFor(USERS.bob);
+    expect(bobNotes.map((n) => n.eventType)).toEqual(["task.assigned"]);
+  });
+
+  it("删除是创建人的动词：经办人 403 delete_creator_only，陌生人 404，已删再删 404", async () => {
+    const { task } = await createTask(alice, { title: "权限", assigneeId: USERS.bob });
+    const id = task?.id;
+    expect(id).toBeTruthy();
+
+    const byAssignee = await app.request(`/api/tasks/${id}`, { method: "DELETE", headers: bob });
+    expect(byAssignee.status).toBe(403);
+    expect(((await byAssignee.json()) as { code?: string }).code).toBe("delete_creator_only");
+
+    const byStranger = await app.request(`/api/tasks/${id}`, { method: "DELETE", headers: carol });
+    expect(byStranger.status).toBe(404);
+
+    expect((await app.request(`/api/tasks/${id}`, { method: "DELETE", headers: alice })).status).toBe(200);
+    // 已删行对动词不可见（含创建人本人）：重复删除与不可见同答
+    expect((await app.request(`/api/tasks/${id}`, { method: "DELETE", headers: alice })).status).toBe(404);
+    // 台账仍只有一条在飞删除
+    expect(await db.select().from(schema.deletedRecords)).toHaveLength(1);
+  });
+
+  it("软删的任务对 PATCH 与 subject 门同关：经办人改不了，评论读 404", async () => {
+    const { task } = await createTask(alice, { title: "删后即冻", assigneeId: USERS.bob });
+    const id = task?.id;
+    expect(id).toBeTruthy();
+    expect(
+      (await app.request(`/api/tasks/${id}`, { method: "DELETE", headers: alice })).status,
+    ).toBe(200);
+
+    const patch = await app.request(`/api/tasks/${id}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json", ...alice },
+      body: JSON.stringify({ status: "done" }),
+    });
+    expect(patch.status).toBe(404);
+
+    // subject 门同扇：任务删了，评论对行属也 404（恢复后原样回来）
+    const comments = await app.request(
+      `/api/comments?subjectType=task&subjectId=${id}`,
+      { headers: alice },
+    );
+    expect(comments.status).toBe(404);
   });
 });
 

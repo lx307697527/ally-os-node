@@ -1,4 +1,4 @@
-import { and, asc, eq, or, sql, type SQL } from "drizzle-orm";
+import { and, asc, eq, isNull, or, sql, type SQL } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import { Hono } from "hono";
 import { z } from "zod";
@@ -7,6 +7,7 @@ import { schema } from "@ally/db";
 import { recordAudit } from "../audit/audit-log.ts";
 import type { AppEnv } from "../auth/session.ts";
 import { isSubjectSigned } from "../esign/service.ts";
+import { recordDeletion } from "../records/deleted-records.ts";
 
 /**
  * 任务端点（#113 切片 1：任务内核）。
@@ -84,11 +85,12 @@ export function tasksRoutes(deps: { db: Db; notifyUsers: (userIds: string[]) => 
     }
     const { scope, status, limit, offset } = parsed.data;
     const me = c.get("user").id;
-    // 本人数据只按行属读：经办人是我的 / 是我建的两类，越权行不进结果集
-    const ownership =
-      scope === "assigned"
-        ? eq(schema.tasks.assigneeId, me)
-        : eq(schema.tasks.createdById, me);
+    // 本人数据只按行属读：经办人是我的 / 是我建的两类，越权行不进结果集；
+    // 软删行对一切读面不可见（删除后的任务连行属也看不到，恢复是 audit.read 面）
+    const ownership = and(
+      scope === "assigned" ? eq(schema.tasks.assigneeId, me) : eq(schema.tasks.createdById, me),
+      isNull(schema.tasks.deletedAt),
+    );
     const where = status === undefined ? ownership : and(ownership, eq(schema.tasks.status, status));
     const [rows, totalRows] = await Promise.all([
       selectTaskRows(deps.db, where)
@@ -324,14 +326,102 @@ export function tasksRoutes(deps: { db: Db; notifyUsers: (userIds: string[]) => 
     return c.json({ task: rows[0] ?? null });
   });
 
+  // 删除（#29 切片 2）：软删 + 台账快照 + 审计，一个事务。任务内核的第一个删除
+  // 动词——「删除操作统一改为软删除 + 快照」(#29) 从这里开始成立。
+  //
+  // 裁决三条：
+  // - 动词属创建人。经办人是受托执行（改内容/状态、取消是经办人的逃生门），
+  //   删除是行属对记录本身的处置——403 delete_creator_only，不静默放宽。
+  // - 不投递通知。删除把可见性门关上，投递只能深链到 404 的详情页（给收件人
+  //   一条点不开的通知比不通知更糟）；误删的即时面是 web 撤销窗（undo-window），
+  //   事后面是恢复台（/system/deleted-records，audit.read 门）。
+  // - 签名锁定与 PATCH 同门（#219）：签过名的记录一律拒改，删除是最彻底的改。
+  app.delete("/api/tasks/:id", async (c) => {
+    const idParse = z.uuid().safeParse(c.req.param("id"));
+    if (!idParse.success) {
+      return c.json({ error: "invalid_request" }, 400);
+    }
+    const me = c.get("user");
+    const rows = await deps.db
+      .select()
+      .from(schema.tasks)
+      .where(and(eq(schema.tasks.id, idParse.data), taskVisibleTo(me.id)))
+      .limit(1);
+    const task = rows[0];
+    // 不存在 / 不属于我 / 已删，同回答 404（反探测，与详情同一裁定）
+    if (task === undefined) {
+      return c.json({ error: "not_found" }, 404);
+    }
+    if (task.createdById !== me.id) {
+      return c.json({ error: "forbidden", code: "delete_creator_only" }, 403);
+    }
+    if (await isSubjectSigned(deps.db, "task", task.id)) {
+      return c.json({ error: "record_signed" }, 409);
+    }
+    const snapshot = {
+      id: task.id,
+      title: task.title,
+      description: task.description,
+      status: task.status,
+      dueAt: task.dueAt === null ? null : task.dueAt.toISOString(),
+      assigneeId: task.assigneeId,
+      createdById: task.createdById,
+      subjectType: task.subjectType,
+      subjectId: task.subjectId,
+      createdAt: task.createdAt.toISOString(),
+      updatedAt: task.updatedAt.toISOString(),
+    };
+    const outcome = await deps.db.transaction(async (tx): Promise<"deleted" | "gone"> => {
+      // 行锁内复查 deleted_at：并发的第二个 DELETE 在锁上排队，等到后读到已删
+      // 行 → gone，两个请求同答 404，台账唯一部分索引兜住最后的缝隙
+      const locked = await tx
+        .select({ deletedAt: schema.tasks.deletedAt })
+        .from(schema.tasks)
+        .where(eq(schema.tasks.id, task.id))
+        .for("update")
+        .limit(1);
+      const row = locked[0];
+      // 行缺失或已被并发的第一个请求软删（undefined !== null 与 null !== null
+      // 的分别刚好覆盖两种态），同答 gone
+      if (row?.deletedAt !== null) {
+        return "gone";
+      }
+      await tx
+        .update(schema.tasks)
+        .set({ deletedAt: new Date(), deletedBy: me.id })
+        .where(eq(schema.tasks.id, task.id));
+      await recordDeletion(tx, {
+        subjectType: "task",
+        subjectId: task.id,
+        title: task.title,
+        snapshot,
+        deletedBy: me.id,
+      });
+      await recordAudit(tx, {
+        actor: me.id,
+        action: "task.deleted",
+        target: task.id,
+        detail: { title: task.title },
+      });
+      return "deleted";
+    });
+    if (outcome === "gone") {
+      return c.json({ error: "not_found" }, 404);
+    }
+    return c.json({ deleted: true });
+  });
+
   return app;
 }
 
-/** 行属判据：创建人或经办人可见（GET/PATCH 共用） */
+/** 行属判据：创建人或经办人可见（GET/PATCH 共用）；软删行一律不可见 */
 function taskVisibleTo(userId: string) {
-  return or(
-    eq(schema.tasks.assigneeId, userId),
-    eq(schema.tasks.createdById, userId),
+  return and(
+    or(
+      eq(schema.tasks.assigneeId, userId),
+      eq(schema.tasks.createdById, userId),
+    ),
+    isNull(schema.tasks.deletedAt),
   );
 }
 

@@ -1039,6 +1039,32 @@ describe.skipIf(!databaseUrl)("automation scan/run (#224 slice 1, integration)",
     expect(await statusChangedAudits()).toHaveLength(0);
   });
 
+  it("update_field treats a soft-deleted task as absent (fail loud, #29 slice 2)", async () => {
+    const taskId = await insertTask({ status: "open" });
+    await insertRule({
+      name: "改已删的行",
+      trigger: { kind: "event", action: "task.created" },
+      actions: [{ type: "update_field", config: { subjectType: "task", field: "status", value: "done" } }],
+    });
+    await insertTaskCreatedEvent(taskId);
+    // 事件落库之后、run 执行之前被删除：行锁读按不存在处理，改一条已删除的
+    // 任务比不改更糟——run 失败告警，错误原样可读
+    await db
+      .update(schema.tasks)
+      .set({ deletedAt: new Date() })
+      .where(eq(schema.tasks.id, taskId));
+
+    await runAutomationScan({ ...deps, sendRunJob });
+    const run = await onlyRun();
+    await expect(runAutomationRun(deps, { runId: run.id })).rejects.toThrow(/automation action failed/);
+    const after = await onlyRun();
+    const results = after.actionResults as { status: string; error?: string }[];
+    expect(results[0]?.error).toContain("target row does not exist");
+    // 行没动（状态还是删除时刻的 open），审计零写入
+    expect((await db.select().from(schema.tasks))[0]?.status).toBe("open");
+    expect(await statusChangedAudits()).toHaveLength(0);
+  });
+
   it("update_field fails loud on every misconfiguration instead of silently skipping", async () => {
     // 每道闸一个用例:target 的形态决定哪道闸先开口,逐例断言错误消息原样可读
     const cases: {

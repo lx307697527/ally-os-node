@@ -22,6 +22,7 @@ import { commentsRoutes } from "./routes/comments.ts";
 import { configDraftsRoutes } from "./routes/config-drafts.ts";
 import { configVersionsRoutes } from "./routes/config-versions.ts";
 import { customFieldsRoutes } from "./routes/custom-fields.ts";
+import { deletedRecordsRoutes } from "./routes/deleted-records.ts";
 import { esignaturesRoutes } from "./routes/esignatures.ts";
 import { feedbackRoutes } from "./routes/feedback.ts";
 import { followsRoutes } from "./routes/follows.ts";
@@ -39,6 +40,9 @@ import { workflowTemplatesRoutes } from "./routes/workflow-templates.ts";
 // 配置版本台账（#226）：五族配置的快照契约与回滚实现在 families.ts 模块装载时注册——
 // 台账读面与回滚端点（routes/config-versions.ts）依赖这批注册先于任何请求发生
 import "./config-versions/families.ts";
+// 删除记录（#29 切片 2）：task 注册为第一个可恢复 subject——恢复端点
+// （routes/deleted-records.ts）依赖这批注册先于任何请求发生
+import "./records/task-restorer.ts";
 
 // 依赖通过参数注入，测试时可以传假的实现，不需要真数据库。
 export interface AppDeps {
@@ -149,6 +153,9 @@ export function createApp(deps: AppDeps) {
   app.route("/", realtimeRoutes(deps));
   // 审计日志查询（#29）：audit.read 权限点门（owner/admin 默认）
   app.route("/", auditEventsRoutes(deps));
+  // 删除记录（#29 切片 2）：软删台账的查看与恢复，audit.read 同门。task 的
+  // 恢复器在 records/task-restorer.ts 模块装载时注册（上面 import 的副作用）
+  app.route("/", deletedRecordsRoutes(deps));
   // 配置版本台账（#226 切片 1）：五族配置的版本史/差异/回滚读面，回滚 = 写操作。
   // 权限按族动态裁决（= 各族配置面的同一权限点）；受监管变更控制门是 #226
   // 后续切片（随 #206 进场）

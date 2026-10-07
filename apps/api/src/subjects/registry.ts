@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import type { Db } from "@ally/db";
 import { schema } from "@ally/db";
@@ -37,7 +37,9 @@ async function loadTaskContext(db: Db, taskId: string): Promise<SubjectContext |
     .from(schema.tasks)
     .leftJoin(assignee, eq(schema.tasks.assigneeId, assignee.id))
     .leftJoin(creator, eq(schema.tasks.createdById, creator.id))
-    .where(eq(schema.tasks.id, taskId))
+    // 软删行不再是可见 subject（#29 切片 2）：评论/活动流/关注/自定义字段共用
+    // 这扇门，任务删了整条记录的时间线一起对行属关闭——恢复后原样回来
+    .where(and(eq(schema.tasks.id, taskId), isNull(schema.tasks.deletedAt)))
     .limit(1);
   const row = rows[0];
   if (row === undefined) return null;
