@@ -129,6 +129,7 @@ describe.skipIf(!databaseUrl)("approvals route (#221, integration)", () => {
   });
   const app = createApp({
     stripe: undefined,
+    paypal: undefined,
     logger,
     db,
     corsOrigins: ["http://localhost:5173"],

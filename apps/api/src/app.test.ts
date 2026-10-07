@@ -61,6 +61,7 @@ function makeApp(options: {
 }) {
   return createApp({
     stripe: undefined,
+    paypal: undefined,
     logger,
     db: unusedDb,
     corsOrigins: ["http://localhost:5173"],

@@ -68,6 +68,7 @@ describe.skipIf(!databaseUrl)("legacy user import (#22 slice 5, integration)", (
   });
   const app = createApp({
     stripe: undefined,
+    paypal: undefined,
     logger,
     db,
     corsOrigins: ["http://localhost:5173"],

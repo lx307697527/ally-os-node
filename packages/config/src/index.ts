@@ -45,6 +45,17 @@ export const envSchema = z.object({
   STRIPE_SECRET_KEY: z.string().min(1).optional(),
   STRIPE_WEBHOOK_SECRET: z.string().min(1).optional(),
 
+  // PayPal 收款渠道（#193）：checkout order 创建 + webhook 验签走
+  // verify-webhook-signature 活体 API，三个变量必须同时出现（缺一/缺二 = 部署
+  // 抄错了配置，启动即失败，Google/Stripe 同裁）；都缺 = 渠道不启用——checkout
+  // 端点与 webhook 端点都答 500 misconfigured。启用还要求 WEB_APP_URL：审批后
+  // 的 return_url 必须是绝对地址。
+  PAYPAL_CLIENT_ID: z.string().min(1).optional(),
+  PAYPAL_CLIENT_SECRET: z.string().min(1).optional(),
+  PAYPAL_WEBHOOK_ID: z.string().min(1).optional(),
+  // 留空 = 生产 API；沙箱部署注入 https://api-m.sandbox.paypal.com
+  PAYPAL_API_BASE: z.url().optional(),
+
   S3_BUCKET: z.string().min(1),
   S3_REGION: z.string().min(1).default("us-east-1"),
   // 留空 = AWS S3；填写 = 任意 S3 兼容存储（MinIO / 阿里云 OSS / 腾讯云 COS）
@@ -97,6 +108,29 @@ const envSchemaWithPairs = envSchema.superRefine((env, ctx) => {
       code: "custom",
       path: ["WEB_APP_URL"],
       message: "Stripe checkout needs WEB_APP_URL set: success_url / cancel_url must be absolute addresses",
+    });
+  }
+  const paypalParts = {
+    PAYPAL_CLIENT_ID: env.PAYPAL_CLIENT_ID !== undefined,
+    PAYPAL_CLIENT_SECRET: env.PAYPAL_CLIENT_SECRET !== undefined,
+    PAYPAL_WEBHOOK_ID: env.PAYPAL_WEBHOOK_ID !== undefined,
+  } as const;
+  const paypalSet = Object.values(paypalParts).filter(Boolean).length;
+  if (paypalSet > 0 && paypalSet < 3) {
+    // 指向缺的那个变量名，报错可直接照着补配置
+    const missing = Object.keys(paypalParts).find((name) => !paypalParts[name as keyof typeof paypalParts]);
+    ctx.addIssue({
+      code: "custom",
+      path: [missing ?? "PAYPAL_CLIENT_ID"],
+      message:
+        "PayPal needs PAYPAL_CLIENT_ID, PAYPAL_CLIENT_SECRET and PAYPAL_WEBHOOK_ID set together (or not at all, to disable it)",
+    });
+  }
+  if (paypalSet === 3 && env.WEB_APP_URL === undefined) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["WEB_APP_URL"],
+      message: "PayPal checkout needs WEB_APP_URL set: return_url / cancel_url must be absolute addresses",
     });
   }
 });

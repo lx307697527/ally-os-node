@@ -58,6 +58,7 @@ describe.skipIf(!databaseUrl)("auth: credential login (#22, integration)", () =>
   });
   const app = createApp({
     stripe: undefined,
+    paypal: undefined,
     logger,
     db,
     corsOrigins: ["http://localhost:5173"],
@@ -457,6 +458,7 @@ describe.skipIf(!databaseUrl)("auth: google oauth (#22 slice 4, integration)", (
   const appFactory = (auth: ReturnType<typeof createAuth>) =>
     createApp({
       stripe: undefined,
+      paypal: undefined,
       logger,
       db,
       corsOrigins: ["http://localhost:5173"],

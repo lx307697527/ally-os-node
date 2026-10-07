@@ -113,6 +113,7 @@ describe.skipIf(!databaseUrl)("workflow instances (#220, integration)", () => {
   });
   const app = createApp({
     stripe: undefined,
+    paypal: undefined,
     logger,
     db,
     corsOrigins: ["http://localhost:5173"],

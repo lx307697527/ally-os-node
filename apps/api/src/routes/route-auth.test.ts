@@ -30,7 +30,8 @@ const memoryStore: AuthzStore = {
 
 const app = createApp({
     stripe: undefined,
-  logger,
+    paypal: undefined,
+    logger,
   db: unusedDb,
   corsOrigins: [],
   checkDatabase: async () => {},
@@ -84,9 +85,11 @@ describe("route authorization declarations (#23)", () => {
       (decl) => decl.path,
     );
     // /api/webhooks/stripe（#193）：公开指「不过会话中间件」，认证是 Stripe 签名
-    // 本身（routes/stripe-webhook.ts）；漏登记才是真的口子
+    // 本身（routes/stripe-webhook.ts）；/api/webhooks/paypal 同理，认证是
+    // verify-webhook-signature 活体验签（routes/paypal-webhook.ts）；漏登记才是
+    // 真的口子
     expect(publicPaths.sort()).toEqual(
-      ["/api/auth-providers", "/api/auth/*", "/api/webhooks/stripe"].sort(),
+      ["/api/auth-providers", "/api/auth/*", "/api/webhooks/stripe", "/api/webhooks/paypal"].sort(),
     );
   });
 

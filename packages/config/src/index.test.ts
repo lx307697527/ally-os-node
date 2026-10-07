@@ -118,4 +118,46 @@ describe("parseEnv", () => {
     expect(() => parseEnv({ ...base, STRIPE_SECRET_KEY: "sk_test_x", STRIPE_WEBHOOK_SECRET: "whsec_x" }))
       .toThrow(/WEB_APP_URL/);
   });
+
+  it("accepts paypal credentials as a group with the web app url (#193)", () => {
+    const env = parseEnv({
+      ...base,
+      PAYPAL_CLIENT_ID: "cid",
+      PAYPAL_CLIENT_SECRET: "secret",
+      PAYPAL_WEBHOOK_ID: "wh-id",
+      PAYPAL_API_BASE: "https://api-m.sandbox.paypal.com",
+      WEB_APP_URL: "https://app.example.com",
+    });
+    expect(env.PAYPAL_CLIENT_ID).toBe("cid");
+    expect(env.PAYPAL_CLIENT_SECRET).toBe("secret");
+    expect(env.PAYPAL_WEBHOOK_ID).toBe("wh-id");
+    expect(env.PAYPAL_API_BASE).toBe("https://api-m.sandbox.paypal.com");
+  });
+
+  it("leaves the paypal channel disabled and the api base defaulted when unset (#193)", () => {
+    const env = parseEnv(base);
+    expect(env.PAYPAL_CLIENT_ID).toBeUndefined();
+    expect(env.PAYPAL_CLIENT_SECRET).toBeUndefined();
+    expect(env.PAYPAL_WEBHOOK_ID).toBeUndefined();
+    expect(env.PAYPAL_API_BASE).toBeUndefined();
+  });
+
+  it("refuses a half-configured paypal channel (fail closed at startup, not at webhook time) (#193)", () => {
+    expect(() => parseEnv({ ...base, PAYPAL_CLIENT_ID: "cid", PAYPAL_CLIENT_SECRET: "secret" }))
+      .toThrow(/PAYPAL_WEBHOOK_ID/);
+    expect(() => parseEnv({ ...base, PAYPAL_WEBHOOK_ID: "wh-id" })).toThrow(/PAYPAL_CLIENT_ID/);
+    expect(() => parseEnv({ ...base, PAYPAL_CLIENT_ID: "cid", PAYPAL_WEBHOOK_ID: "wh-id" }))
+      .toThrow(/PAYPAL_CLIENT_SECRET/);
+  });
+
+  it("refuses a paypal channel without the web app url (the approve return needs an absolute url) (#193)", () => {
+    expect(() =>
+      parseEnv({
+        ...base,
+        PAYPAL_CLIENT_ID: "cid",
+        PAYPAL_CLIENT_SECRET: "secret",
+        PAYPAL_WEBHOOK_ID: "wh-id",
+      }),
+    ).toThrow(/WEB_APP_URL/);
+  });
 });

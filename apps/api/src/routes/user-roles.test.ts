@@ -79,6 +79,7 @@ describe.skipIf(!databaseUrl)("user roles routes (#23, #221 slice 2, integration
   const authzStore = createAuthzStore(db);
   const app = createApp({
     stripe: undefined,
+    paypal: undefined,
     logger,
     db,
     corsOrigins: ["http://localhost:5173"],

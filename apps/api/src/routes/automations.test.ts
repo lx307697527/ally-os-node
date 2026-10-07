@@ -83,6 +83,7 @@ describe.skipIf(!databaseUrl)("automation rule endpoints (#224 slice 1, integrat
 
   const app = createApp({
     stripe: undefined,
+    paypal: undefined,
     logger,
     db,
     corsOrigins: ["http://localhost:5173"],

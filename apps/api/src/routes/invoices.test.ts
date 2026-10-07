@@ -63,6 +63,7 @@ describe.skipIf(!databaseUrl)("invoice endpoints (#192 slice 1, integration)", (
 
   const app = createApp({
     stripe: undefined,
+    paypal: undefined,
     logger,
     db,
     corsOrigins: ["http://localhost:5173"],

@@ -48,6 +48,7 @@ describe.skipIf(!databaseUrl)("shadow account: CRM 预建用户 (#25, integratio
   });
   const app = createApp({
     stripe: undefined,
+    paypal: undefined,
     logger,
     db,
     corsOrigins: ["http://localhost:5173"],
