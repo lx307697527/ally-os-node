@@ -35,6 +35,9 @@ import { paymentsRoutes } from "./routes/payments.ts";
 import { stripeCheckoutRoutes } from "./routes/stripe-checkout.ts";
 import { stripeWebhookRoutes } from "./routes/stripe-webhook.ts";
 import type { StripeChannel } from "./billing/stripe.ts";
+import { paypalCheckoutRoutes } from "./routes/paypal-checkout.ts";
+import { paypalWebhookRoutes } from "./routes/paypal-webhook.ts";
+import type { PayPalChannel } from "./billing/paypal.ts";
 import { realtimeRoutes } from "./routes/realtime.ts";
 import { rulesRoutes } from "./routes/rules.ts";
 import { tasksRoutes } from "./routes/tasks.ts";
@@ -83,6 +86,13 @@ export interface AppDeps {
    * 中间件之前：Stripe 没有本系统会话，验签就是它的认证。
    */
   stripe: StripeChannel | undefined;
+  /**
+   * PayPal 收款渠道（#193）：checkout 订单网关 + webhook 活体验签器。未配置 =
+   * undefined（渠道不启用）：checkout 端点与 webhook 都答 500 misconfigured。
+   * webhook 端点同 Stripe 挂在会话中间件之前：PayPal 没有本系统会话，
+   * verify-webhook-signature 就是它的认证。
+   */
+  paypal: PayPalChannel | undefined;
 }
 
 export function createApp(deps: AppDeps) {
@@ -111,6 +121,10 @@ export function createApp(deps: AppDeps) {
   // 会话，Stripe-Signature 验签就是这一面的认证（渠道未配置时端点答 500
   // misconfigured，见 routes/stripe-webhook.ts 的响应契约）
   app.route("/", stripeWebhookRoutes(deps));
+  // PayPal webhook（#193）：provider 面，同 Stripe 挂在会话中间件之前——PayPal
+  // 没有本系统会话，verify-webhook-signature 活体验签就是这一面的认证（渠道未
+  // 配置时端点答 500 misconfigured）
+  app.route("/", paypalWebhookRoutes(deps));
 
   // 其余 /api/* 一律要求已登录会话（#22 验收：业务代码统一经中间件拿当前用户），
   // 随后加载角色与生效权限集（#23），业务路由上的 requireRole/requirePermission 直接读
@@ -197,6 +211,9 @@ export function createApp(deps: AppDeps) {
   // Stripe 渠道（#193）：财务建支付链接的过渡面（invoices.manage 同门；客户门户
   // #186 进场后复用同一 StripeGateway 接归属校验）
   app.route("/", stripeCheckoutRoutes(deps));
+  // PayPal 渠道（#193）：财务建审批订单的过渡面（同门同构；批准后的 capture 由
+  // APPROVED webhook 驱动，回跳页永远不做钱的行为）
+  app.route("/", paypalCheckoutRoutes(deps));
 
   return app;
 }

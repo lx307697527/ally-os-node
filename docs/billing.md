@@ -259,7 +259,7 @@ splitSurchargedCapture + billing.card_payment_policy):对账纪律原样带过�
 ### 费率面
 
 - `payments.card_surcharge_pct`(0021 种子 3.9%,param,管理员可调,⚠);
-  PayPal 渠道进场时读自己的 `payments.paypal_surcharge_pct`,不共用常量。
+  PayPal 渠道读自己的 `payments.paypal_surcharge_pct`(同种子同裁法),两键不共用。
 - 消费方 zod 收口 0–5%(surchargeRateSchema):机械护栏拦配置事故,不是业务
   裁决——真要超 5% 先过配置工作室,再放宽消费方。读不出(未种/待填/出界)
   → checkout 409 `surcharge_rule_unusable` fail closed(numbering_not_configured
@@ -276,6 +276,74 @@ splitSurchargedCapture + billing.card_payment_policy):对账纪律原样带过�
 | `GET /api/invoices/:id/payments` | 台账行带 `surchargeCents`(null = 无附加费) |
 | 手工记账 `POST /api/invoices/:id/payments` | **不变**:电汇/ACH 无费;附加费无手工入口(它来自签名 metadata 的对账,不是人填的字段) |
 
+## 已落地:PayPal 渠道(#193)
+
+设计权威:#232 §10「Stripe / PayPal 以 webhook 为准,幂等记账并自动匹配发票」;
+付款方式 PayPal 走 R-12-1 枚举。issue:#193;记账本体与 Stripe 完全同一个
+recordPayment 接缝,source = ("paypal", "<capture id>"),method `paypal`。
+
+### 渠道内核(billing/paypal.ts)
+
+- **无 SDK,fetch 适配器**(StripeGateway 同裁):`PayPalGateway`(订单创建 +
+  capture)与 `PayPalWebhookVerifier`(活体验签)是域内接口,生产实现走 PayPal
+  REST API(client-credentials 令牌逐调用取,老系统同款,webhook 体量下不做过期
+  缓存),响应 zod 校验;测试注入假 API。
+- **验签是活体 API 调用,不是本地 HMAC**:PayPal 没有 Stripe 式共享密钥签名方案,
+  防伪靠 server-to-server 的 verify-webhook-signature(五根 transmission 头 +
+  webhook_id + 原事件,`verification_status` 必须 SUCCESS)。缺 transmission 头
+  401;token/verify 失败或非 SUCCESS 401 fail closed;配置缺失 500 misconfigured
+  (FEAT-063 同裁)。**本地没有重放窗**:transmission_time 的新鲜度由 PayPal 验签
+  端把守,本侧重放防线是记账幂等(payments 唯一索引)。
+- **锚点与拆分声明坐 `custom_id`**(老系统 FEAT-581 p5 载体裁决原样带过来):
+  capture 事件只回带 purchase_units[0].custom_id,items[] 活不到 capture 上;
+  purchase_units[].invoice_id 被 PayPal 按商户全局唯一校验(DUPLICATE_INVOICE_ID
+  拒绝重试)——能拒绝第二次尝试的载体不是载体。格式 `<invoiceId>`(无费)/
+  `<invoiceId>;p=<principal 分>;s=<surcharge 分>`(有费);声明解析成 Stripe
+  metadata 的同两个键后**原样走 splitSurchargedCapture**——四种命名拒绝与
+  Stripe 渠道一字不差(无声明 = 存量/无费订单的回归锚点;拆分 ≠ 实扣、半申报、
+  非正整数 → 502 拿不准的钱不确认)。
+- **金额十进制字符串精确换算**:PayPal 金额是 "1558.50" 一类的字符串,老系统
+  `Number(value) * 100` 浮点乘法刻意不带过来——正则拆整数/小数部做纯整数运算
+  (payPalAmountToCents),"8.45" 一类二进制不可精确表示的值不会产生先舍入再比较
+  的隐患;0–2 位小数之外形状一律 unparsable(502)。
+- **退款/拒绝类显式 no-op**:PAYMENT.CAPTURE.REFUNDED / REVERSED(#240 流程)、
+  DECLINED / DENIED(没有钱进账)ack 掉不拦投递。
+
+### 批准 ≠ 扣款:webhook 驱动 capture(billing/paypal.ts 文件头第 3 条)
+
+PayPal 订单要商户显式 capture 钱才动。老系统在门户回跳页由服务端 capture
+(BUG-121);本系统门户还没建(#186),渠道必须能独立走完真钱闭环,故改为
+**webhook 驱动**:收到(验签过的)CHECKOUT.ORDER.APPROVED 后按订单 custom_id
+找回发票——票处于 issued 才 capture;找不到/草稿/作废一律**不 capture、ack 了事**
+(订单自然过期,客户没被扣款——fail-safe,不是失败,不需要 502 重投一个「正确
+动作是什么都不做」的投递);capture 网络失败回 502 让 PayPal 重投 APPROVED
+(重投窗口约 3 天,订单有效期同量级,自然收敛);ORDER_ALREADY_CAPTURED 是
+APPROVED 重投的正常重放,ack。capture 成功后钱的事实仍由
+PAYMENT.CAPTURE.COMPLETED 入账——与 Stripe 同一条记账路径,审计 `payment.recorded`
+(actor null,method `paypal`,detail 带 `eventType`)与记账同事务。
+
+这也兑现 #193 要点原文「**付款状态以 webhook 为准,前端结果只用于提示**」:
+门户回跳页(`?paypal=return|cancel`)永远只展示,永远不 capture。
+
+### 费率与端点
+
+- `payments.paypal_surcharge_pct`(0021 种子 3.9%,⚠ 风险标记随行):与卡片费率
+  **刻意两个键**——两个渠道的费率独立可调(卡组织规则与 PayPal 费表互不相干)。
+  消费方 zod 收口 0–5%、0% = 关闸(裸 custom_id,与无费订单同形)、读不出 →
+  checkout 409 `surcharge_rule_unusable`,全部与 Stripe 渠道同一套纪律
+  (billing/surcharge.ts)。
+
+| 方法与路径 | 门 | 语义 |
+| --- | --- | --- |
+| `POST /api/invoices/:id/paypal-checkout` | invoices.manage | 给已发出的票建 PayPal 订单,返回审批跳转 URL(财务过渡面);409 `not_issued` / `invoice_voided` / `nothing_to_collect`;渠道未配置 500 `misconfigured` |
+| `POST /api/webhooks/paypal` | verify-webhook-signature 活体验签 | provider 面,挂在会话中间件**之前**;POST-only 405;坏 JSON 400(验签要吃解析后的事件) |
+
+webhook 响应契约与 Stripe 渠道同构:200 记账成功/幂等重放/无关事件/无锚点入账/
+不该 capture 的 APPROVED;401 验签不过(零副作用);502 钱到了记不了(票未确认/
+已作废/找不到/金额读不出/拆分对不上)或该 capture 而 capture 失败。审计
+`invoice.payment_link_created` 沿用(detail 带 `provider: "paypal"` 与 `orderId`,
+Stripe 半边带 `sessionId`——同一词条记两个渠道的发链动作)。
+
 ## 剩余(#192 保持 open,Part of #192)
 
 1. **触发点接线**(属主域各自进场):打样/调味费(#238)、定金(#231,比例
@@ -283,9 +351,10 @@ splitSurchargedCapture + billing.card_payment_policy):对账纪律原样带过�
    (完工 + 实际产量 + 运营确认 R-11-6;结算量 = min(实际, 报价×110%),少产
    超 10% 拦开票 R-11-4)——调 `createDraftInvoice` 传 source 幂等键;
 2. Stripe webhook 已落地(#193:checkout 链接 + 验签消费 + 幂等记账 + 附加费
-   R-12-2/3 拆分对账);剩 PayPal 渠道(同一接缝,sourceType paypal,读
-   `payments.paypal_surcharge_pct`)、失败付款/银行借记拒付的站内提醒(老系统
-   Sentry/Slack 分流在新系统走通知域;附加费对账拒绝的可见性同批进场);
+   R-12-2/3 拆分对账);PayPal 渠道已落地(同一接缝,活体验签,webhook 驱动
+   capture,读 `payments.paypal_surcharge_pct`,拆分对账与记账路径零改动复用);
+   剩失败付款/拒付的站内提醒(老系统 Sentry/Slack 分流在新系统走通知域;附加费
+   对账拒绝的可见性同批进场);
 3. 到期前提醒(R-12-7,渠道层 + due 扫描)、收款状态回写订单/批次(#241 发货
    门槛,读 `computePaymentStatus`)、QuickBooks 推送(#181,含银行流水认领)、
    第一笔款到账转正式客户(R-02-5)等收款触发业务;

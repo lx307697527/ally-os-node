@@ -166,6 +166,7 @@ describe.skipIf(!databaseUrl)("stripe checkout & webhook (#193, integration)", (
     },
     notifyUsers: () => Promise.resolve(),
     stripe: channel(gateway.gateway),
+    paypal: undefined,
   });
 
   // 同一夹具的「渠道未配置」变体：webhook 与 checkout 都必须 fail closed
@@ -201,6 +202,7 @@ describe.skipIf(!databaseUrl)("stripe checkout & webhook (#193, integration)", (
     },
     notifyUsers: () => Promise.resolve(),
     stripe: undefined,
+    paypal: undefined,
   });
 
   beforeAll(async () => {

@@ -61,6 +61,7 @@ describe.skipIf(!databaseUrl)("task endpoints (#113 slice 1, integration)", () =
 
   const app = createApp({
     stripe: undefined,
+    paypal: undefined,
     logger,
     db,
     corsOrigins: ["http://localhost:5173"],

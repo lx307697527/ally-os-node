@@ -127,14 +127,16 @@
   `surchargeCents`（有则记——R-12-2/3 拆分对账后的费成分，`amountCents` 恒为
   结清额，#193 附加费切片）；voided 另记必填 `reason`（误录更正要说清为什么）
   ——退款不在此词表，是 #240 的独立流程。
-  #193 起 Stripe webhook 也走这一词条：actor 为 null（钱到账没有用户操作者，
-  schema 里 `recorded_by_id` 同裁），detail 另记 `eventType`——审计与记账同事务
-  写入，不存在「钱记了、审计没了」的中间态）、
+  #193 起 Stripe / PayPal webhook 也走这一词条：actor 为 null（钱到账没有用户
+  操作者，schema 里 `recorded_by_id` 同裁），detail 另记 `eventType` 与渠道
+  `method`（card / paypal）——审计与记账同事务写入，不存在「钱记了、审计没了」
+  的中间态）、
   `invoice.payment_link_created`
-  （Stripe checkout 链接创建 #193；target = 发票行 id，detail 记 `invoiceNumber`/
-  `amountCents`（实扣 gross）/`principalCents`/`surchargeCents`/`currency`/
-  `sessionId`——财务给谁发过收款链接、按多少钱发的、费率拆了多少，沿这条行
-  可查；客户门户的归属校验面进场后沿用同一词条）、
+  （收款链接/订单创建 #193；target = 发票行 id，detail 记 `invoiceNumber`/
+  `amountCents`（实扣 gross）/`principalCents`/`surchargeCents`/`currency`——
+  财务给谁发过收款链接、按多少钱发的、费率拆了多少，沿这条行可查；Stripe 半边
+  带 `sessionId`，PayPal 半边带 `provider: "paypal"` 与 `orderId`；客户门户的
+  归属校验面进场后沿用同一词条）、
   状态变更类动作在 detail 里带 `from`/`to`（如
   `{ from: "new", to: "contacted" }`），日志页详情列原样展示。
 - detail 放变更细节（授予/撤销了什么、从哪到哪、审批裁决等），不放大对象全文

@@ -10,6 +10,7 @@ import { createApp } from "./app.ts";
 import { createAuth, createSessionResolver, createSessionTokenVerifier } from "./auth/auth.ts";
 import { createAuthzStore } from "./authz/service.ts";
 import { createStripeGateway } from "./billing/stripe.ts";
+import { createPayPalGateway, createPayPalWebhookVerifier } from "./billing/paypal.ts";
 import { canSubscribeChannel } from "./realtime/channels.ts";
 import { createRealtimeAuthenticator } from "./realtime/auth.ts";
 import { RealtimeHub } from "./realtime/hub.ts";
@@ -95,6 +96,30 @@ const stripe =
       }
     : undefined;
 
+// PayPal 收款渠道（#193）：env 层已校验三变量成组出现（且启用即有 WEB_APP_URL），
+// 这里只做「配了就启用」。未配置 = undefined，checkout 与 webhook 两端点答
+// misconfigured。apiBase 留空走生产 API，沙箱部署注入 sandbox 域。
+const paypal =
+  env.PAYPAL_CLIENT_ID !== undefined &&
+  env.PAYPAL_CLIENT_SECRET !== undefined &&
+  env.PAYPAL_WEBHOOK_ID !== undefined &&
+  env.WEB_APP_URL !== undefined
+    ? {
+        gateway: createPayPalGateway({
+          clientId: env.PAYPAL_CLIENT_ID,
+          clientSecret: env.PAYPAL_CLIENT_SECRET,
+          ...(env.PAYPAL_API_BASE !== undefined ? { apiBase: env.PAYPAL_API_BASE } : {}),
+        }),
+        verifier: createPayPalWebhookVerifier({
+          clientId: env.PAYPAL_CLIENT_ID,
+          clientSecret: env.PAYPAL_CLIENT_SECRET,
+          webhookId: env.PAYPAL_WEBHOOK_ID,
+          ...(env.PAYPAL_API_BASE !== undefined ? { apiBase: env.PAYPAL_API_BASE } : {}),
+        }),
+        webAppUrl: env.WEB_APP_URL,
+      }
+    : undefined;
+
 const app = createApp({
   logger,
   db,
@@ -109,6 +134,7 @@ const app = createApp({
   notifyUsers,
   storage,
   stripe,
+  paypal,
 });
 
 // 实时推送（#30）：hub ↔ bus 互相引用，用先声明再赋值的函数引用解决循环创建。

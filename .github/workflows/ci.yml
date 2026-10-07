@@ -46,7 +46,8 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - name: Dependency audit
         run: pnpm audit --audit-level=high
-      - run: pnpm lint
+      # eslint 在全仓 lint 时默认 2GB 堆不够(#307 起 OOM;本机 4GB 无感)
+      - run: NODE_OPTIONS=--max-old-space-size=4096 pnpm lint
       - run: pnpm typecheck
       - name: Tests (unit + integration against Postgres)
         env:

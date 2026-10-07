@@ -33,9 +33,12 @@ import { z } from "zod";
 export const PRINCIPAL_AMOUNT_METADATA_KEY = "principal_amount_cents";
 export const SURCHARGE_AMOUNT_METADATA_KEY = "surcharge_amount_cents";
 
-/** 规则注册表的附加费键（0021 种子，R-12-2）；PayPal 渠道进场时读自己的
- * payments.paypal_surcharge_pct，不走这个常量 */
+/** 规则注册表的附加费键（0021 种子，R-12-2）；消费方在 routes/stripe-checkout.ts */
 export const CARD_SURCHARGE_RULE_KEY = "payments.card_surcharge_pct";
+
+/** PayPal 渠道的附加费键（0021 种子 3.9%，R-12-3）；消费方 routes/paypal-checkout.ts。
+ * 与卡片费率刻意两个键：两个渠道的费率独立可调（卡组织规则与 PayPal 费表互不相干） */
+export const PAYPAL_SURCHARGE_RULE_KEY = "payments.paypal_surcharge_pct";
 
 /**
  * 消费方读注册表的期望形状（getRule 的 zod 收口，RULE-007：消费方证明自己知道
