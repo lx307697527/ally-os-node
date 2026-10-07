@@ -20,7 +20,7 @@
 // the labels beside it.
 import type { ReactElement, ReactNode } from "react";
 
-export type RailIconName = "overview" | "ledger" | "tasks" | "approvals" | "hash" | "stages";
+export type RailIconName = "overview" | "ledger" | "tasks" | "approvals" | "hash" | "stages" | "bolt";
 
 const GLYPHS: Record<RailIconName, ReactNode> = {
   // A gauge: the arc, its baseline and one needle — where things stand.
@@ -74,6 +74,9 @@ const GLYPHS: Record<RailIconName, ReactNode> = {
       <path d="M11.75 17.5h7.5" />
     </>
   ),
+  // A bolt: the discharge that fires by itself — a rule that turns one event
+  // into the chain of actions that follows it.
+  bolt: <path d="M13 3.5 6.5 13.5h4.5l-1 7 6.5-10h-4.5z" />,
 };
 
 export function RailIcon({ name }: { name: RailIconName }): ReactElement {

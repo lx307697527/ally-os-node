@@ -13,6 +13,7 @@ import { NotificationBell } from "./shared/components/NotificationBell.tsx";
 import { AuditLog } from "./shared/pages/AuditLog.tsx";
 import { ApprovalConfigs } from "./shared/pages/ApprovalConfigs.tsx";
 import { Approvals } from "./shared/pages/Approvals.tsx";
+import { Automations } from "./shared/pages/Automations.tsx";
 import { NotificationSettings } from "./shared/pages/NotificationSettings.tsx";
 import { NumberingRules } from "./shared/pages/NumberingRules.tsx";
 import { RulesRegistry } from "./shared/pages/RulesRegistry.tsx";
@@ -148,6 +149,10 @@ export function App(): ReactElement {
               门，就地改写与停用走 #226 版本台账——键永不复用，编辑只影响之后
               提交的请求，在飞的带着提交时刻的级别快照。 */}
           <Route path="/system/approvals" element={<ApprovalConfigs />} />
+          {/* 自动化规则（#224）：配置工作室的自动化面；服务端 automations.configure
+              门，保存即生效（worker 扫描器每周期读 enabled 规则，没有发布开关），
+              runs 执行日志与 #226 版本史/回滚同页——删掉的规则日志仍在。 */}
+          <Route path="/system/automations" element={<Automations />} />
           {/* 2FA 自助（#24）：强制门把未绑定的管理员引到这里的合同,绑定流程
               本身不需要新的 API 面——走的都是 /api/auth/two-factor/*。 */}
           <Route path="/settings/two-factor" element={<TwoFactorSettings />} />

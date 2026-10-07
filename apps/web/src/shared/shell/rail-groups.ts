@@ -108,6 +108,7 @@ export const RAIL_GROUPS: readonly RailGroup[] = [
       { to: "/system/numbering", label: "Numbering rules", nav: "numbering-rules", icon: "hash" },
       { to: "/system/workflows", label: "Workflow templates", nav: "workflow-templates" },
       { to: "/system/rules", label: "Rules registry", nav: "rules-registry" },
+      { to: "/system/automations", label: "Automation rules", nav: "automation-rules", icon: "bolt" },
     ],
   },
 ];
