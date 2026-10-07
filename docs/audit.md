@@ -49,6 +49,10 @@
   `comment.updated`（#110 切片 5；detail 记 `subjectType`/`subjectId`/
   `fields: ["body"]`；正文未变的幂等提交不落此行）、
   `comment.deleted`（detail 记 `subjectType`/`subjectId`）、
+  `comment.attachment_added`/`comment.attachment_removed`（评论附件 #110；
+  target = 评论行 id，detail 记 `subjectType`/`subjectId`/`attachmentId`/
+  `fileName`（added 另记 `sizeBytes`）——附件挂在评论行上，动作落在评论上，
+  活动流投影经 detail 的 subject 引用自动收录）、
   `follow.created`/`follow.deleted`（关注 #110 切片 4；行无 id，身份是
   `(subject_type, subject_id, user_id)` 三元组——target 为空，subject 引用在
   detail，进对象活动流）、
