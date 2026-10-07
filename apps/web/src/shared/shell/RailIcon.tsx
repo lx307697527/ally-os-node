@@ -20,7 +20,7 @@
 // the labels beside it.
 import type { ReactElement, ReactNode } from "react";
 
-export type RailIconName = "overview" | "ledger" | "tasks" | "approvals" | "hash" | "stages" | "bolt" | "fields";
+export type RailIconName = "overview" | "ledger" | "tasks" | "approvals" | "hash" | "stages" | "bolt" | "fields" | "restore";
 
 const GLYPHS: Record<RailIconName, ReactNode> = {
   // A gauge: the arc, its baseline and one needle — where things stand.
@@ -84,6 +84,14 @@ const GLYPHS: Record<RailIconName, ReactNode> = {
       <rect x="3.75" y="6.5" width="16.5" height="11" rx="1.5" />
       <path d="M7 12h6.5" />
       <path d="M16.75 9.75v4.5" />
+    </>
+  ),
+  // A counter-clockwise return arrow: what was deleted comes back — restore,
+  // the verb that undoes a deletion without rewriting the history of it.
+  restore: (
+    <>
+      <path d="M8.5 5.5 4.75 9.25 8.5 13" />
+      <path d="M4.75 9.25h9.5a5 5 0 0 1 5 5v0a5 5 0 0 1-5 5h-6" />
     </>
   ),
 };

@@ -15,6 +15,7 @@ import { ApprovalConfigs } from "./shared/pages/ApprovalConfigs.tsx";
 import { Approvals } from "./shared/pages/Approvals.tsx";
 import { Automations } from "./shared/pages/Automations.tsx";
 import { CustomFields } from "./shared/pages/CustomFields.tsx";
+import { DeletedRecords } from "./shared/pages/DeletedRecords.tsx";
 import { NotificationSettings } from "./shared/pages/NotificationSettings.tsx";
 import { NumberingRules } from "./shared/pages/NumberingRules.tsx";
 import { RulesRegistry } from "./shared/pages/RulesRegistry.tsx";
@@ -135,6 +136,10 @@ export function App(): ReactElement {
           {/* 审计日志（#29）：System 区第一个页面；服务端 audit.read 门，
               无权限的账号在页面里得到明确的答复，不预设谁能进来。 */}
           <Route path="/system/audit" element={<AuditLog />} />
+          {/* 删除记录（#29 切片 2）：软删台账的查看与恢复；服务端 audit.read 同门
+              （与审计日志同一批读者），恢复不改写历史——台账行原地补 restored_*，
+              页面把这条说在前头。 */}
+          <Route path="/system/deleted-records" element={<DeletedRecords />} />
           {/* 编号规则（#225）：配置工作室的编号配置面；服务端 numbering.configure
               门，改格式只影响之后发出的号——页面把这条说在前头。 */}
           <Route path="/system/numbering" element={<NumberingRules />} />

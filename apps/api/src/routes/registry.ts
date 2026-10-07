@@ -51,6 +51,9 @@ export const API_ROUTES: readonly RouteDecl[] = [
   { method: "GET", path: "/api/tasks/assignee-options", auth: { kind: "session" } },
   { method: "GET", path: "/api/tasks/:id", auth: { kind: "session" } },
   { method: "PATCH", path: "/api/tasks/:id", auth: { kind: "session" } },
+  // 任务删除（#29 切片 2）：创建人动词（软删 + 台账快照），登录即可——动词的
+  // 行属门（delete_creator_only）在路由内，与改派门同一家族
+  { method: "DELETE", path: "/api/tasks/:id", auth: { kind: "session" } },
   // 评论（#110 切片 1）：多态 subject 的行属门在路由内逐域裁决（task =
   // 创建人/经办人），登录即可——可评即可见，无新权限点
   { method: "GET", path: "/api/comments", auth: { kind: "session" } },
@@ -150,6 +153,10 @@ export const API_ROUTES: readonly RouteDecl[] = [
   { method: "PATCH", path: "/api/rules/:key", auth: { kind: "session" } },
   // 审计日志查询（#29）：owner / admin（audit.read 权限点）
   { method: "GET", path: "/api/audit-events", auth: { kind: "permission", permission: "audit.read" } },
+  // 删除记录的查看与恢复（#29 切片 2）：audit.read 同门——恢复把全公司可见性
+  // 已关闭的行重新打开，是合规面动词，不随消费域给行属开 Trash 入口
+  { method: "GET", path: "/api/deleted-records", auth: { kind: "permission", permission: "audit.read" } },
+  { method: "POST", path: "/api/deleted-records/:id/restore", auth: { kind: "permission", permission: "audit.read" } },
   // 发票（#192 切片 1）：草稿状态机 + 财务确认面，invoices.manage 权限点门
   // （finance/owner 默认持有）。触发点的系统生成是属主域进程内调用，无 HTTP 面
   { method: "POST", path: "/api/invoices", auth: { kind: "permission", permission: "invoices.manage" } },

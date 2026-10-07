@@ -320,6 +320,22 @@ describe.skipIf(!databaseUrl)("automation due scan (#224 slice 2, integration)",
     expect(await db.select().from(schema.automationRuns)).toHaveLength(0);
   });
 
+  it("does not fire for soft-deleted tasks (#29 slice 2: the row is invisible)", async () => {
+    await insertRule({
+      name: "到期未办即升级",
+      trigger: { kind: "due", subjectType: "task", anchorField: "dueAt", direction: "before", offsetMinutes: 60 },
+      actions: [{ type: "notify", config: { userIds: [USERS.watcher], title: "t" } }],
+    });
+    const taskId = await insertTask({ dueAt: dueAtFiringBefore(60) });
+    await db
+      .update(schema.tasks)
+      .set({ deletedAt: new Date() })
+      .where(eq(schema.tasks.id, taskId));
+
+    await runAutomationDueScan({ ...deps, sendRunJob });
+    expect(await db.select().from(schema.automationRuns)).toHaveLength(0);
+  });
+
   it("never fires on automation-created tasks (the loop guard)", async () => {
     await insertRule({
       name: "due 建任务的规则",

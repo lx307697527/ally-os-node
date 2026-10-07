@@ -99,7 +99,7 @@ describe.skipIf(!databaseUrl)("rules pending reminder scan (#233 slice 2, integr
   }
 
   function reminderTasks(): Promise<
-    { id: string; assigneeId: string | null; status: string; subjectId: string | null }[]
+    { id: string; assigneeId: string | null; status: string; subjectId: string | null; deletedAt: Date | null }[]
   > {
     return db
       .select({
@@ -107,6 +107,7 @@ describe.skipIf(!databaseUrl)("rules pending reminder scan (#233 slice 2, integr
         assigneeId: schema.tasks.assigneeId,
         status: schema.tasks.status,
         subjectId: schema.tasks.subjectId,
+        deletedAt: schema.tasks.deletedAt,
       })
       .from(schema.tasks)
       .where(eq(schema.tasks.subjectType, RULE_REMINDER_SUBJECT_TYPE));
@@ -283,6 +284,26 @@ describe.skipIf(!databaseUrl)("rules pending reminder scan (#233 slice 2, integr
     const mine = rows.filter((row) => row.subjectId === discountId);
     expect(mine.filter((row) => row.status === "open")).toHaveLength(1);
     expect(mine.filter((row) => row.status === "done")).toHaveLength(1);
+  });
+
+  it("rebuilds a soft-deleted reminder while the value is still pending (#29 slice 2)", async () => {
+    await runRulesPendingReminderScan(services);
+    const discountId = await ruleIdByKey("pricing.non_quantity_discount_cap_pct");
+    // 删除 = 软删（deleted_at 置列）：对账扫描当它不存在，规则仍待填就重建——
+    // 与「提前 done 而值仍空」同一纪律，待办的目的就是填值
+    await db
+      .update(schema.tasks)
+      .set({ deletedAt: new Date() })
+      .where(and(eq(schema.tasks.subjectId, discountId), eq(schema.tasks.status, "open")));
+
+    const summary = await runRulesPendingReminderScan(services);
+    expect(summary.tasksCreated).toBe(1);
+    const rows = await reminderTasks();
+    const mine = rows.filter((row) => row.subjectId === discountId);
+    // 软删行对扫描不可见（status 仍是 open 但 deleted_at 非空）：活着的那条 open
+    // 才算数，删除的那条留在原地作历史
+    expect(mine.filter((row) => row.status === "open" && row.deletedAt === null)).toHaveLength(1);
+    expect(mine.filter((row) => row.deletedAt !== null)).toHaveLength(1);
   });
 
   it("falls back to owner when no user holds the changeableBy roles", async () => {

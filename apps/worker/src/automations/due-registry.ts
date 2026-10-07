@@ -92,6 +92,9 @@ const taskDueSpec: DueSubjectSpec = {
       .where(
         and(
           eq(schema.tasks.status, "open"),
+          // 软删行不可见（#29 切片 2）：删掉的任务不再触发 due 自动化——
+          // 「到期后 X 未办即升级」类规则不能追着已删除的任务跑
+          isNull(schema.tasks.deletedAt),
           or(
             isNull(schema.tasks.subjectType),
             ne(schema.tasks.subjectType, AUTOMATION_TASK_SUBJECT_TYPE),

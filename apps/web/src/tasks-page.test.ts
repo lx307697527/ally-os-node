@@ -73,6 +73,31 @@ describe("tasks page (#113)", () => {
   });
 });
 
+describe("task delete with undo (#29 slice 2, #129 slice 4)", () => {
+  it("the client speaks DELETE; 403/404 are their own answers", () => {
+    expect(client).toContain('method: "DELETE"');
+    expect(client).toContain("TaskDeleteResult");
+    expect(client).toContain('reason: "notfound"');
+  });
+
+  it("delete lives in the created scope only — the creator's verb where the creator reads", () => {
+    expect(page).toContain('scope === "created" ? (');
+    expect(page).toContain('data-testid="tasks-row-delete"');
+  });
+
+  it("the row leaves the list at once; the server hears when the window closes", () => {
+    expect(page).toContain("removeTaskFromCaches");
+    expect(page).toContain("useDeleteWithUndo");
+    expect(page).toContain("autoDismissMs={UNDO_WINDOW_MS}");
+    expect(page).toContain('data-testid="tasks-delete-toast"');
+  });
+
+  it("undo refetches instead of replaying a client-side insert — the server never saw the delete", () => {
+    expect(page).toContain("restore: () => {");
+    expect(page).toContain("refresh();");
+  });
+});
+
 describe("wiring (#113)", () => {
   it("the route exists and the rail item points at it — one table, no drift", () => {
     expect(app).toContain('path="/tasks"');

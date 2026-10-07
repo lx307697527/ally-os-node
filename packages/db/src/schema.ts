@@ -368,6 +368,13 @@ export const tasks = pgTable(
     // assignee_id, status) 去重，不靠标题字符串匹配
     subjectType: text("subject_type"),
     subjectId: uuid("subject_id"),
+    // 软删除（#29 切片 2）：删除动词置列，读面统一 `is null` 过滤，恢复 = 清列。
+    // 任务是记录不是对话——删除不级联子行，评论/关注/自定义字段值原地保留，恢复
+    // 即原样回来（与评论行删即 CASCADE 的裁决相反：那是作者对对话的处理，这是
+    // 对记录的删除，删除本身也要可查可逆）。删除事实的权威载体是同事务写入的
+    // deleted_records 台账（快照）与审计行 task.deleted，恢复不改写任何一行历史
+    deletedAt: timestamp("deleted_at", { withTimezone: true }),
+    deletedBy: uuid("deleted_by").references(() => authUser.id, { onDelete: "set null" }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -377,6 +384,43 @@ export const tasks = pgTable(
     index("tasks_created_by_idx").on(t.createdById),
     // 附着读法：一个业务对象上挂着哪些任务（对账去重主查法）
     index("tasks_subject_idx").on(t.subjectType, t.subjectId),
+  ],
+);
+
+// ── 删除记录台账（#29 切片 2：删除记录 + 快照 + 恢复）────────────────────────
+// 软删除基础设施与第一个有真实删除的业务域（task，同切片）一起落地。一行台账 =
+// 一次删除的事实：谁删的、什么时候、删的时候长什么样（snapshot）。「恢复」只清
+// 软删行上的列并在台账行原地补 restored_*——台账行不随恢复消失，删除史是记录史
+// 的一部分（审计的孪生纪律：发生过的事不改写）。老-老系统的触发器快照形态
+// （176 个触发器逐表抄行）已被新设计抛弃；快照由删除动词的业务事务显式写入
+// （records/deleted-records.ts 的 recordDeletion），与审计同一写纪律——写失败则
+// 业务失败，不做静默降级。
+export const deletedRecords = pgTable(
+  "deleted_records",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    // 被删对象的多态身份（task = 第一个成员；text 不用枚举，新域注册不動数据库）
+    subjectType: text("subject_type").notNull(),
+    subjectId: uuid("subject_id").notNull(),
+    // 删除时刻的展示标题：台账列表的主读法，不回表 join 软删行
+    title: text("title").notNull(),
+    // 删除时刻的全行快照（JSON 安全投影）：「查看」的面，也是恢复语境的事实——
+    // 恢复取的是软删行（还在原地），快照回答「删的时候它是什么样」
+    snapshot: jsonb("snapshot").notNull(),
+    deletedBy: uuid("deleted_by").references(() => authUser.id, { onDelete: "set null" }),
+    deletedAt: timestamp("deleted_at", { withTimezone: true }).notNull().defaultNow(),
+    restoredBy: uuid("restored_by").references(() => authUser.id, { onDelete: "set null" }),
+    restoredAt: timestamp("restored_at", { withTimezone: true }),
+  },
+  (t) => [
+    // 结构不变式：一行业务记录同一时刻至多一条在飞的删除。恢复后再删 = 第二条
+    // 台账行（历史不覆写）；没恢复再删在 API 侧就不可达（软删行对动词不可见），
+    // 索引兜住并发直插的缝隙
+    uniqueIndex("deleted_records_active_unique")
+      .on(t.subjectType, t.subjectId)
+      .where(sql`restored_at is null`),
+    // 台账唯一读法：最新删除在前
+    index("deleted_records_deleted_at_idx").on(t.deletedAt),
   ],
 );
 

@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import { z } from "zod";
 import { AUTOMATION_ACTOR_PREFIX } from "@ally/automations";
 import { schema, type Db } from "@ally/db";
@@ -69,11 +69,12 @@ const taskUpdatableSpec: UpdatableSubjectSpec = {
             `update_field value for task.status must be one of: ${TASK_STATUSES.join(", ")}`,
           );
         }
-        // 行锁下读旧值：并发的人手编辑与本动作在行上排队，from/to 是锁内真相
+        // 行锁下读旧值：并发的人手编辑与本动作在行上排队，from/to 是锁内真相；
+        // 软删行按不存在处理（#29 切片 2）——改一条已删除的任务比不改更糟
         const rows = await tx
           .select({ status: schema.tasks.status })
           .from(schema.tasks)
-          .where(eq(schema.tasks.id, subjectId))
+          .where(and(eq(schema.tasks.id, subjectId), isNull(schema.tasks.deletedAt)))
           .for("update")
           .limit(1);
         const task = rows[0];
