@@ -136,6 +136,9 @@ source='created' 的 v1，使「行.version = 台账最新版」从第一行成�
 - **改治理本身**（changeableBy/enableBy/riskFlag 的编辑）与规则的新增/退役面：
   治理变更 = 改裁决，随 #226 受监管变更控制（#206）一起裁。
 - ~~**前端配置工作室 UI**~~：见下节。
+- ~~**决策表的 JDM 拖拽编辑器**~~：见下节「配置工作室 UI」的网格编辑器切片
+  （拖拽排序 + 逐格编辑 + 服务端编译探针仍为唯一权威；逐格错误的格内高亮、
+  以及 #223 等后续消费域同形态落自己的表，仍随各自消费域进场）。
 
 ## 定时生效接线（worker `rules-due-activation`，#233 cron 切片）
 
@@ -164,11 +167,25 @@ source='created' 的 v1，使「行.version = 台账最新版」从第一行成�
   与 API 读面同裁）；「Change value」面板把 403 的 `roles` 与 400 的 `issues`
   原样说话——决策表的逐格编译错误直接给到编辑者，不翻译成一句「无权/无效」。
 - **改值表单按值类型出题**：number/text/boolean（开关 on/off，带 enableBy 确认
-  提示）/两种 list（一行一项）/json/decision_table（JSON 文本 + 实时只读表格
-  预览，预览≠保存权威——四道 zod+编译探针门都在服务端）。依据 refs 逐行至少
+  提示）/两种 list（一行一项）/json/decision_table（见下一条）。依据 refs 逐行至少
   一条，客户端缺依据/坏值不发请求；可选未来时刻 = 定时生效（面板显示待生效
   变更与依据，明说 worker 到点前滚、此前现值照活）。switch 无「清回待填」路
   （内核对 switch 拒 null）。
+- **决策表网格编辑器**（#233 JDM 编辑器切片）：decision_table 的作成面是网格
+  ——拖拽调行序（first 命中策略下行序即路由序，行/列拖拽只从 ⠿ 手柄发起）、
+  列在各自 kind 内拖拽排序（input 永远越不进 output）、单元格直接文本编辑、
+  列带 id/field/label 三输入与增删（最后一个输出列不可删）、hit policy 下拉。
+  结构上：单元格以稳定句柄为键（改列 id 不搬格子）；全部手术走
+  `rules-client.ts` 纯函数（离 DOM 可单测）；提交前 `serializeTableDraft`
+  镜像服务端形状规则先拒一轮（重名/空 id/孤儿单元格逐条说人话），服务端
+  zod + 编译探针仍是唯一权威——逐格语法错误沿 issues 面板原样回来。画不出
+  的值（形状不符）显式退回 JSON 文本模式，网格不假装什么都能画；孤儿单元格
+  拒绝从网格保存并指路 JSON 模式，数据不静默消失。
+- **决策表显示解析修正**（同切片的回归修复）：`parseDecisionTableDisplay`
+  原按「rules 为对象」解析，而服务端（`decisionTableValueSchema`）存的是
+  **rules 数组**（每行自带 `_id`）——真实值（0024 种子表在内）一律画不出
+  网格、只能回退原始 JSON。已改为按数组形状解析、行序 = 存储顺序（first
+  策略下行序即路由序，显示不再重排），回归测试钉住种子表形状。
 - **台账史与一键回滚**（#226 `registry_rule` 族）：每版带 source/changedBy/
   逐字段 from→to 摘要；回滚 = 恢复版记为新版、历史不改写、可带原因，回滚同时
   清掉待生效变更（families.ts 既有语义）。无 rules.configure 的账号在页面里

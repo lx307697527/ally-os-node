@@ -288,8 +288,10 @@ export function createRulesAdapters(fetchFn: typeof fetch = fetch): RulesAdapter
 // ---------------------------------------------------------------------------
 
 /** A decision-table value as the grid draws it — columns in declaration
- *  order (inputs then outputs), rows sorted by their `_id`. `null` when the
- *  value is not shaped like a table at all; the page then shows raw JSON. */
+ *  order (inputs then outputs), rows in stored order: with the first hit
+ *  policy the row order IS the routing order, so display never re-sorts it.
+ *  `null` when the value is not shaped like a table at all; the page then
+ *  shows raw JSON. */
 export interface DecisionTableDisplay {
   hitPolicy: string;
   columns: { id: string; field: string; name: string | null; kind: "input" | "output" }[];
@@ -306,9 +308,11 @@ export function parseDecisionTableDisplay(value: unknown): DecisionTableDisplay 
   };
   if (typeof table.hitPolicy !== "string") return null;
   if (!Array.isArray(table.inputs) || !Array.isArray(table.outputs)) return null;
-  if (typeof table.rules !== "object" || table.rules === null || Array.isArray(table.rules)) {
-    return null;
-  }
+  // The server's shape is an ARRAY of row maps, each carrying its own `_id`
+  // (decisionTableValueSchema) — regression-pinned after the parser was found
+  // reading an object-keyed shape the server never writes (every real value
+  // fell back to raw JSON, grid never drew).
+  if (!Array.isArray(table.rules)) return null;
   const inputColumns: unknown[] = table.inputs;
   const outputColumns: unknown[] = table.outputs;
   const columns: DecisionTableDisplay["columns"] = [];
@@ -325,16 +329,21 @@ export function parseDecisionTableDisplay(value: unknown): DecisionTableDisplay 
     });
   }
   const rows: DecisionTableDisplay["rows"] = [];
-  for (const [rowId, rawCells] of Object.entries(table.rules as Record<string, unknown>)) {
-    if (typeof rawCells !== "object" || rawCells === null) return null;
+  for (const [index, raw] of table.rules.entries()) {
+    if (typeof raw !== "object" || raw === null) return null;
+    const rawCells = raw as Record<string, unknown>;
     const cells: Record<string, string> = {};
-    for (const [columnId, cell] of Object.entries(rawCells as Record<string, unknown>)) {
+    let rowId = "";
+    for (const [cellKey, cell] of Object.entries(rawCells)) {
       if (typeof cell !== "string") return null;
-      cells[columnId] = cell;
+      if (cellKey === "_id") {
+        rowId = cell;
+        continue;
+      }
+      cells[cellKey] = cell;
     }
-    rows.push({ id: rowId, cells });
+    rows.push({ id: rowId !== "" ? rowId : `row_${index + 1}`, cells });
   }
-  rows.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
   return { hitPolicy: table.hitPolicy, columns, rows };
 }
 
@@ -504,4 +513,333 @@ export function parseRefs(text: string): string[] {
     .split("\n")
     .map((line) => line.trim())
     .filter((line) => line !== "");
+}
+
+// ---------------------------------------------------------------------------
+// Decision-table editor draft (#233 JDM grid editor) — pure, unit-testable
+// without a DOM. The grid edits a TableDraft whose columns and rows carry
+// STABLE generated handles: cells are keyed by the handle, never by the
+// editable column id, so renaming an id mid-keystroke cannot re-key cells
+// under the editor. serialize maps handles back to ids and mirrors the
+// server's shape checks (unique ids, ≥1 output, the 20/20/500 limits) so an
+// obviously-broken submit never leaves the page — the server's zod + compile
+// probe stay the only authority, exactly like the raw-JSON path.
+// ---------------------------------------------------------------------------
+
+export type TableColumnKind = "input" | "output";
+
+export interface TableColumnDraft {
+  /** Stable handle that cells are keyed by — generated once, never edited. */
+  key: string;
+  /** The GoRules column id the value carries (what row cells key on). */
+  id: string;
+  /** The fact path (inputs) / result key (outputs). */
+  field: string;
+  /** Optional human label; empty string = omitted on serialize. */
+  name: string;
+  kind: TableColumnKind;
+}
+
+export interface TableRowDraft {
+  /** Stable handle for the editor's lists. */
+  key: string;
+  /** The row's `_id` in the value; empty/duplicate ids are regenerated on
+   *  serialize so a save never writes a shape the server would refuse. */
+  id: string;
+  /** Cell expressions keyed by column handle — unknown-column cells from a
+   *  corrupt stored value keep their raw key here and are surfaced (then
+   *  dropped, with a named issue) at serialize instead of vanishing. */
+  cells: Record<string, string>;
+}
+
+export interface TableDraft {
+  hitPolicy: "first" | "collect";
+  columns: TableColumnDraft[];
+  rows: TableRowDraft[];
+}
+
+/** A fresh one-column draft for a rule that has no value yet — one output
+ *  column (a table with nothing to produce is refused), zero rows (an empty
+ *  table is legal and answers every match with fail-closed). */
+export function emptyTableDraft(): TableDraft {
+  return {
+    hitPolicy: "first",
+    columns: [{ key: "col-1", id: "output", field: "output", name: "", kind: "output" }],
+    rows: [],
+  };
+}
+
+/** Liberal parse of a stored value into an editable draft; `null` when the
+ *  value is not shaped like a table at all and the page must fall back to raw
+ *  JSON. Order matters (first-hit rows are order-sensitive), so rows keep the
+ *  value's array order — unlike the display parser, which sorts for reading. */
+export function formatTableDraft(value: unknown): TableDraft | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  const table = value as {
+    hitPolicy?: unknown;
+    inputs?: unknown;
+    outputs?: unknown;
+    rules?: unknown;
+  };
+  if (table.hitPolicy !== "first" && table.hitPolicy !== "collect") return null;
+  if (!Array.isArray(table.inputs) || !Array.isArray(table.outputs) || !Array.isArray(table.rules)) {
+    return null;
+  }
+  // a table with no output column is a shape the server never accepts
+  if (table.outputs.length === 0) return null;
+  const columns: TableColumnDraft[] = [];
+  const keyByColumnId = new Map<string, string>();
+  const readColumns = (raw: unknown[], kind: TableColumnKind): boolean => {
+    for (const item of raw) {
+      if (typeof item !== "object" || item === null) return false;
+      const column = item as { id?: unknown; field?: unknown; name?: unknown };
+      if (typeof column.id !== "string" || typeof column.field !== "string") return false;
+      const key = `col-${columns.length + 1}`;
+      columns.push({
+        key,
+        id: column.id,
+        field: column.field,
+        name: typeof column.name === "string" ? column.name : "",
+        kind,
+      });
+      keyByColumnId.set(column.id, key);
+    }
+    return true;
+  };
+  if (!readColumns(table.inputs, "input")) return null;
+  if (!readColumns(table.outputs, "output")) return null;
+  const rows: TableRowDraft[] = [];
+  for (const [index, item] of table.rules.entries()) {
+    if (typeof item !== "object" || item === null) return null;
+    const rawCells = item as Record<string, unknown>;
+    const rowId = rawCells._id;
+    const cells: Record<string, string> = {};
+    for (const [cellKey, cell] of Object.entries(rawCells)) {
+      if (typeof cell !== "string") return null;
+      if (cellKey === "_id") continue; // captured as the row id above
+      cells[keyByColumnId.get(cellKey) ?? cellKey] = cell;
+    }
+    rows.push({
+      key: `row-${index + 1}`,
+      id: typeof rowId === "string" ? rowId : "",
+      cells,
+    });
+  }
+  return { hitPolicy: table.hitPolicy, columns, rows };
+}
+
+/** Column ids/fields/names and the row limits, mirrored from the server's
+ *  `decisionTableValueSchema` so the page refuses before the wire what the
+ *  server would refuse after it (the server still re-judges everything). */
+const TABLE_LIMITS = {
+  columnId: 100,
+  field: 200,
+  name: 200,
+  inputs: 20,
+  outputs: 20,
+  rows: 500,
+} as const;
+
+export type TableSerializeResult =
+  | { ok: true; value: unknown }
+  | { ok: false; issues: string[] };
+
+/** The draft → registry value. Cells keyed by unknown handles (a removed
+ *  column's leftovers, a corrupt stored value) block the save with a named
+ *  issue instead of being dropped in silence — the raw-JSON mode is where a
+ *  value the grid cannot represent survives. */
+export function serializeTableDraft(draft: TableDraft): TableSerializeResult {
+  const issues: string[] = [];
+  const inputs = draft.columns.filter((column) => column.kind === "input");
+  const outputs = draft.columns.filter((column) => column.kind === "output");
+  if (outputs.length === 0) {
+    issues.push("Add at least one output column — a table with nothing to produce matches every row into an empty result.");
+  }
+  if (inputs.length > TABLE_LIMITS.inputs || outputs.length > TABLE_LIMITS.outputs) {
+    issues.push(`At most ${TABLE_LIMITS.inputs} input and ${TABLE_LIMITS.outputs} output columns fit one table.`);
+  }
+  if (draft.rows.length > TABLE_LIMITS.rows) {
+    issues.push(`At most ${TABLE_LIMITS.rows} rows fit one table.`);
+  }
+  const seenIds = new Set<string>();
+  for (const column of draft.columns) {
+    const kind = column.kind === "input" ? "input" : "output";
+    if (column.id.trim() === "") {
+      issues.push(`The ${kind} column needs a non-empty id.`);
+    } else if (column.id.length > TABLE_LIMITS.columnId) {
+      issues.push(`Column id "${column.id.slice(0, 24)}…" is over ${TABLE_LIMITS.columnId} characters.`);
+    } else if (seenIds.has(column.id)) {
+      issues.push(`Duplicate column id "${column.id}" — ids must be unique across inputs and outputs.`);
+    }
+    seenIds.add(column.id);
+    if (column.field.trim() === "") {
+      issues.push(`Column "${column.id}" needs a non-empty field.`);
+    } else if (column.field.length > TABLE_LIMITS.field) {
+      issues.push(`Column "${column.id}" field is over ${TABLE_LIMITS.field} characters.`);
+    }
+    if (column.name.length > TABLE_LIMITS.name) {
+      issues.push(`Column "${column.id}" name is over ${TABLE_LIMITS.name} characters.`);
+    }
+  }
+  const outputFields = new Set<string>();
+  for (const column of outputs) {
+    if (outputFields.has(column.field)) {
+      issues.push(`Duplicate output field "${column.field}" — every output column writes its own result key.`);
+    }
+    outputFields.add(column.field);
+  }
+  const keyToId = new Map(draft.columns.map((column) => [column.key, column.id]));
+  for (const row of draft.rows) {
+    for (const cellKey of Object.keys(row.cells)) {
+      if (!keyToId.has(cellKey)) {
+        issues.push(`Row "${row.id || row.key}" has a cell for a column the table no longer has ("${keyToId.get(cellKey) ?? cellKey}") — switch to JSON mode to keep it.`);
+      }
+    }
+  }
+  if (issues.length > 0) return { ok: false, issues };
+
+  const usedRowIds = new Set<string>();
+  let rowCounter = 0;
+  const nextRowId = (): string => {
+    rowCounter += 1;
+    let candidate = `row_${rowCounter}`;
+    while (usedRowIds.has(candidate)) {
+      rowCounter += 1;
+      candidate = `row_${rowCounter}`;
+    }
+    return candidate;
+  };
+  const rules = draft.rows.map((row) => {
+    const id = row.id.trim() !== "" && !usedRowIds.has(row.id) ? row.id : nextRowId();
+    usedRowIds.add(id);
+    const cells: Record<string, string> = { _id: id };
+    for (const [cellKey, cell] of Object.entries(row.cells)) {
+      const columnId = keyToId.get(cellKey);
+      if (columnId !== undefined) cells[columnId] = cell;
+    }
+    return cells;
+  });
+  return {
+    ok: true,
+    value: {
+      hitPolicy: draft.hitPolicy,
+      inputs: inputs.map((column) => ({
+        id: column.id,
+        field: column.field,
+        ...(column.name.trim() !== "" ? { name: column.name } : {}),
+      })),
+      outputs: outputs.map((column) => ({
+        id: column.id,
+        field: column.field,
+        ...(column.name.trim() !== "" ? { name: column.name } : {}),
+      })),
+      rules,
+    },
+  };
+}
+
+function nextFreeId(taken: Set<string>, base: string): string {
+  let n = 1;
+  while (taken.has(`${base}_${n}`)) n += 1;
+  return `${base}_${n}`;
+}
+
+/** A new column with a collision-free id; cells stay untouched (rows simply
+ *  have no cell for it yet — an empty input cell is always-true). */
+export function addTableColumn(draft: TableDraft, kind: TableColumnKind): TableDraft {
+  const taken = new Set(draft.columns.map((column) => column.id));
+  const id = nextFreeId(taken, kind === "input" ? "input" : "output");
+  const key = nextFreeId(new Set(draft.columns.map((column) => column.key)), "col");
+  return {
+    ...draft,
+    columns: [...draft.columns, { key, id, field: id, name: "", kind }],
+  };
+}
+
+/** Removes a column and every cell keyed by it. Removing the last output
+ *  column is a no-op — a table with nothing to produce is not a table. */
+export function removeTableColumn(draft: TableDraft, key: string): TableDraft {
+  const column = draft.columns.find((entry) => entry.key === key);
+  if (column === undefined) return draft;
+  if (column.kind === "output" && draft.columns.filter((entry) => entry.kind === "output").length === 1) {
+    return draft;
+  }
+  return {
+    ...draft,
+    columns: draft.columns.filter((entry) => entry.key !== key),
+    rows: draft.rows.map((row) => {
+      if (!(key in row.cells)) return row;
+      const cells = Object.fromEntries(
+        Object.entries(row.cells).filter(([cellKey]) => cellKey !== key),
+      );
+      return { ...row, cells };
+    }),
+  };
+}
+
+export function patchTableColumn(
+  draft: TableDraft,
+  key: string,
+  patch: Partial<Pick<TableColumnDraft, "id" | "field" | "name">>,
+): TableDraft {
+  return {
+    ...draft,
+    columns: draft.columns.map((column) => (column.key === key ? { ...column, ...patch } : column)),
+  };
+}
+
+/** Reorders a row (first-hit policy makes row order the routing order). */
+export function moveTableRow(draft: TableDraft, from: number, to: number): TableDraft {
+  if (from === to || from < 0 || to < 0 || from >= draft.rows.length || to >= draft.rows.length) {
+    return draft;
+  }
+  const rows = [...draft.rows];
+  const [moved] = rows.splice(from, 1);
+  if (moved === undefined) return draft;
+  rows.splice(to, 0, moved);
+  return { ...draft, rows };
+}
+
+/** Reorders a column within its own kind — an input can never cross into the
+ *  outputs. `from`/`to` index the kind's slice, not the whole columns array. */
+export function moveTableColumn(
+  draft: TableDraft,
+  kind: TableColumnKind,
+  from: number,
+  to: number,
+): TableDraft {
+  const slice = draft.columns
+    .map((column, index) => ({ column, index }))
+    .filter((entry) => entry.column.kind === kind);
+  if (from === to || from < 0 || to < 0 || from >= slice.length || to >= slice.length) return draft;
+  const moving = slice[from];
+  const target = slice[to];
+  if (moving === undefined || target === undefined) return draft;
+  const columns = [...draft.columns];
+  columns.splice(moving.index, 1);
+  columns.splice(target.index, 0, moving.column);
+  return { ...draft, columns };
+}
+
+export function addTableRow(draft: TableDraft): TableDraft {
+  const key = nextFreeId(new Set(draft.rows.map((row) => row.key)), "row");
+  return { ...draft, rows: [...draft.rows, { key, id: "", cells: {} }] };
+}
+
+export function removeTableRow(draft: TableDraft, key: string): TableDraft {
+  return { ...draft, rows: draft.rows.filter((row) => row.key !== key) };
+}
+
+export function setTableCell(
+  draft: TableDraft,
+  rowKey: string,
+  columnKey: string,
+  expression: string,
+): TableDraft {
+  return {
+    ...draft,
+    rows: draft.rows.map((row) =>
+      row.key === rowKey ? { ...row, cells: { ...row.cells, [columnKey]: expression } } : row,
+    ),
+  };
 }

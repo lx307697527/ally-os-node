@@ -54,6 +54,30 @@ describe("rules registry page rulings (#233)", () => {
     expect(client).toContain("export function parseDecisionTableDisplay(");
   });
 
+  it("决策表在网格编辑器里作成(#233 JDM 编辑器),JSON 是显式逃生口,两边过服务端同一道门", () => {
+    expect(page).toContain('data-testid="rules-edit-table-face"');
+    expect(page).toContain('data-testid="rules-edit-mode-grid"');
+    expect(page).toContain('data-testid="rules-edit-mode-json"');
+    expect(page).toContain("switchToGridEditor");
+    expect(page).toContain("switchToJsonEditor");
+    expect(page).toContain("<DecisionTableEditor");
+    expect(page.replace(/\s+/g, " ")).toContain("server compiles every cell either way");
+  });
+
+  it("网格提交先过客户端结构闸:serialize 不过不发请求,issues 原样亮出", () => {
+    expect(page).toContain("serializeTableDraft(tableDraft)");
+    expect(page.replace(/\s+/g, " ")).toContain("The table cannot be saved yet:");
+    // 服务器仍是唯一权威:编译探针逐格错误沿 issues 面板原样说话
+    expect(page).toContain('data-testid="rules-change-issues"');
+  });
+
+  it("画不出的值退回 JSON 模式:打开表单按值定型,网格不假装什么都能画", () => {
+    expect(page).toContain("formatTableDraft(rule.value)");
+    expect(page).toContain('grid === null ? "json" : "grid"');
+    expect(page).toContain("not shaped like a decision table");
+    expect(page).toContain("emptyTableDraft()");
+  });
+
   it("定时生效:值先落行,worker 到点前滚——页面不假装立即生效", () => {
     expect(page).toContain('data-testid="rules-scheduled"');
     expect(page.replace(/\s+/g, " ")).toContain("worker applies it when due");
