@@ -3,6 +3,7 @@ import { cors } from "hono/cors";
 import { requestId } from "hono/request-id";
 import type { Logger } from "pino";
 import type { Db } from "@ally/db";
+import type { Storage } from "@ally/storage";
 import type { AppEnv, ResolveSession } from "./auth/session.ts";
 import { sessionMiddleware } from "./auth/session.ts";
 import { authzMiddleware, requireTwoFactorGate } from "./authz/middleware.ts";
@@ -58,6 +59,12 @@ export interface AppDeps {
    * 失败。测试注入收集调用的假实现。
    */
   notifyUsers: (userIds: string[]) => Promise<void>;
+  /**
+   * 对象存储（#110 附件切片）：评论附件的字节面。生产是 S3 协议客户端
+   * （@ally/storage，桶与凭证走 env），测试注入内存假实现；业务代码只见
+   * Storage 接口，不见 SDK。
+   */
+  storage: Storage;
 }
 
 export function createApp(deps: AppDeps) {

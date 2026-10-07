@@ -4,6 +4,7 @@ import { parseEnv } from "@ally/config";
 import { createDb } from "@ally/db";
 import { createMailer } from "@ally/mailer";
 import { RealtimeBus, type RealtimeBusPayload, NOTIFICATIONS_CHANGED_EVENT, userChannel } from "@ally/realtime";
+import { createS3Storage } from "@ally/storage";
 import pino from "pino";
 import { createApp } from "./app.ts";
 import { createAuth, createSessionResolver, createSessionTokenVerifier } from "./auth/auth.ts";
@@ -71,6 +72,17 @@ const notifyUsers = async (userIds: string[]): Promise<void> => {
   });
 };
 
+// 对象存储（#110 附件切片）：S3 协议客户端，桶与凭证来自 env（本地 MinIO，
+// 生产按部署注入）；业务路由只见 Storage 接口
+const storage = createS3Storage({
+  bucket: env.S3_BUCKET,
+  region: env.S3_REGION,
+  endpoint: env.S3_ENDPOINT,
+  accessKeyId: env.S3_ACCESS_KEY_ID,
+  secretAccessKey: env.S3_SECRET_ACCESS_KEY,
+  forcePathStyle: env.S3_FORCE_PATH_STYLE,
+});
+
 const app = createApp({
   logger,
   db,
@@ -83,6 +95,7 @@ const app = createApp({
   socialProviders: googleOAuth === undefined ? [] : ["google"],
   authzStore,
   notifyUsers,
+  storage,
 });
 
 // 实时推送（#30）：hub ↔ bus 互相引用，用先声明再赋值的函数引用解决循环创建。

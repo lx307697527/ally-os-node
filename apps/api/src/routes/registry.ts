@@ -57,6 +57,12 @@ export const API_ROUTES: readonly RouteDecl[] = [
   { method: "POST", path: "/api/comments", auth: { kind: "session" } },
   { method: "PATCH", path: "/api/comments/:id", auth: { kind: "session" } },
   { method: "DELETE", path: "/api/comments/:id", auth: { kind: "session" } },
+  // 评论附件（#110 收尾切片）：名单与下载门 = subject 可见者（与评论同扇），
+  // 上传与摘除 = 评论作者（与编辑/删除同一家族），均登录即可，无新权限点
+  { method: "GET", path: "/api/comments/:id/attachments", auth: { kind: "session" } },
+  { method: "POST", path: "/api/comments/:id/attachments", auth: { kind: "session" } },
+  { method: "GET", path: "/api/comments/:id/attachments/:attachmentId/url", auth: { kind: "session" } },
+  { method: "DELETE", path: "/api/comments/:id/attachments/:attachmentId", auth: { kind: "session" } },
   // 活动流（#110 切片 3）：audit_events 的按对象读投影，subject 可见者门与
   // 评论同扇（subjects/registry.ts），登录即可——投影只含该 subject 自己的
   // 行，看得到对象就看得到对象的历史；全公司日志仍走 audit.read

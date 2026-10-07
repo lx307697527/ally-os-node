@@ -43,6 +43,13 @@ describe.skipIf(!databaseUrl)("notification endpoints (#129, integration)", () =
       return Promise.resolve(sessionFor(who === "B" ? userB : userA));
     },
     socialProviders: [],
+    // 本套件不 exercise 附件端点；真被调到会在这里大声炸（AppDeps.storage 必选）
+    storage: {
+      put: () => Promise.reject(new Error("storage not used in this suite")),
+      signedGetUrl: () => Promise.reject(new Error("storage not used in this suite")),
+      signedPutUrl: () => Promise.reject(new Error("storage not used in this suite")),
+      delete: () => Promise.reject(new Error("storage not used in this suite")),
+    },
     authzStore: {
       getRoles: () => Promise.resolve([]),
       getDirectPermissions: () => Promise.resolve([]),

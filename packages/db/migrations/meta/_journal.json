@@ -197,6 +197,13 @@
       "when": 1791320923904,
       "tag": "0027_typical_reptil",
       "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "7",
+      "when": 1791372025262,
+      "tag": "0028_next_purple_man",
+      "breakpoints": true
     }
   ]
 }

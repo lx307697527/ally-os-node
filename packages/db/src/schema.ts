@@ -408,6 +408,43 @@ export const comments = pgTable(
   (t) => [index("comments_subject_created_idx").on(t.subjectType, t.subjectId, t.createdAt)],
 );
 
+// ── 评论附件（#110：评论内核的附件面）──────────────────────────────────────
+// #232 §11「评论、@、关注与附件：每个业务对象都有」的最后一半。附件挂在评论行
+// 上（不直接挂在 subject 上）：评论是协作动静的承载，文件跟着说话走；行属 =
+// 评论作者（谁写的评论谁贴文件，与编辑/删除同一动词家族）。可见性不在此表
+// 重复表达——读面过 subjects/registry.ts 的同一扇 subject 门，看得到评论就
+// 看得到它的附件。
+// storage_key 不含任何用户输入（comment-attachments/<commentId>/<uuid>，uuid
+// 既是唯一性也是防遍历）：原文件名只活在 file_name 列里服务下载命名，进不了
+// 对象 key。老系统 BUG-325 类的「桶里孤儿」在本切片的裁决是先落桶后记账 +
+// 记账失败尽力删（packages/storage 补 delete），残余孤儿只占字节不可见，
+// 回收属后续 worker 切片。
+// 附件行与评论行共生灭（CASCADE）：评论删则附件行随之；字节面的清理由路由
+// 在事务提交后尽力做，失败只告警——行没了对象就不可达，宁留字节不留死链。
+export const commentAttachments = pgTable(
+  "comment_attachments",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    commentId: uuid("comment_id")
+      .notNull()
+      .references(() => comments.id, { onDelete: "cascade" }),
+    fileName: text("file_name").notNull(),
+    contentType: text("content_type").notNull(),
+    sizeBytes: integer("size_bytes").notNull(),
+    storageKey: text("storage_key").notNull(),
+    uploadedBy: uuid("uploaded_by")
+      .notNull()
+      .references(() => authUser.id, { onDelete: "cascade" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    // 唯一读法：「这条评论的附件」；下载走行内 storage_key，不建第二索引
+    index("comment_attachments_comment_idx").on(t.commentId),
+    // key 是对象世界的身份：唯一索引既防重名也当注册表（一个 key 只许一行引用）
+    uniqueIndex("comment_attachments_key_idx").on(t.storageKey),
+  ],
+);
+
 // ── 关注（#110 切片 4：关注内核）────────────────────────────────────────────
 // 老系统从未建成关注（issue 正文里没有任何对应表/函数，与评论同一处境）；设计
 // 依据是 #232 §11「评论、@、关注与附件：每个业务对象都有」。关注是内核机制：
