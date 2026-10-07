@@ -7,13 +7,24 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  addTableColumn,
+  addTableRow,
   buildRuleValue,
   createRulesAdapters,
+  emptyTableDraft,
   emptyValueDraft,
   filterRules,
+  formatTableDraft,
   formatValueDraft,
+  moveTableColumn,
+  moveTableRow,
   parseDecisionTableDisplay,
   parseRefs,
+  patchTableColumn,
+  removeTableColumn,
+  removeTableRow,
+  serializeTableDraft,
+  setTableCell,
   valueSummary,
   type RuleView,
 } from "./rules-client.ts";
@@ -45,10 +56,11 @@ const TABLE = {
   hitPolicy: "first",
   inputs: [{ id: "action", field: "action" }],
   outputs: [{ id: "route", field: "route" }],
-  rules: {
-    row_b: { action: "'revoke'", route: "'role.revoke'" },
-    row_a: { action: "'grant'", route: "'role.grant'" },
-  },
+  // the server's shape: an array of row maps, each row carrying its own _id
+  rules: [
+    { _id: "row_a", action: "'grant'", route: "'role.grant'" },
+    { _id: "row_b", action: "'revoke'", route: "'role.revoke'" },
+  ],
 };
 
 describe("rules adapters (#233)", () => {
@@ -215,7 +227,7 @@ describe("rules adapters (#233)", () => {
 });
 
 describe("decision-table display (liberal where the server is strict)", () => {
-  it("draws columns inputs-then-outputs and rows sorted by _id", () => {
+  it("draws columns inputs-then-outputs and rows in stored order (order = routing order)", () => {
     const display = parseDecisionTableDisplay(TABLE);
     expect(display).not.toBeNull();
     expect(display?.hitPolicy).toBe("first");
@@ -223,10 +235,36 @@ describe("decision-table display (liberal where the server is strict)", () => {
     expect(display?.rows.map((row) => row.id)).toEqual(["row_a", "row_b"]);
   });
 
+  it("regression: the server's array-shaped rules draw as a grid, not raw-JSON fallback", () => {
+    // the parser used to read an object-keyed rules shape the server never
+    // writes — every real value (0024 seed included) fell back to raw JSON
+    const seeded = {
+      hitPolicy: "first",
+      inputs: [{ id: "in_action", field: "action", name: "Action" }],
+      outputs: [{ id: "out_config", field: "configKey", name: "Approval line" }],
+      rules: [
+        { _id: "r-grant", in_action: "== 'grant'", out_config: "'role_grant'" },
+        { _id: "r-revoke", in_action: "== 'revoke'", out_config: "'role_grant'" },
+      ],
+    };
+    const display = parseDecisionTableDisplay(seeded);
+    expect(display?.rows.map((row) => row.id)).toEqual(["r-grant", "r-revoke"]);
+  });
+
   it("an empty table is a legal table (fail closed), not a fallback", () => {
-    const display = parseDecisionTableDisplay({ hitPolicy: "first", inputs: [], outputs: [], rules: {} });
+    const display = parseDecisionTableDisplay({ hitPolicy: "first", inputs: [], outputs: [], rules: [] });
     expect(display).not.toBeNull();
     expect(display?.rows).toEqual([]);
+  });
+
+  it("a row without _id still draws under a generated label", () => {
+    const display = parseDecisionTableDisplay({
+      hitPolicy: "collect",
+      inputs: [],
+      outputs: [{ id: "route", field: "route" }],
+      rules: [{ route: "'a'" }, { _id: "named", route: "'b'" }],
+    });
+    expect(display?.rows.map((row) => row.id)).toEqual(["row_1", "named"]);
   });
 
   it("anything not shaped like a table falls back to null — the page then shows raw JSON", () => {
@@ -234,9 +272,10 @@ describe("decision-table display (liberal where the server is strict)", () => {
     expect(parseDecisionTableDisplay("no")).toBeNull();
     expect(parseDecisionTableDisplay([])).toBeNull();
     expect(parseDecisionTableDisplay({})).toBeNull();
-    expect(parseDecisionTableDisplay({ hitPolicy: "first", inputs: "no", outputs: [], rules: {} })).toBeNull();
+    expect(parseDecisionTableDisplay({ hitPolicy: "first", inputs: "no", outputs: [], rules: [] })).toBeNull();
+    expect(parseDecisionTableDisplay({ hitPolicy: "first", inputs: [], outputs: [], rules: {} })).toBeNull();
     expect(
-      parseDecisionTableDisplay({ hitPolicy: "first", inputs: [], outputs: [], rules: { r: { c: 7 } } }),
+      parseDecisionTableDisplay({ hitPolicy: "first", inputs: [], outputs: [], rules: [{ c: 7 }] }),
     ).toBeNull();
   });
 });
@@ -355,5 +394,237 @@ describe("the change form's draft", () => {
       "owner decision 2026-09-30",
     ]);
     expect(parseRefs("   ")).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Decision-table editor draft helpers (#233 JDM grid editor). The server's
+// zod + compile probe stay the authority; these pin what the page refuses
+// before the wire and that a grid save never rewrites a value it did not touch.
+// ---------------------------------------------------------------------------
+
+const STORED_TABLE = {
+  hitPolicy: "first",
+  inputs: [
+    { id: "action", field: "action" },
+    { id: "amount", field: "amount", name: "Amount" },
+  ],
+  outputs: [{ id: "route", field: "configKey" }],
+  rules: [
+    { _id: "row_a", action: "== 'grant'", amount: "> 100", route: "'role.grant'" },
+    { _id: "row_b", action: "", amount: "", route: "'role.revoke'" },
+  ],
+};
+
+describe("decision-table editor draft helpers (#233 grid editor)", () => {
+  it("format → serialize round-trips a stored value unchanged", () => {
+    const draft = formatTableDraft(STORED_TABLE);
+    expect(draft).not.toBeNull();
+    if (draft === null) return;
+    expect(serializeTableDraft(draft)).toEqual({ ok: true, value: STORED_TABLE });
+  });
+
+  it("format keeps row array order — first-hit policy makes order the routing order", () => {
+    const draft = formatTableDraft(STORED_TABLE);
+    expect(draft).not.toBeNull();
+    if (draft === null) return;
+    expect(draft.rows.map((row) => row.id)).toEqual(["row_a", "row_b"]);
+    // display agrees: stored order, never re-sorted
+    expect(parseDecisionTableDisplay(STORED_TABLE)?.rows.map((row) => row.id)).toEqual([
+      "row_a",
+      "row_b",
+    ]);
+  });
+
+  it("format returns null for values that are not table-shaped (JSON fallback)", () => {
+    expect(formatTableDraft(null)).toBeNull();
+    expect(formatTableDraft("nope")).toBeNull();
+    expect(formatTableDraft({ ...STORED_TABLE, hitPolicy: "everything" })).toBeNull();
+    expect(formatTableDraft({ ...STORED_TABLE, rules: {} })).toBeNull();
+    expect(formatTableDraft({ ...STORED_TABLE, inputs: [{ id: "a" }] })).toBeNull();
+    expect(
+      formatTableDraft({ ...STORED_TABLE, rules: [{ _id: "r", action: 7 }] }),
+    ).toBeNull();
+    expect(formatTableDraft({ ...STORED_TABLE, outputs: [] })).toBeNull();
+  });
+
+  it("renaming a column id re-keys the cells on serialize — nothing is lost mid-keystroke", () => {
+    const draft = formatTableDraft(STORED_TABLE);
+    expect(draft).not.toBeNull();
+    if (draft === null) return;
+    const actionColumn = draft.columns.find((column) => column.id === "action");
+    expect(actionColumn).toBeDefined();
+    if (actionColumn === undefined) return;
+    const renamed = patchTableColumn(draft, actionColumn.key, { id: "verb" });
+    const out = serializeTableDraft(renamed);
+    expect(out).toEqual({
+      ok: true,
+      value: {
+        ...STORED_TABLE,
+        inputs: [{ id: "verb", field: "action" }, STORED_TABLE.inputs[1]],
+        rules: [
+          { _id: "row_a", verb: "== 'grant'", amount: "> 100", route: "'role.grant'" },
+          { _id: "row_b", verb: "", amount: "", route: "'role.revoke'" },
+        ],
+      },
+    });
+  });
+
+  it("serialize mirrors the server's shape refusals before the wire", () => {
+    const draft = formatTableDraft(STORED_TABLE);
+    expect(draft).not.toBeNull();
+    if (draft === null) return;
+    const noOutputs = serializeTableDraft({ ...draft, columns: draft.columns.filter((c) => c.kind === "input") });
+    expect(noOutputs.ok).toBe(false);
+    if (noOutputs.ok) return;
+    expect(noOutputs.issues.some((issue) => issue.includes("at least one output column"))).toBe(true);
+
+    const duplicate = serializeTableDraft(
+      patchTableColumn(draft, draft.columns[1]?.key ?? "", { id: "action" }),
+    );
+    expect(duplicate.ok).toBe(false);
+    if (duplicate.ok) return;
+    expect(duplicate.issues).toContain('Duplicate column id "action" — ids must be unique across inputs and outputs.');
+
+    const emptied = serializeTableDraft(patchTableColumn(draft, draft.columns[0]?.key ?? "", { id: "  " }));
+    expect(emptied.ok).toBe(false);
+    if (emptied.ok) return;
+    expect(emptied.issues).toContain("The input column needs a non-empty id.");
+  });
+
+  it("a cell whose column is gone blocks the save with a named issue instead of vanishing", () => {
+    const draft = formatTableDraft({
+      ...STORED_TABLE,
+      rules: [
+        { _id: "row_a", action: "== 'grant'", route: "'role.grant'", ghost: "'??'" },
+      ],
+    });
+    expect(draft).not.toBeNull();
+    if (draft === null) return;
+    const out = serializeTableDraft(draft);
+    expect(out.ok).toBe(false);
+    if (out.ok) return;
+    expect(out.issues).toEqual([
+      'Row "row_a" has a cell for a column the table no longer has ("ghost") — switch to JSON mode to keep it.',
+    ]);
+  });
+
+  it("removing a column drops its cells; the last output column refuses to leave", () => {
+    const draft = formatTableDraft(STORED_TABLE);
+    expect(draft).not.toBeNull();
+    if (draft === null) return;
+    const amountColumn = draft.columns.find((column) => column.id === "amount");
+    expect(amountColumn).toBeDefined();
+    if (amountColumn === undefined) return;
+    const withoutAmount = removeTableColumn(draft, amountColumn.key);
+    const out = serializeTableDraft(withoutAmount);
+    expect(out).toEqual({
+      ok: true,
+      value: {
+        ...STORED_TABLE,
+        inputs: [STORED_TABLE.inputs[0]],
+        rules: [
+          { _id: "row_a", action: "== 'grant'", route: "'role.grant'" },
+          { _id: "row_b", action: "", route: "'role.revoke'" },
+        ],
+      },
+    });
+    const routeColumn = draft.columns.find((column) => column.id === "route");
+    expect(routeColumn).toBeDefined();
+    if (routeColumn === undefined) return;
+    expect(removeTableColumn(draft, routeColumn.key)).toBe(draft);
+  });
+
+  it("rows reorder for routing and ignore out-of-range drags", () => {
+    const draft = formatTableDraft(STORED_TABLE);
+    expect(draft).not.toBeNull();
+    if (draft === null) return;
+    const flipped = moveTableRow(draft, 0, 1);
+    expect(flipped.rows.map((row) => row.id)).toEqual(["row_b", "row_a"]);
+    expect(moveTableRow(draft, 0, 5)).toBe(draft);
+    expect(moveTableRow(draft, 1, 1)).toBe(draft);
+  });
+
+  it("columns reorder within their kind — an input never crosses into the outputs", () => {
+    const draft = formatTableDraft(STORED_TABLE);
+    expect(draft).not.toBeNull();
+    if (draft === null) return;
+    const moved = moveTableColumn(draft, "input", 0, 1);
+    expect(moved.columns.map((column) => column.id)).toEqual(["amount", "action", "route"]);
+    // dragging the first input "to index 3" (past the output) does not cross
+    expect(moveTableColumn(draft, "input", 0, 3)).toBe(draft);
+  });
+
+  it("add column/row generate collision-free ids; empty names stay omitted", () => {
+    const draft = formatTableDraft(STORED_TABLE);
+    expect(draft).not.toBeNull();
+    if (draft === null) return;
+    const withFirstInput = addTableColumn(draft, "input");
+    expect(withFirstInput.columns.map((column) => column.id)).toEqual([
+      "action",
+      "amount",
+      "route",
+      "input_1",
+    ]);
+    const withSecondInput = addTableColumn(withFirstInput, "input");
+    expect(withSecondInput.columns.map((column) => column.id)).toEqual([
+      "action",
+      "amount",
+      "route",
+      "input_1",
+      "input_2",
+    ]);
+    const out = serializeTableDraft(withFirstInput);
+    expect(out.ok).toBe(true);
+    if (!out.ok) return;
+    const inputs = (out.value as { inputs: { name?: string }[] }).inputs;
+    expect(inputs.map((column) => "name" in column)).toEqual([false, true, false]);
+    expect((out.value as { outputs: { name?: string }[] }).outputs[0]?.name).toBeUndefined();
+
+    const withRow = addTableRow(draft);
+    expect(withRow.rows).toHaveLength(3);
+    const rowOut = serializeTableDraft(withRow);
+    expect(rowOut.ok).toBe(true);
+    if (!rowOut.ok) return;
+    const rules = (rowOut.value as { rules: Record<string, string>[] }).rules;
+    expect(rules[2]?._id).toBe("row_1");
+    expect(removeTableRow(withRow, withRow.rows[2]?.key ?? "")).toEqual(draft);
+  });
+
+  it("empty/duplicate row ids regenerate on serialize; cell edits land in the right slot", () => {
+    const draft = emptyTableDraft();
+    const withRow = addTableRow(draft);
+    const edited = setTableCell(withRow, withRow.rows[0]?.key ?? "", draft.columns[0]?.key ?? "", "'x'");
+    const out = serializeTableDraft(edited);
+    expect(out).toEqual({
+      ok: true,
+      value: {
+        hitPolicy: "first",
+        inputs: [],
+        outputs: [{ id: "output", field: "output" }],
+        rules: [{ _id: "row_1", output: "'x'" }],
+      },
+    });
+
+    const duplicated = { ...edited, rows: edited.rows.map((row) => ({ ...row, id: "same" })) };
+    const duplicateOut = serializeTableDraft(addTableRow(duplicated));
+    expect(duplicateOut.ok).toBe(true);
+    if (!duplicateOut.ok) return;
+    const ruleIds = (duplicateOut.value as { rules: Record<string, string>[] }).rules.map(
+      (rule) => rule._id,
+    );
+    expect(new Set(ruleIds).size).toBe(ruleIds.length);
+  });
+
+  it("an empty table serializes legal — fail-closed until a row is added", () => {
+    expect(serializeTableDraft(emptyTableDraft())).toEqual({
+      ok: true,
+      value: {
+        hitPolicy: "first",
+        inputs: [],
+        outputs: [{ id: "output", field: "output" }],
+        rules: [],
+      },
+    });
   });
 });

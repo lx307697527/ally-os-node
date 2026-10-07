@@ -18,6 +18,10 @@
 //  - Values render by type; a decision table draws as its grid (inputs then
 //    outputs, rows sorted), and anything the liberal display parser cannot
 //    draw falls back to raw JSON — display never plays validator.
+//  - Decision tables are authored in the grid editor (drag rows and columns,
+//    per-cell text) over a stable-handle draft in rules-client.ts; raw JSON
+//    stays as the explicit escape hatch for values the grid cannot draw, and
+//    the server's zod + compile probe remain the only authority either way.
 //
 // States are honest, never blank-by-accident — loading, an unreachable API,
 // an empty registry, a forbidden history ledger, and every write failure mode
@@ -30,11 +34,14 @@ import { Button, Card, Heading, Input, Paragraph } from "@ally/ui";
 import {
   createRulesAdapters,
   buildRuleValue,
+  emptyTableDraft,
   emptyValueDraft,
   filterRules,
+  formatTableDraft,
   formatValueDraft,
   parseDecisionTableDisplay,
   parseRefs,
+  serializeTableDraft,
   valueSummary,
   RULE_CATEGORIES,
   type PathChange,
@@ -42,8 +49,10 @@ import {
   type RuleFilters,
   type RuleValueType,
   type RuleView,
+  type TableDraft,
   type ValueDraft,
 } from "../lib/rules-client.ts";
+import { DecisionTableEditor } from "../components/DecisionTableEditor.tsx";
 
 const rulesAdapters = createRulesAdapters();
 
@@ -226,6 +235,11 @@ export function RulesRegistry(): ReactElement {
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [changeOpen, setChangeOpen] = useState(false);
   const [draft, setDraft] = useState<ValueDraft>(emptyValueDraft(false));
+  /** Decision-table authoring face (#233 JDM editor): the grid draft, and
+   *  which face is live — the grid for any value that draws as a table, raw
+   *  JSON as the explicit fallback and escape hatch. */
+  const [tableDraft, setTableDraft] = useState<TableDraft | null>(null);
+  const [editorMode, setEditorMode] = useState<"grid" | "json">("grid");
   const [refsText, setRefsText] = useState("");
   const [noteText, setNoteText] = useState("");
   const [effectiveAt, setEffectiveAt] = useState("");
@@ -276,9 +290,58 @@ export function RulesRegistry(): ReactElement {
     setChangeError(null);
     setChangeIssues(null);
     setDraft(formatValueDraft(rule.valueType, rule.value));
+    if (rule.valueType === "decision_table") {
+      const grid = rule.isSet ? formatTableDraft(rule.value) : emptyTableDraft();
+      setTableDraft(grid);
+      setEditorMode(grid === null ? "json" : "grid");
+    } else {
+      setTableDraft(null);
+      setEditorMode("grid");
+    }
     setRefsText("");
     setNoteText("");
     setEffectiveAt("");
+  }
+
+  /** Grid → JSON: the grid's current shape serializes into the textarea, so
+   *  the JSON face shows the truth the grid would save — or refuses with the
+   *  same structural issues a save would hit. */
+  function switchToJsonEditor(): void {
+    if (tableDraft === null) {
+      setEditorMode("json");
+      return;
+    }
+    const serialized = serializeTableDraft(tableDraft);
+    if (!serialized.ok) {
+      setChangeError("The table cannot be saved yet:");
+      setChangeIssues(serialized.issues);
+      return;
+    }
+    setDraft({ ...draft, jsonText: JSON.stringify(serialized.value, null, 2) });
+    setChangeError(null);
+    setChangeIssues(null);
+    setEditorMode("json");
+  }
+
+  /** JSON → grid: only values that draw as a table may cross — anything else
+   *  stays in JSON mode, where it is at least visible. */
+  function switchToGridEditor(): void {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(draft.jsonText) as unknown;
+    } catch {
+      setChangeError("The JSON does not parse — fix it here or restore the value before switching to the grid.");
+      return;
+    }
+    const grid = formatTableDraft(parsed);
+    if (grid === null) {
+      setChangeError("This JSON is not shaped like a decision table — the grid can only edit table-shaped values.");
+      return;
+    }
+    setTableDraft(grid);
+    setChangeError(null);
+    setChangeIssues(null);
+    setEditorMode("grid");
   }
 
   async function submitChange(): Promise<void> {
@@ -288,10 +351,29 @@ export function RulesRegistry(): ReactElement {
       setChangeError("A change must cite its basis — at least one adjudication or owner-decision ref.");
       return;
     }
-    const built = buildRuleValue(selected.valueType, draft);
-    if (!built.ok) {
-      setChangeError(built.error);
-      return;
+    // The grid face serializes its own draft; a table the grid cannot express
+    // is refused here (named issues, no request) — the server's zod + compile
+    // probe re-judge whatever leaves the page, grid or JSON alike.
+    let value: unknown;
+    if (selected.valueType === "decision_table" && editorMode === "grid" && !draft.clearToPending) {
+      if (tableDraft === null) {
+        setChangeError("The grid lost its draft — switch to JSON mode or reopen the change form.");
+        return;
+      }
+      const serialized = serializeTableDraft(tableDraft);
+      if (!serialized.ok) {
+        setChangeError("The table cannot be saved yet:");
+        setChangeIssues(serialized.issues);
+        return;
+      }
+      value = serialized.value;
+    } else {
+      const built = buildRuleValue(selected.valueType, draft);
+      if (!built.ok) {
+        setChangeError(built.error);
+        return;
+      }
+      value = built.value;
     }
     let effectiveAtIso: string | undefined;
     if (effectiveAt !== "") {
@@ -310,7 +392,7 @@ export function RulesRegistry(): ReactElement {
     setChangeError(null);
     setChangeIssues(null);
     const result = await rulesAdapters.change(selected.key, {
-      value: built.value,
+      value,
       rationale: noteText.trim() === "" ? { refs } : { refs, note: noteText.trim() },
       ...(effectiveAtIso !== undefined ? { effectiveAt: effectiveAtIso } : {}),
     });
@@ -628,10 +710,75 @@ export function RulesRegistry(): ReactElement {
                           />
                         </label>
                       ) : null}
-                      {selected.valueType === "json" || selected.valueType === "decision_table" ? (
+                      {selected.valueType === "decision_table" ? (
+                        <div data-testid="rules-edit-table-face">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="text-ui-sm text-ink">Edit as</span>
+                            <Button
+                              variant={editorMode === "grid" ? "primary" : "default"}
+                              size="sm"
+                              data-testid="rules-edit-mode-grid"
+                              onClick={switchToGridEditor}
+                            >
+                              Grid
+                            </Button>
+                            <Button
+                              variant={editorMode === "json" ? "primary" : "default"}
+                              size="sm"
+                              data-testid="rules-edit-mode-json"
+                              onClick={switchToJsonEditor}
+                            >
+                              JSON
+                            </Button>
+                            <Paragraph className="text-ui-sm text-ink-soft">
+                              The grid edits the table directly; JSON is the
+                              escape hatch for values the grid cannot draw. The
+                              server compiles every cell either way — the
+                              preview here never decides.
+                            </Paragraph>
+                          </div>
+                          {editorMode === "grid" && tableDraft !== null ? (
+                            <div className="mt-3">
+                              <DecisionTableEditor draft={tableDraft} onChange={setTableDraft} />
+                            </div>
+                          ) : (
+                            <>
+                              <label className="mt-3 block text-ui-sm text-ink">
+                                Decision table (GoRules ZEN JSON) — the server
+                                compiles every cell; a table that does not parse
+                                is refused with the exact cell errors
+                                <textarea
+                                  className="mt-1 block w-full rounded-control border border-line bg-card p-[var(--pad-control)] font-mono text-ui text-ink"
+                                  rows={10}
+                                  data-testid="rules-edit-json"
+                                  value={draft.jsonText}
+                                  onChange={(e) => {
+                                    setDraft({ ...draft, jsonText: e.target.value, clearToPending: false });
+                                  }}
+                                />
+                              </label>
+                              {draft.jsonText.trim() !== "" ? (
+                                <div className="mt-2">
+                                  <Paragraph className="text-ui-sm text-ink-soft">
+                                    Preview (display only — the server decides):
+                                  </Paragraph>
+                                  <DecisionTableGrid
+                                    value={(() => {
+                                      try {
+                                        return JSON.parse(draft.jsonText) as unknown;
+                                      } catch {
+                                        return null;
+                                      }
+                                    })()}
+                                  />
+                                </div>
+                              ) : null}
+                            </>
+                          )}
+                        </div>
+                      ) : selected.valueType === "json" ? (
                         <label className="text-ui-sm text-ink">
-                          {selected.valueType === "decision_table" ? "Decision table (GoRules ZEN JSON)" : "Value (JSON)"} — the
-                          server compiles every cell; a table that does not parse is refused with the exact cell errors
+                          Value (JSON)
                           <textarea
                             className="mt-1 block w-full rounded-control border border-line bg-card p-[var(--pad-control)] font-mono text-ui text-ink"
                             rows={10}
@@ -642,20 +789,6 @@ export function RulesRegistry(): ReactElement {
                             }}
                           />
                         </label>
-                      ) : null}
-                      {selected.valueType === "decision_table" && draft.jsonText.trim() !== "" ? (
-                        <div>
-                          <Paragraph className="text-ui-sm text-ink-soft">Preview (display only — the server decides):</Paragraph>
-                          <DecisionTableGrid
-                            value={(() => {
-                              try {
-                                return JSON.parse(draft.jsonText) as unknown;
-                              } catch {
-                                return null;
-                              }
-                            })()}
-                          />
-                        </div>
                       ) : null}
                       {selected.category !== "switch" && selected.isSet ? (
                         <label className="flex cursor-pointer items-center gap-2 text-ui-sm text-ink">
