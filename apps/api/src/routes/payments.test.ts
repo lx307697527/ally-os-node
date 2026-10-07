@@ -52,6 +52,7 @@ describe.skipIf(!databaseUrl)("payment endpoints (#192 slice 2, integration)", (
   const { db, pool } = createDb(scopedUrl);
 
   const app = createApp({
+    stripe: undefined,
     logger,
     db,
     corsOrigins: ["http://localhost:5173"],

@@ -32,6 +32,9 @@ import { meRoutes } from "./routes/me.ts";
 import { notificationsRoutes } from "./routes/notifications.ts";
 import { numberingRulesRoutes } from "./routes/numbering-rules.ts";
 import { paymentsRoutes } from "./routes/payments.ts";
+import { stripeCheckoutRoutes } from "./routes/stripe-checkout.ts";
+import { stripeWebhookRoutes } from "./routes/stripe-webhook.ts";
+import type { StripeChannel } from "./billing/stripe.ts";
 import { realtimeRoutes } from "./routes/realtime.ts";
 import { rulesRoutes } from "./routes/rules.ts";
 import { tasksRoutes } from "./routes/tasks.ts";
@@ -73,6 +76,13 @@ export interface AppDeps {
    * Storage 接口，不见 SDK。
    */
   storage: Storage;
+  /**
+   * Stripe 收款渠道（#193）：checkout session 网关 + webhook 验签密钥。未配置 =
+   * undefined（渠道不启用）：checkout 端点与 webhook 都答 500 misconfigured
+   * （fail closed——配置缺失是部署问题，不是认证失败）。webhook 端点挂在会话
+   * 中间件之前：Stripe 没有本系统会话，验签就是它的认证。
+   */
+  stripe: StripeChannel | undefined;
 }
 
 export function createApp(deps: AppDeps) {
@@ -96,6 +106,11 @@ export function createApp(deps: AppDeps) {
 
   // 认证端点自己管理会话（未登录也要能登录），先于会话中间件注册
   app.on(["POST", "GET"], "/api/auth/*", (c) => deps.authHandler(c.req.raw));
+
+  // Stripe webhook（#193）：provider 面，同样先于会话中间件——Stripe 没有本系统
+  // 会话，Stripe-Signature 验签就是这一面的认证（渠道未配置时端点答 500
+  // misconfigured，见 routes/stripe-webhook.ts 的响应契约）
+  app.route("/", stripeWebhookRoutes(deps));
 
   // 其余 /api/* 一律要求已登录会话（#22 验收：业务代码统一经中间件拿当前用户），
   // 随后加载角色与生效权限集（#23），业务路由上的 requireRole/requirePermission 直接读
@@ -175,9 +190,13 @@ export function createApp(deps: AppDeps) {
   // 业务事务里调 billing/service.ts，草稿与触发事实同事务生灭
   app.route("/", invoicesRoutes(deps));
   // 收款台账（#192 切片 2）：发票锚定的记账面 + 更正动词（invoices.manage 同
-  // 门）。#193 的 webhook 不走 HTTP——验签后在自己的业务事务里调
-  // billing/payments.ts 的 recordPayment，source 幂等键兜重放
+  // 门）。#193 的 webhook 不走这扇财务门——它有自己的 provider 端点（本文件
+  // 上方，验签即认证），在自己的业务事务里调 billing/payments.ts 的
+  // recordPayment，source 幂等键兜重放
   app.route("/", paymentsRoutes(deps));
+  // Stripe 渠道（#193）：财务建支付链接的过渡面（invoices.manage 同门；客户门户
+  // #186 进场后复用同一 StripeGateway 接归属校验）
+  app.route("/", stripeCheckoutRoutes(deps));
 
   return app;
 }

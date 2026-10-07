@@ -113,6 +113,7 @@ describe.skipIf(!databaseUrl)("rule registry: adjudication as configuration (#23
   admin.pool.on("error", () => {});
 
   const app = createApp({
+    stripe: undefined,
     logger,
     db,
     corsOrigins: ["http://localhost:5173"],

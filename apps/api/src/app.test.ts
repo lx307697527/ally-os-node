@@ -60,6 +60,7 @@ function makeApp(options: {
   authzStore?: AuthzStore;
 }) {
   return createApp({
+    stripe: undefined,
     logger,
     db: unusedDb,
     corsOrigins: ["http://localhost:5173"],

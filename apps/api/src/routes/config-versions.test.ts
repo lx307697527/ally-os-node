@@ -101,6 +101,7 @@ describe.skipIf(!databaseUrl)("config version ledger (#226 slice 1, integration)
   admin.pool.on("error", () => {});
 
   const app = createApp({
+    stripe: undefined,
     logger,
     db,
     corsOrigins: ["http://localhost:5173"],

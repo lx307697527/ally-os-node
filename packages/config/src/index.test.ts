@@ -91,4 +91,31 @@ describe("parseEnv", () => {
     expect(() => parseEnv({ ...base, GOOGLE_CLIENT_SECRET: "GOCSPID-xxx" }))
       .toThrow(/GOOGLE_CLIENT_ID/);
   });
+
+  it("accepts stripe credentials as a pair with the web app url (#193)", () => {
+    const env = parseEnv({
+      ...base,
+      STRIPE_SECRET_KEY: "sk_test_x",
+      STRIPE_WEBHOOK_SECRET: "whsec_x",
+      WEB_APP_URL: "https://app.example.com",
+    });
+    expect(env.STRIPE_SECRET_KEY).toBe("sk_test_x");
+    expect(env.STRIPE_WEBHOOK_SECRET).toBe("whsec_x");
+  });
+
+  it("leaves the stripe channel disabled when neither key is set (#193)", () => {
+    const env = parseEnv(base);
+    expect(env.STRIPE_SECRET_KEY).toBeUndefined();
+    expect(env.STRIPE_WEBHOOK_SECRET).toBeUndefined();
+  });
+
+  it("refuses a half-configured stripe channel (fail closed at startup, not at webhook time) (#193)", () => {
+    expect(() => parseEnv({ ...base, STRIPE_SECRET_KEY: "sk_test_x" })).toThrow(/STRIPE_WEBHOOK_SECRET/);
+    expect(() => parseEnv({ ...base, STRIPE_WEBHOOK_SECRET: "whsec_x" })).toThrow(/STRIPE_SECRET_KEY/);
+  });
+
+  it("refuses a stripe channel without the web app url (checkout needs absolute return urls) (#193)", () => {
+    expect(() => parseEnv({ ...base, STRIPE_SECRET_KEY: "sk_test_x", STRIPE_WEBHOOK_SECRET: "whsec_x" }))
+      .toThrow(/WEB_APP_URL/);
+  });
 });

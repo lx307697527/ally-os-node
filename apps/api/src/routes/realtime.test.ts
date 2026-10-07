@@ -47,6 +47,7 @@ describe.skipIf(!databaseUrl)("realtime token endpoint (#110 slice 2, integratio
   pool.on("error", () => {});
 
   const app = createApp({
+    stripe: undefined,
     logger,
     db,
     corsOrigins: ["http://localhost:5173"],

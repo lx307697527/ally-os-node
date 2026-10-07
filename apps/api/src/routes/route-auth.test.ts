@@ -29,6 +29,7 @@ const memoryStore: AuthzStore = {
 };
 
 const app = createApp({
+    stripe: undefined,
   logger,
   db: unusedDb,
   corsOrigins: [],
@@ -82,7 +83,11 @@ describe("route authorization declarations (#23)", () => {
     const publicPaths = API_ROUTES.filter((decl) => decl.auth.kind === "public").map(
       (decl) => decl.path,
     );
-    expect(publicPaths.sort()).toEqual(["/api/auth-providers", "/api/auth/*"].sort());
+    // /api/webhooks/stripe（#193）：公开指「不过会话中间件」，认证是 Stripe 签名
+    // 本身（routes/stripe-webhook.ts）；漏登记才是真的口子
+    expect(publicPaths.sort()).toEqual(
+      ["/api/auth-providers", "/api/auth/*", "/api/webhooks/stripe"].sort(),
+    );
   });
 
   it("permission-guarded routes in the registry have their permission registered", () => {

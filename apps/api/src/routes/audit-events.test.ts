@@ -76,6 +76,7 @@ describe.skipIf(!databaseUrl)("audit events route (#29, integration)", () => {
     logger,
   });
   const app = createApp({
+    stripe: undefined,
     logger,
     db,
     corsOrigins: ["http://localhost:5173"],

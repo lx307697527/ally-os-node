@@ -9,6 +9,7 @@ import pino from "pino";
 import { createApp } from "./app.ts";
 import { createAuth, createSessionResolver, createSessionTokenVerifier } from "./auth/auth.ts";
 import { createAuthzStore } from "./authz/service.ts";
+import { createStripeGateway } from "./billing/stripe.ts";
 import { canSubscribeChannel } from "./realtime/channels.ts";
 import { createRealtimeAuthenticator } from "./realtime/auth.ts";
 import { RealtimeHub } from "./realtime/hub.ts";
@@ -83,6 +84,17 @@ const storage = createS3Storage({
   forcePathStyle: env.S3_FORCE_PATH_STYLE,
 });
 
+// Stripe 收款渠道（#193）：env 层已校验成对出现（且启用即有 WEB_APP_URL），这里
+// 只做「配了就启用」。未配置 = undefined，checkout 与 webhook 两端点答 misconfigured。
+const stripe =
+  env.STRIPE_SECRET_KEY !== undefined && env.STRIPE_WEBHOOK_SECRET !== undefined && env.WEB_APP_URL !== undefined
+    ? {
+        gateway: createStripeGateway({ secretKey: env.STRIPE_SECRET_KEY }),
+        webhookSecret: env.STRIPE_WEBHOOK_SECRET,
+        webAppUrl: env.WEB_APP_URL,
+      }
+    : undefined;
+
 const app = createApp({
   logger,
   db,
@@ -96,6 +108,7 @@ const app = createApp({
   authzStore,
   notifyUsers,
   storage,
+  stripe,
 });
 
 // 实时推送（#30）：hub ↔ bus 互相引用，用先声明再赋值的函数引用解决循环创建。

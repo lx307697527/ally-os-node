@@ -112,6 +112,7 @@ describe.skipIf(!databaseUrl)("workflow instances (#220, integration)", () => {
     logger,
   });
   const app = createApp({
+    stripe: undefined,
     logger,
     db,
     corsOrigins: ["http://localhost:5173"],

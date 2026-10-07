@@ -30,6 +30,7 @@ function session(): SessionData {
 function makeApp() {
   const { db, pool } = createDb(databaseUrl ?? "");
   const app = createApp({
+    stripe: undefined,
     logger,
     db,
     corsOrigins: ["http://localhost:5173"],
