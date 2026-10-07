@@ -50,6 +50,20 @@ describe("automations page rulings (#224)", () => {
     expect(page).toContain("specToDraft({ trigger: rule.trigger, conditions: rule.conditions, actions: rule.actions })");
   });
 
+  it("条件积木形状不被 UI 悄悄毁掉:block 条件结构化编辑,不认识的积木名原样 JSON 往返", () => {
+    // client 学习了 custom_field(结构化)与 json 旁路;conditionToDraft 不再把
+    // 不认识的形状吞成空 path 条件
+    expect(client).toContain('kind: "custom_field"');
+    expect(client).toContain('kind: "json", json: jsonText(raw)');
+    expect(collapsedPage).toContain("Custom field (trigger row)");
+    expect(collapsedPage).toContain("saves fine but never passes");
+    expect(page).toContain("automations-${prefix}-condition-kind");
+    expect(page).toContain("automations-${prefix}-condition-json");
+    // runs 的逐条件结果会画 block 裁决与失败原因
+    expect(client).toContain('kind: "block"');
+    expect(collapsedPage).toContain("outcome.error");
+  });
+
   it("删除说清后果:规则没了,执行日志还在", () => {
     expect(collapsedPage).toContain("Deleting removes the rule; it cannot be re-enabled.");
     expect(collapsedPage).toContain("The run log outlives the config");

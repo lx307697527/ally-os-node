@@ -121,6 +121,7 @@ describe.skipIf(!databaseUrl)("automation scan/run (#224 slice 1, integration)",
   async function insertAuditEvent(values: {
     action: string;
     actor?: string | null;
+    target?: string | null;
     detail?: Record<string, unknown> | null;
   }): Promise<string> {
     const inserted = await db
@@ -128,10 +129,62 @@ describe.skipIf(!databaseUrl)("automation scan/run (#224 slice 1, integration)",
       .values({
         action: values.action,
         ...(values.actor !== undefined ? { actor: values.actor } : {}),
+        ...(values.target !== undefined ? { target: values.target } : {}),
         ...(values.detail !== undefined ? { detail: values.detail } : {}),
       })
       .returning({ id: schema.auditEvents.id });
     return must(inserted[0]).id;
+  }
+
+  /** 自定义字段的定义行（条件积木 custom_field 的查场面）；subject 无外键，
+   * 值行的 subjectId 用任意 uuid 即可，不需要真实业务行 */
+  async function insertCustomField(values: {
+    subjectType: string;
+    fieldKey: string;
+    active?: boolean;
+  }): Promise<string> {
+    const inserted = await db
+      .insert(schema.customFieldDefs)
+      .values({
+        subjectType: values.subjectType,
+        fieldKey: values.fieldKey,
+        label: values.fieldKey,
+        fieldType: "boolean",
+        ...(values.active !== undefined ? { active: values.active } : {}),
+        createdById: USERS.creator,
+      })
+      .returning({ id: schema.customFieldDefs.id });
+    return must(inserted[0]).id;
+  }
+
+  async function insertCustomValue(values: {
+    subjectType: string;
+    subjectId: string;
+    fieldDefId: string;
+    value: unknown;
+  }): Promise<void> {
+    await db.insert(schema.customFieldValues).values({
+      subjectType: values.subjectType,
+      subjectId: values.subjectId,
+      fieldDefId: values.fieldDefId,
+      value: values.value,
+      updatedById: USERS.creator,
+    });
+  }
+
+  /** runs 的逐条件结果形状（测试读侧；JSONB 边界的落库形态，与 specValues 同一断言先例） */
+  interface ConditionOutcomeLike {
+    path?: string;
+    op?: string;
+    block?: string;
+    passed: boolean;
+    error?: string;
+  }
+
+  async function onlyConditionResults(): Promise<ConditionOutcomeLike[]> {
+    const rows = await db.select().from(schema.automationRuns);
+    expect(rows).toHaveLength(1);
+    return must(rows[0]).conditionResults as ConditionOutcomeLike[];
   }
 
   async function onlyRun(): Promise<{ id: string; status: string; error: string | null; actionResults: unknown }> {
@@ -157,7 +210,7 @@ describe.skipIf(!databaseUrl)("automation scan/run (#224 slice 1, integration)",
     dnsAnswers.clear();
     // 单语句 TRUNCATE：runs → rules、notifications/tasks → auth_user 都有 FK
     await db.execute(
-      sql`truncate table ${schema.automationRuns}, ${schema.automationRules}, ${schema.tasks}, ${schema.notifications}, ${schema.auditEvents}, ${schema.authUser} cascade`,
+      sql`truncate table ${schema.automationRuns}, ${schema.automationRules}, ${schema.tasks}, ${schema.notifications}, ${schema.auditEvents}, ${schema.customFieldDefs}, ${schema.customFieldValues}, ${schema.authUser} cascade`,
     );
     await db.insert(schema.authUser).values(
       Object.entries(USERS).map(([name, id]) => ({
@@ -262,6 +315,155 @@ describe.skipIf(!databaseUrl)("automation scan/run (#224 slice 1, integration)",
     expect((run.actionResults as { passed: boolean }[] | null) ?? null).toBeNull();
     expect(sent).toHaveLength(0);
     expect(await db.select().from(schema.tasks)).toHaveLength(0);
+  });
+
+  describe("custom_field condition block (#224 slice 7)", () => {
+    /** 事件触发的审计 target 是裸行 id；subject 无外键，任意 uuid 就是一「行」 */
+    const subjectId = "1f1a1b2c-3d4e-4f5a-8b9c-0d1e2f3a4b5c";
+
+    function blockCondition(config: unknown): unknown[] {
+      return [{ block: "custom_field", config }];
+    }
+
+    it("end-to-end: the block reads the trigger row's stored value and the run executes", async () => {
+      const defId = await insertCustomField({ subjectType: "task", fieldKey: "vip" });
+      await insertCustomValue({ subjectType: "task", subjectId, fieldDefId: defId, value: true });
+      await insertRule({
+        name: "VIP 任务更新即通知",
+        trigger: { kind: "event", action: "task.updated" },
+        conditions: blockCondition({ subjectType: "task", fieldKey: "vip", op: "eq", value: true }),
+        actions: [{ type: "notify", config: { userIds: [USERS.watcher], title: "VIP 任务动了" } }],
+      });
+      await insertAuditEvent({ action: "task.updated", target: subjectId });
+
+      await runAutomationScan({ ...deps, sendRunJob });
+      const run = await onlyRun();
+      expect(run.status).toBe("pending");
+      expect(sent).toEqual([run.id]);
+      expect(await onlyConditionResults()).toEqual([
+        { block: "custom_field", passed: true },
+      ]);
+      await runAutomationRun(deps, { runId: run.id });
+      expect(notifyCalls.length).toBeGreaterThan(0);
+    });
+
+    it("a stored-but-different value is an honest skip without an error", async () => {
+      const defId = await insertCustomField({ subjectType: "task", fieldKey: "vip" });
+      await insertCustomValue({ subjectType: "task", subjectId, fieldDefId: defId, value: false });
+      await insertRule({
+        name: "只对 VIP",
+        trigger: { kind: "event", action: "task.updated" },
+        conditions: blockCondition({ subjectType: "task", fieldKey: "vip", op: "eq", value: true }),
+        actions: [{ type: "notify", config: { userIds: [USERS.watcher], title: "t" } }],
+      });
+      await insertAuditEvent({ action: "task.updated", target: subjectId });
+
+      await runAutomationScan({ ...deps, sendRunJob });
+      expect((await onlyRun()).status).toBe("skipped");
+      expect(await onlyConditionResults()).toEqual([{ block: "custom_field", passed: false }]);
+      expect(sent).toHaveLength(0);
+    });
+
+    it("exists speaks about whether a value row is present at all", async () => {
+      const defId = await insertCustomField({ subjectType: "task", fieldKey: "vip" });
+      await insertCustomValue({ subjectType: "task", subjectId, fieldDefId: defId, value: true });
+      await insertRule({
+        name: "必须有值",
+        trigger: { kind: "event", action: "task.updated" },
+        conditions: blockCondition({ subjectType: "task", fieldKey: "vip", op: "exists", value: true }),
+        actions: [{ type: "notify", config: { userIds: [USERS.watcher], title: "t" } }],
+      });
+      await insertAuditEvent({ action: "task.updated", target: subjectId });
+      await runAutomationScan({ ...deps, sendRunJob });
+      expect((await onlyRun()).status).toBe("pending");
+
+      // 清规则与值行、留定义行：第二段问的是「定义在、值从未写」的 exists
+      await db.execute(
+        sql`truncate table ${schema.automationRules}, ${schema.automationRuns}, ${schema.auditEvents}, ${schema.customFieldValues} cascade`,
+      );
+      await insertRule({
+        name: "从未写过值",
+        trigger: { kind: "event", action: "task.updated" },
+        conditions: blockCondition({ subjectType: "task", fieldKey: "vip", op: "exists", value: true }),
+        actions: [{ type: "notify", config: { userIds: [USERS.watcher], title: "t" } }],
+      });
+      await insertAuditEvent({ action: "task.updated", target: subjectId });
+      await runAutomationScan({ ...deps, sendRunJob });
+      expect((await onlyRun()).status).toBe("skipped");
+    });
+
+    it("an inactive field still evaluates: deactivation freezes the form, not the rules", async () => {
+      const defId = await insertCustomField({ subjectType: "task", fieldKey: "vip", active: false });
+      await insertCustomValue({ subjectType: "task", subjectId, fieldDefId: defId, value: true });
+      await insertRule({
+        name: "停用字段的既有值仍可作条件",
+        trigger: { kind: "event", action: "task.updated" },
+        conditions: blockCondition({ subjectType: "task", fieldKey: "vip", op: "eq", value: true }),
+        actions: [{ type: "notify", config: { userIds: [USERS.watcher], title: "t" } }],
+      });
+      await insertAuditEvent({ action: "task.updated", target: subjectId });
+
+      await runAutomationScan({ ...deps, sendRunJob });
+      expect((await onlyRun()).status).toBe("pending");
+    });
+
+    it("an unconfigured field key cannot be evaluated: skip with a nameable error", async () => {
+      await insertRule({
+        name: "字段键是笔误",
+        trigger: { kind: "event", action: "task.updated" },
+        conditions: blockCondition({ subjectType: "task", fieldKey: "nope", op: "eq", value: true }),
+        actions: [{ type: "notify", config: { userIds: [USERS.watcher], title: "t" } }],
+      });
+      await insertAuditEvent({ action: "task.updated", target: subjectId });
+
+      await runAutomationScan({ ...deps, sendRunJob });
+      expect((await onlyRun()).status).toBe("skipped");
+      expect(await onlyConditionResults()).toEqual([
+        {
+          block: "custom_field",
+          passed: false,
+          error: "custom field is not configured: task.nope",
+        },
+      ]);
+      expect(sent).toHaveLength(0);
+    });
+
+    it("a config that breaks the block's own shape cannot be evaluated either", async () => {
+      await insertRule({
+        name: "exists 带了非布尔值",
+        trigger: { kind: "event", action: "task.updated" },
+        conditions: blockCondition({ subjectType: "task", fieldKey: "vip", op: "exists", value: "yes" }),
+        actions: [{ type: "notify", config: { userIds: [USERS.watcher], title: "t" } }],
+      });
+      await insertAuditEvent({ action: "task.updated", target: subjectId });
+
+      await runAutomationScan({ ...deps, sendRunJob });
+      expect((await onlyRun()).status).toBe("skipped");
+      const outcomes = await onlyConditionResults();
+      const outcome = outcomes[0];
+      if (outcome?.error === undefined) {
+        throw new Error("expected an error outcome");
+      }
+      expect(outcome).toMatchObject({ block: "custom_field", passed: false });
+      expect(outcome.error).toContain("custom_field config is invalid");
+    });
+
+    it("a block name this worker does not know saves fine but never passes (fail closed)", async () => {
+      await insertRule({
+        name: "未注册的积木",
+        trigger: { kind: "event", action: "task.updated" },
+        conditions: [{ block: "no_such_block", config: {} }],
+        actions: [{ type: "notify", config: { userIds: [USERS.watcher], title: "t" } }],
+      });
+      await insertAuditEvent({ action: "task.updated", target: subjectId });
+
+      await runAutomationScan({ ...deps, sendRunJob });
+      expect((await onlyRun()).status).toBe("skipped");
+      expect(await onlyConditionResults()).toEqual([
+        { block: "no_such_block", passed: false, error: "condition block is not registered: no_such_block" },
+      ]);
+      expect(sent).toHaveLength(0);
+    });
   });
 
   it("rescans are deduplicated by the (rule, event) unique constraint", async () => {

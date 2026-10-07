@@ -238,6 +238,53 @@ describe.skipIf(!databaseUrl)("automation rule endpoints (#224 slice 1, integrat
     expect(legacy.status).toBe(400);
   });
 
+  it("accepts block conditions verbatim and still rejects an empty block name (#224 slice 7)", async () => {
+    const config = { subjectType: "task", fieldKey: "vip", op: "eq", value: true };
+    const create = await app.request("/api/automations", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-test-user": "admin" },
+      body: JSON.stringify({
+        name: "VIP 任务更新即通知",
+        trigger: { kind: "event", action: "task.updated" },
+        conditions: [{ block: "custom_field", config }],
+        actions: STAGE_RULE.actions,
+      }),
+    });
+    expect(create.status).toBe(201);
+    const ruleId = must(((await create.json()) as { id: string }).id);
+    const list = await app.request("/api/automations", { headers: { "x-test-user": "admin" } });
+    const rule = must(((await list.json()) as { rules: { id: string; conditions: unknown[] }[] }).rules.find((r) => r.id === ruleId));
+    expect(rule.conditions).toEqual([{ block: "custom_field", config }]);
+
+    // 保存面看不到 worker 注册表：名字合形状即可入库，跑不跑由 worker fail closed
+    const emptyName = await app.request("/api/automations", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-test-user": "admin" },
+      body: JSON.stringify({
+        name: "空积木名",
+        trigger: { kind: "event", action: "task.updated" },
+        conditions: [{ block: "", config: {} }],
+        actions: STAGE_RULE.actions,
+      }),
+    });
+    expect(emptyName.status).toBe(400);
+
+    // 换 spec 到纯路径条件 = 真变更，台账 +1（形状与切片 1 完全同一通路）
+    const patch = await app.request(`/api/automations/${ruleId}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json", "x-test-user": "admin" },
+      body: JSON.stringify({
+        spec: {
+          trigger: { kind: "event", action: "task.updated" },
+          conditions: [{ path: "detail.status", op: "eq", value: "open" }],
+          actions: STAGE_RULE.actions,
+        },
+      }),
+    });
+    expect(patch.status).toBe(200);
+    expect(((await patch.json()) as { version: number }).version).toBe(2);
+  });
+
   it("versions every real change through the ledger and stays idempotent on no-ops (#226)", async () => {
     const ruleId = await createRule();
     // 改名/启停也是内容变更：各记一版（#226 台账，行.version = 台账最新版）

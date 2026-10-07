@@ -256,6 +256,13 @@ function SpecDisplay({ rule }: { rule: AutomationRuleRow }) {
                   </li>
                 );
               }
+              if (record !== null && typeof record.block === "string") {
+                return (
+                  <li key={index}>
+                    block · {record.block} · {"config" in record ? jsonShort(record.config) : ""}
+                  </li>
+                );
+              }
               return <li key={index}>{jsonShort(condition)}</li>;
             })}
           </ul>
@@ -434,43 +441,131 @@ function SpecEditor({ draft, onChange, prefix }: SpecEditorProps): ReactElement 
         <Paragraph className="text-ui-sm font-medium uppercase tracking-[var(--ls-crumb)] text-ink-soft">
           Conditions — all must pass (empty = always)
         </Paragraph>
+        <Paragraph className="text-ui-sm text-ink-soft" data-testid={`automations-${prefix}-conditions-note`}>
+          A path condition reads the event context only. The custom-field condition reads the trigger
+          row's stored value. A condition block this build does not know — like a field key that was
+          never configured — saves fine but never passes: the worker logs a warning and the run row
+          records the reason.
+        </Paragraph>
         {draft.conditions.map((condition, index) => (
           <div key={index} className="mt-2 flex flex-wrap items-end gap-3" data-testid={`automations-${prefix}-condition-row`}>
             <label className="text-ui-sm text-ink">
-              Path
-              <Input
-                className="mt-1 block w-56 font-mono"
-                data-testid={`automations-${prefix}-condition-path`}
-                placeholder="detail.to"
-                value={condition.path}
-                onChange={(e) => {
-                  updateCondition(index, { ...condition, path: e.target.value });
-                }}
-              />
-            </label>
-            <label className="text-ui-sm text-ink">
-              Op
+              Kind
               <select
                 className={CONTROL_CLASS}
-                data-testid={`automations-${prefix}-condition-op`}
-                value={condition.op}
+                data-testid={`automations-${prefix}-condition-kind`}
+                value={condition.kind === "json" ? "json" : condition.kind}
                 onChange={(e) => {
-                  const op = e.target.value;
-                  updateCondition(index, {
-                    ...condition,
-                    op: CONDITION_OPS.find((candidate) => candidate === op) ?? "eq",
-                    value: op === "exists" ? "true" : condition.value,
-                  });
+                  const kind = e.target.value;
+                  if (kind === condition.kind) return;
+                  const carriedOp = condition.kind === "json" ? "eq" : condition.op;
+                  const carriedValue = condition.kind === "json" ? "" : condition.value;
+                  if (kind === "json") {
+                    updateCondition(index, { kind: "json", json: "" });
+                  } else if (kind === "custom_field") {
+                    updateCondition(index, {
+                      kind: "custom_field",
+                      subjectType: "",
+                      fieldKey: "",
+                      op: carriedOp,
+                      value: carriedValue,
+                    });
+                  } else {
+                    updateCondition(index, {
+                      kind: "path",
+                      path: "",
+                      op: carriedOp,
+                      value: carriedValue,
+                    });
+                  }
                 }}
               >
-                {CONDITION_OPS.map((op) => (
-                  <option key={op} value={op}>
-                    {OP_LABELS[op]}
-                  </option>
-                ))}
+                <option value="path">Field path (event context)</option>
+                <option value="custom_field">Custom field (trigger row)</option>
+                <option value="json">Raw JSON — a shape this build does not draw</option>
               </select>
             </label>
-            {condition.op === "exists" ? (
+            {condition.kind === "json" ? (
+              <label className="block w-full text-ui-sm text-ink">
+                Condition (JSON, verbatim — the server re-judges it)
+                <textarea
+                  className="mt-1 block w-full rounded-control border border-line bg-card p-[var(--pad-control)] font-mono text-ui text-ink"
+                  rows={4}
+                  data-testid={`automations-${prefix}-condition-json`}
+                  value={condition.json}
+                  onChange={(e) => {
+                    updateCondition(index, { kind: "json", json: e.target.value });
+                  }}
+                />
+              </label>
+            ) : null}
+            {condition.kind === "custom_field" ? (
+              <>
+                <label className="text-ui-sm text-ink">
+                  Record type
+                  <Input
+                    className="mt-1 block w-40 font-mono"
+                    data-testid={`automations-${prefix}-condition-subject-type`}
+                    placeholder="task"
+                    value={condition.subjectType}
+                    onChange={(e) => {
+                      updateCondition(index, { ...condition, subjectType: e.target.value });
+                    }}
+                  />
+                </label>
+                <label className="text-ui-sm text-ink">
+                  Field key
+                  <Input
+                    className="mt-1 block w-40 font-mono"
+                    data-testid={`automations-${prefix}-condition-field-key`}
+                    placeholder="vip"
+                    value={condition.fieldKey}
+                    onChange={(e) => {
+                      updateCondition(index, { ...condition, fieldKey: e.target.value });
+                    }}
+                  />
+                </label>
+              </>
+            ) : null}
+            {condition.kind === "path" ? (
+              <label className="text-ui-sm text-ink">
+                Path
+                <Input
+                  className="mt-1 block w-56 font-mono"
+                  data-testid={`automations-${prefix}-condition-path`}
+                  placeholder="detail.to"
+                  value={condition.path}
+                  onChange={(e) => {
+                    updateCondition(index, { ...condition, path: e.target.value });
+                  }}
+                />
+              </label>
+            ) : null}
+            {condition.kind !== "json" ? (
+              <label className="text-ui-sm text-ink">
+                Op
+                <select
+                  className={CONTROL_CLASS}
+                  data-testid={`automations-${prefix}-condition-op`}
+                  value={condition.op}
+                  onChange={(e) => {
+                    const op = e.target.value;
+                    updateCondition(index, {
+                      ...condition,
+                      op: CONDITION_OPS.find((candidate) => candidate === op) ?? "eq",
+                      value: op === "exists" ? "true" : condition.value,
+                    });
+                  }}
+                >
+                  {CONDITION_OPS.map((op) => (
+                    <option key={op} value={op}>
+                      {OP_LABELS[op]}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            ) : null}
+            {condition.kind !== "json" && condition.op === "exists" ? (
               <label className="text-ui-sm text-ink">
                 Must exist
                 <select
@@ -485,7 +580,8 @@ function SpecEditor({ draft, onChange, prefix }: SpecEditorProps): ReactElement 
                   <option value="false">false — must not</option>
                 </select>
               </label>
-            ) : (
+            ) : null}
+            {condition.kind !== "json" && condition.op !== "exists" ? (
               <label className="text-ui-sm text-ink">
                 Value (JSON — strings need quotes)
                 <Input
@@ -497,7 +593,7 @@ function SpecEditor({ draft, onChange, prefix }: SpecEditorProps): ReactElement 
                   }}
                 />
               </label>
-            )}
+            ) : null}
             <Button
               variant="default"
               size="sm"
@@ -875,10 +971,19 @@ function RunConditionsCell({ run }: { run: AutomationRunRow }) {
   }
   return (
     <span className="font-mono text-ui-sm" data-testid="automations-run-conditions">
-      {outcomes.map((outcome) => (
-        <span key={outcome.path} className="block">
-          {outcome.path} {OP_LABELS[outcome.op] ?? outcome.op}{" "}
+      {outcomes.map((outcome, index) => (
+        <span key={index} className="block">
+          {outcome.kind === "path" ? (
+            <>
+              {outcome.path} {OP_LABELS[outcome.op] ?? outcome.op}{" "}
+            </>
+          ) : (
+            <>block {outcome.block} </>
+          )}
           {outcome.passed ? "✓" : <span className="text-err">✗</span>}
+          {outcome.kind === "block" && outcome.error !== null ? (
+            <span className="text-err"> — {outcome.error}</span>
+          ) : null}
         </span>
       ))}
     </span>

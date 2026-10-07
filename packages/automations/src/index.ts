@@ -12,7 +12,9 @@ import { z } from "zod";
  *
  * 条件求值 fail closed：路径解析不到（detail 缺键、穿过非对象）一律不满足，
  * 只有 `exists` 显式表达「必须有/必须没有」。语境的根只有事件行自己的四列
- * （action/target/actor/detail），不外溢。
+ * （action/target/actor/detail），不外溢。语境之外的事实（自定义字段值、跨对象
+ * 断言）走条件积木：`{ block, config? }` 按名字引用 worker 侧注册表里的具名
+ * 谓词（#224 切片 7），本包只收形状与求值接缝，不装实现。
  */
 
 /**
@@ -59,24 +61,61 @@ export const CONDITION_OPS = ["eq", "ne", "in", "exists"] as const;
 export type ConditionOp = (typeof CONDITION_OPS)[number];
 
 /**
- * 条件：对事件语境的点路径断言。value 的形状随 op 收口——eq/ne 任意 JSON 值
- * （可 null）、in 非空数组、exists 布尔。路径解析不到时 eq/ne/in 一律不满足。
+ * op 对比较值的形状闸（#224 切片 7 起是路径条件与条件积木共用的一份语义）：
+ * eq/ne 任意 JSON 值（键必须显式在，null 是值）、in 非空数组（≤100）、exists 布尔。
  */
-export const conditionSpecSchema = z
+export function conditionValueFitsOp(op: ConditionOp, hasValue: boolean, value: unknown): boolean {
+  return op === "eq" || op === "ne"
+    ? hasValue
+    : op === "in"
+      ? Array.isArray(value) && value.length > 0 && value.length <= 100
+      : typeof value === "boolean";
+}
+
+/**
+ * op 对解析出的实际值的裁决（与形状闸同源）：路径解析不到（undefined）时
+ * eq/ne/in 一律不满足，exists 显式表达「必须有/必须没有」；显式 null 是在场的值。
+ */
+export function valueSatisfiesOp(op: ConditionOp, resolved: unknown, value: unknown): boolean {
+  if (op === "exists") {
+    return resolved !== undefined === value;
+  }
+  if (op === "eq") {
+    return resolved === value;
+  }
+  if (op === "ne") {
+    return resolved !== value && resolved !== undefined;
+  }
+  return Array.isArray(value) && resolved !== undefined && value.some((item) => item === resolved);
+}
+
+/**
+ * 条件（#224 切片 7 起是并集）：
+ * - 路径条件：对事件语境的点路径断言——纯求值，扫描器本地完成；
+ * - 条件积木：`{ block, config? }` 按名字引用一个具名谓词（跨对象断言、自定义
+ *   字段条件这类「语境 JSON 里没有的事实」）——积木由属主域在 worker 侧注册表
+ *   注册（与 workflow 积木、due 锚点同一裁法），求值带数据库访问。保存面（API）
+ *   看不到 worker 注册表：未注册的积木名存得进、求值必败并告警（fail closed，
+ *   与 due 未注册锚点同一裁决）。
+ */
+export const pathConditionSpecSchema = z
   .object({
     path: z.string().trim().min(1).max(200),
     op: z.enum(CONDITION_OPS),
     value: z.unknown().optional(),
   })
-  .refine(
-    (c) =>
-      c.op === "eq" || c.op === "ne"
-        ? "value" in c
-        : c.op === "in"
-          ? Array.isArray(c.value) && c.value.length > 0 && c.value.length <= 100
-          : typeof c.value === "boolean",
-    { message: "value is required by op (eq/ne: any JSON value, in: 1..100 items, exists: boolean)" },
-  );
+  .refine((c) => conditionValueFitsOp(c.op, "value" in c, c.value), {
+    message: "value is required by op (eq/ne: any JSON value, in: 1..100 items, exists: boolean)",
+  });
+export type PathConditionSpec = z.infer<typeof pathConditionSpecSchema>;
+
+export const blockConditionSpecSchema = z.object({
+  block: z.string().trim().min(1).max(100),
+  config: z.unknown().optional(),
+});
+export type BlockConditionSpec = z.infer<typeof blockConditionSpecSchema>;
+
+export const conditionSpecSchema = z.union([pathConditionSpecSchema, blockConditionSpecSchema]);
 export type ConditionSpec = z.infer<typeof conditionSpecSchema>;
 
 export const createTaskActionSchema = z.object({
@@ -414,39 +453,81 @@ export function resolvePath(ctx: AutomationEventContext, path: string): unknown 
   return current;
 }
 
-export interface ConditionOutcome {
-  path: string;
-  op: ConditionOp;
-  passed: boolean;
-}
+/**
+ * 条件求值结果：路径条件与条件积木各一种（runs 的逐条件结果原样落库，UI 按
+ * 形状各自绘制；error 只在积木行上——「为什么没触发」的失败原因跟着 run 走）。
+ */
+export type ConditionOutcome =
+  | { path: string; op: ConditionOp; passed: boolean }
+  | { block: string; passed: boolean; error?: string | undefined };
 
 export interface ConditionEvaluation {
   passed: boolean;
   outcomes: ConditionOutcome[];
 }
 
-/** 全部条件都满足才放行（AND）；空条件集恒真 */
-export function evaluateConditions(
+/** 条件积木求值的接缝：worker 的注册表提供实现，本包只认形状 */
+export interface ConditionBlockRef {
+  block: string;
+  config: unknown;
+}
+
+export interface ConditionBlockEvaluation {
+  passed: boolean;
+  /** 求值不了（积木未注册、配置坏、行解析不了）时的失败原因——落进 run 行，不静默 */
+  error?: string | undefined;
+}
+
+export type ConditionBlockEvaluator = (
+  ref: ConditionBlockRef,
+  ctx: AutomationEventContext,
+) => Promise<ConditionBlockEvaluation>;
+
+/**
+ * 全部条件都满足才放行（AND）；空条件集恒真。逐条件都求值（不短路）：run 行的
+ * 逐条件结果要能完整回答「为什么没触发」。路径条件本地纯求值；条件积木经
+ * evaluateBlock 接缝（未接 = 该条件求值不了，fail closed 记 error，不抛——扫描
+ * 不因一条坏规则停摆）。evaluator 抛错同样收进 error 行：求值不了是「不满足」
+ * 的最诚实写法，失败原因跟着 run 走。
+ */
+export async function evaluateConditions(
   conditions: ConditionSpec[],
   ctx: AutomationEventContext,
-): ConditionEvaluation {
-  const outcomes: ConditionOutcome[] = conditions.map((condition) => {
-    const resolved = resolvePath(ctx, condition.path);
-    let passed: boolean;
-    if (condition.op === "exists") {
-      passed = resolved !== undefined === condition.value;
-    } else if (condition.op === "eq") {
-      passed = resolved === condition.value;
-    } else if (condition.op === "ne") {
-      passed = resolved !== condition.value && resolved !== undefined;
-    } else {
-      passed =
-        Array.isArray(condition.value) &&
-        resolved !== undefined &&
-        condition.value.some((item) => item === resolved);
+  evaluateBlock?: ConditionBlockEvaluator,
+): Promise<ConditionEvaluation> {
+  const outcomes: ConditionOutcome[] = [];
+  for (const condition of conditions) {
+    if ("block" in condition) {
+      if (evaluateBlock === undefined) {
+        outcomes.push({
+          block: condition.block,
+          passed: false,
+          error: "no condition block evaluator is wired in",
+        });
+        continue;
+      }
+      try {
+        const result = await evaluateBlock({ block: condition.block, config: condition.config }, ctx);
+        outcomes.push({
+          block: condition.block,
+          passed: result.passed,
+          ...(result.error !== undefined ? { error: result.error } : {}),
+        });
+      } catch (err) {
+        outcomes.push({
+          block: condition.block,
+          passed: false,
+          error: err instanceof Error ? err.message : "condition block failed",
+        });
+      }
+      continue;
     }
-    return { path: condition.path, op: condition.op, passed };
-  });
+    outcomes.push({
+      path: condition.path,
+      op: condition.op,
+      passed: valueSatisfiesOp(condition.op, resolvePath(ctx, condition.path), condition.value),
+    });
+  }
   return { passed: outcomes.every((o) => o.passed), outcomes };
 }
 
