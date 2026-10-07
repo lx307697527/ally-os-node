@@ -2,6 +2,7 @@ import { eq } from "drizzle-orm";
 import { z } from "zod";
 import { schema } from "@ally/db";
 import { ruleSpecSchema } from "@ally/automations";
+import { approvalLevelsSchema } from "../approval/service.ts";
 import { NUMBERING_DATE_FORMATS } from "../numbering/service.ts";
 import { roleSchema } from "../authz/permissions.ts";
 import { ruleWriteDenial } from "../rules/service.ts";
@@ -21,10 +22,10 @@ import { registerConfigSubject, type ConfigSubjectSpec } from "./registry.ts";
  * 个「别的键」是语义错误），numbering 的 startNumber 刻意不可恢复（对已在发
  * 的系列无效果，同 PATCH 面的拒绝理由）。
  *
- * 回滚能力随内容改写路径走：approval 本切片仍没有定义改写端点（行内容恒等于
- * v1，无可回滚的差异），注册时不带 applyRevision，回滚端点对其答 409——定义
- * 改写端点进场（#221 后续切片）时同步补 applyRevision。workflow_template 的
- * 定义改写面随 #220/#226 进场（PATCH + 草稿发布 + 回滚）。
+ * 回滚能力随内容改写路径走：六族现都带就地改写端点与 applyRevision（approval
+ * 的 PATCH 随 #221 配置 UI 切片进场，workflow_template 的定义改写面随
+ * #220/#226 进场）。没有改写路径的族（夹具、未来新族未接前）注册时不带
+ * applyRevision，回滚端点对其答 409 rollback_unsupported。
  *
  * 草稿内容契约（切片 2）只随 applyRevision 走：草稿校验对齐各族配置面的
  * **业务**校验（strict + select 选项规则 + ruleSpecSchema），存进去的必须是
@@ -81,6 +82,15 @@ export function approvalConfigSnapshot(row: {
 }): Record<string, unknown> {
   return { name: row.name, levels: row.levels, active: row.active };
 }
+
+// 快照收口用保存面同一道 zod（approvalLevelsSchema）:subjectType/configKey 是
+// 身份不在快照里（键不复用,回滚「别的键」是语义错误）;PATCH 面落库的 levels
+// 已过同 schema,默认值已物化,重解析幂等
+const approvalConfigSnapshotSchema = z.object({
+  name: z.string().min(1).max(200),
+  levels: approvalLevelsSchema,
+  active: z.boolean(),
+});
 
 // ── 自定义字段（#222）──────────────────────────────────────────────────────
 const customFieldDefSnapshotSchema = z.object({
@@ -396,8 +406,7 @@ const registryRuleSpec: ConfigSubjectSpec = {
 
 // workflow：定义改写面随 #220/#226 进场（PATCH + 草稿发布 + 回滚）；快照回写
 // 只做结构收口（四门业务校验在写入面/草稿面已完成，回滚的职责是把台账里的字节
-// 原样写回去，同 automation/numbering 的裁法）。approval 仍无定义改写路径
-// （409 rollback_unsupported / publish_unsupported），定义改写端点随 #221 进场。
+// 原样写回去，同 automation/numbering/approval 的裁法）。
 const workflowTemplateSnapshotSchema = z.object({
   productType: z.string().nullable(),
   isDefault: z.boolean(),
@@ -429,6 +438,23 @@ const workflowTemplateSpec: ConfigSubjectSpec = {
 const approvalConfigSpec: ConfigSubjectSpec = {
   label: "审批线",
   configurePermission: "approval.configure",
+  // 就地改写面随 #221 配置 UI 进场（PATCH + 回滚）:快照回写只做结构收口
+  // (levels 的业务校验在保存面已完成,回滚的职责是把台账里的字节原样写回去,
+  // 同 automation/numbering 的裁法)
+  applyRevision: async (tx, subjectId, snapshot, version) => {
+    const data = parseSnapshotOrThrow("approval_config", approvalConfigSnapshotSchema, snapshot);
+    const updated = await tx
+      .update(schema.approvalConfigs)
+      .set({
+        name: data.name,
+        levels: data.levels,
+        active: data.active,
+        version,
+      })
+      .where(eq(schema.approvalConfigs.id, subjectId))
+      .returning({ id: schema.approvalConfigs.id });
+    return updated.length > 0;
+  },
 };
 
 // 模块装载时注册（生产路径：app.ts 的 side-effect import；测试注入夹具族走

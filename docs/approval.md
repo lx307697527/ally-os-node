@@ -116,11 +116,11 @@ template / instance / transition 同构。
 - ~~**pg-boss 执行与提醒**~~：已落地（见文末「通知扇出 + pg-boss 催办」节）；
   会签/票签也已落地（见上一节追加）。
 - ~~**多人审批方式**~~：已落地（见下一节）——会签（全员同意）/票签（N-of-M）。
-- **配置面管理（#226）**：configKey 替换 = 建新键 + 停用旧行，停用端点与定义
-  改写端点随 #226 后续切片；版本台账已进场——审批线创建即记 v1，版本史/差异
-  可读（docs/config-versions.md），回滚对该族答 409（无就地改写路径）。
-- **后台审批配置 UI**：随配置工作室前端进场（R-16-6 的审批线配置目前由持
-  `approval.configure` 的人经 API 创建一次）。
+- ~~**配置面管理（#226）**~~：已落地——就地 PATCH（定义改写 + 停用，真变更
+  记台账）与回滚随 applyRevision 开放，见文末「配置就地改写/停用 + 配置 UI」
+  节；configKey 替换仍是建新键 + 停用旧线（键是身份，永不复用）。
+- ~~**后台审批配置 UI**~~：已落地——`/system/approvals`（见文末节）；
+  R-16-6 的审批线配置不再需要手工 API 调用。
 
 ## 已落地：多级通知扇出 + pg-boss 催办（#221 通知切片）
 
@@ -183,3 +183,36 @@ api 的 approvalLevelsSchema 一处收口；读不准的快照跳过并告警（
 跑完到新代码上线之间，旧代码的审批裁决端点会报错（ON CONFLICT 目标索引
 消失）；staging 滚动窗口以分钟计、尚无生产流量，生产发布时迁移与新代码
 须同批次跟进。
+
+## 已落地：配置就地改写/停用 + 配置 UI（#221 配置工作室切片）
+
+**服务端**：`PATCH /api/approval-configs/:id`（`approval.configure` 门，
+strict 收口 `name`/`levels`/`active`）。纪律与 numbering PATCH 同构：无实效
+变更幂等返回现状（不留审计行、不记账——审计和活动流不被 no-op 刷屏）；真
+变更在同一事务里 bump `version`（版本号从台账取，行.version = 台账最新版的
+不变式）+ 记 #226 台账一版 `source=updated`（changes 顶层 from/to 摘要），
+提交后落 `approval.config_updated` 审计。levels 过保存面同一道
+`approvalLevelsSchema`（422 `invalid_levels` 带逐级 detail）。停用的线不再接
+新提交（提交面答 404 `config_inactive`），在飞请求不受影响（级别快照在提交
+时刻已定）。键（subjectType/configKey）是身份、永不改写也不复用——替换一条
+线 = 停旧线 + 新键（唯一索引兜底，POST 撞键 409 `config_exists`）。
+
+**回滚随 applyRevision 开放**：`approvalConfigSpec` 补上快照回写（快照收口
+用保存面同一道 zod；subjectType/configKey 不在快照——回滚「别的键」是语义
+错误）。`POST /api/config-versions/approval_config/:id/rollback` 从 409
+`rollback_unsupported` 变为可用：回滚 = 前滚一个 `rolled_back` 新版本，历史
+不改写；审批线无草稿面（drafts 仍答 409 `publish_unsupported`——就地 PATCH
+即生效，不需要第二层）。
+
+**Web 配置页**：`/system/approvals`（System 区「Approval lines」，服务端
+`approval.configure` 门、403 页面直说）。列表（subject type / key / name /
+级别摘要 / 状态 / 版本）、创建（subject type 开集 + lower_snake_case 键 +
+结构化级别编辑器：点名人员（取自员工目录，customer 不在审批人词表）∪ 角色
+勾选、any/all/quorum 裁决规则与票数、可选签名级别与含义）、就地编辑/停用
+（同一级别编辑器 + active 开关）、#226 台账历史 + 一键回滚（reason 可选，
+失败逐因可读：409 no_change / unsupported、404 revision_not_found）。页面
+把三条纪律说在前头：编辑只影响之后提交的请求（在飞的带着提交时刻的级别
+快照）、键永不复用（替换 = 停旧线 + 新键）、停用线不接新单而历史保留。
+
+**剩余（#221 保持 open）**：金额域首接线（#229/#231，决策表已可表达金额→
+谁批）。

@@ -69,6 +69,9 @@
   流转历史表之外的第二份权威读法，历史表 append-only、审计不可删除）、
   `approval.config_created`（审批线 #221；target = 配置行 id，detail 记
   `subjectType`/`configKey`/`name`/`steps`——配了几级审批一眼可查）、
+  `approval.config_updated`（审批线就地改写/停用 #221；target = 配置行 id，
+  detail 记 `subjectType`/`configKey`/`changes`（顶层字段 from/to）——无实效
+  变更的幂等 PATCH 不落此行，#226 台账同记一版 source=updated）、
   `approval.requested`（审批提交 #221；target = 请求行 id，detail 记
   `subjectType`/`subjectId`/`configKey`/`steps`——subject 引用在 detail，
   进单据的活动流时间线）、

@@ -7,6 +7,7 @@ import { createApp } from "../app.ts";
 import type { SessionData } from "../auth/session.ts";
 import { createAuthzStore } from "../authz/service.ts";
 import { registerNumberedSubject } from "../numbering/registry.ts";
+import { registerConfigSubject } from "../config-versions/registry.ts";
 
 // 集成测试：需要真实 PostgreSQL（append-only 触发器、审计行数断言、同事务记账）。
 // 未设 DATABASE_URL 时跳过。
@@ -496,7 +497,14 @@ describe.skipIf(!databaseUrl)("config version ledger (#226 slice 1, integration)
     expect(fields.fields.find((field) => field.id === fieldId)?.active).toBe(true);
   });
 
-  it("records v1 for create-only families and refuses their rollback", async () => {
+  it("rolls workflow and approval configs back through their PATCH faces; 409s a family without applyRevision", async () => {
+    // 无 applyRevision 的夹具族：rollback_unsupported 409 路径的反例面（生产六族
+    // 现在全带 applyRevision,#221 审批线进场后「create-only 族」不再存在;注册在
+    // 测试体内,族清单测试不受污染）
+    registerConfigSubject("fixture_unsupported", {
+      label: "Fixture unsupported",
+      configurePermission: "workflow.configure",
+    });
     const templateRes = await app.request("/api/workflow-templates", {
       method: "POST",
       headers: { ...jsonHeaders, ...adminHeaders },
@@ -535,8 +543,8 @@ describe.skipIf(!databaseUrl)("config version ledger (#226 slice 1, integration)
     const configId = must(((await configRes.json()) as { id?: string }).id);
     expect(await history("approval_config", configId)).toHaveLength(1);
 
-    // 定义改写端点（#220/#226）进场：workflow 回滚走 applyRevision——PATCH 记
-    // v2 后回滚到 v1 前滚出 rolled_back v3，内容与版本号都回到台账寻址
+    // 定义改写端点进场:workflow 与 approval 的回滚都走 applyRevision——PATCH 记
+    // v2 后回滚到 v1 前滚出 rolled_back v3,内容与版本号都回到台账寻址
     const templatePatch = await app.request(`/api/workflow-templates/${templateId}`, {
       method: "PATCH",
       headers: { ...jsonHeaders, ...adminHeaders },
@@ -553,8 +561,14 @@ describe.skipIf(!databaseUrl)("config version ledger (#226 slice 1, integration)
     );
     expect(templateRollback.status).toBe(200);
     expect(await templateRollback.json()).toMatchObject({ restoredVersion: 1, newVersion: 3 });
-    // approval 仍无定义改写路径：回滚 409（明确说「这族还回滚不了」，不假装成功）
-    const configRollback = await app.request(
+
+    const approvalPatch = await app.request(`/api/approval-configs/${configId}`, {
+      method: "PATCH",
+      headers: { ...jsonHeaders, ...adminHeaders },
+      body: JSON.stringify({ name: "Renamed line", active: false }),
+    });
+    expect(approvalPatch.status).toBe(200);
+    const approvalRollback = await app.request(
       `/api/config-versions/approval_config/${configId}/rollback`,
       {
         method: "POST",
@@ -562,7 +576,26 @@ describe.skipIf(!databaseUrl)("config version ledger (#226 slice 1, integration)
         body: JSON.stringify({ toVersion: 1 }),
       },
     );
-    expect(configRollback.status).toBe(409);
+    expect(approvalRollback.status).toBe(200);
+    expect(await approvalRollback.json()).toMatchObject({ restoredVersion: 1, newVersion: 3 });
+    // 行内容回到 v1:名字与激活位都是快照里的旧值,版本号落在台账新页
+    const configRow = await db
+      .select({ name: schema.approvalConfigs.name, active: schema.approvalConfigs.active, version: schema.approvalConfigs.version })
+      .from(schema.approvalConfigs)
+      .where(eq(schema.approvalConfigs.id, configId));
+    expect(configRow[0]).toMatchObject({ name: "Discount line", active: true, version: 3 });
+
+    // 无 applyRevision 的族:409 明确说「这族还回滚不了」,不假装成功
+    const unsupported = await app.request(
+      `/api/config-versions/fixture_unsupported/${randomUUID()}/rollback`,
+      {
+        method: "POST",
+        headers: { ...jsonHeaders, ...adminHeaders },
+        body: JSON.stringify({ toVersion: 1 }),
+      },
+    );
+    expect(unsupported.status).toBe(409);
+    expect(await unsupported.json()).toMatchObject({ error: "rollback_unsupported" });
   });
 
   it("keeps the ledger append-only at the database level", async () => {

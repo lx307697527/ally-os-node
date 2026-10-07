@@ -8,7 +8,7 @@ import type { AppEnv } from "../auth/session.ts";
 import { requirePermission } from "../authz/middleware.ts";
 import { recordAudit } from "../audit/audit-log.ts";
 import { approvalConfigSnapshot } from "../config-versions/families.ts";
-import { recordConfigRevision } from "../config-versions/service.ts";
+import { jsonEqual, nextConfigVersion, recordConfigRevision } from "../config-versions/service.ts";
 import { loadVisibleSubject } from "../subjects/registry.ts";
 import {
   actOnApproval,
@@ -20,12 +20,14 @@ import {
 } from "../approval/service.ts";
 
 /**
- * 审批端点（#221 切片 1）。
+ * 审批端点（#221）。
  *
  * 配置面（审批线管理）在 `approval.configure` 权限点后面（owner/admin 默认持有）
  * ——改审批路线 = 改全员谁有权裁决什么，与 workflow.configure 同一批人的裁决。
- * 配置一经创建不改定义（替换 = 停用旧行 + 新键，随 #226 版本化进场）；本切片
- * 连停用都不开（workflow-templates 同裁），先立住「配置不可变」的纪律。
+ * 创建（POST）一经落行不改键（subjectType/configKey 是身份，键不复用，唯一索引
+ * 兜底）；定义改写与停用走就地 PATCH（#221 配置 UI 切片）：无实效变更幂等返回、
+ * 真变更 bump 版本并记 #226 台账（回滚端点随 applyRevision 对该族开放），停用
+ * 的线不再接新提交（config_inactive），替换一条线 = 停旧线 + 新键。
  *
  * 请求面（提交 / 详情 / 待办 / 裁决）在会话门后：提交与详情过单据可见性门
  * （subjects/registry.ts，看得到单据才看得到它的审批）；待办与裁决由配置点名
@@ -44,6 +46,14 @@ const createConfigBody = z.object({
   name: z.string().trim().min(1).max(200),
   levels: z.unknown(),
 });
+
+const patchConfigBody = z
+  .object({
+    name: z.string().trim().min(1).max(200).optional(),
+    levels: z.unknown().optional(),
+    active: z.boolean().optional(),
+  })
+  .strict();
 
 const submitBody = z.object({
   subjectType: z.string().trim().min(1).max(64),
@@ -154,6 +164,94 @@ export function approvalsRoutes(deps: { db: Db; logger: Logger; notifyUsers: (us
       )
       .orderBy(asc(schema.approvalConfigs.subjectType), asc(schema.approvalConfigs.configKey));
     return c.json({ configs: rows });
+  });
+
+  // 就地改写/停用（#221 配置 UI）：strict PATCH,真变更才 bump 版本记台账——
+  // 无实效变更幂等返回现状,审计和台账不被 no-op 刷屏（numbering PATCH 同纪律）
+  app.patch("/api/approval-configs/:id", requireApprovalConfigure, async (c) => {
+    const id = z.uuid().safeParse(c.req.param("id"));
+    if (!id.success) {
+      return c.json({ error: "invalid_request" }, 400);
+    }
+    const parsed = patchConfigBody.safeParse(await c.req.json().catch(() => undefined));
+    if (!parsed.success) {
+      return c.json({ error: "invalid_request" }, 400);
+    }
+    const body = parsed.data;
+    let levels: z.infer<typeof approvalLevelsSchema> | undefined;
+    if (body.levels !== undefined) {
+      const parsedLevels = approvalLevelsSchema.safeParse(body.levels);
+      if (!parsedLevels.success) {
+        return c.json(
+          { error: "invalid_levels", detail: parsedLevels.error.issues.map((issue) => ({ path: issue.path, message: issue.message })) },
+          422,
+        );
+      }
+      levels = parsedLevels.data;
+    }
+    const found = await deps.db
+      .select()
+      .from(schema.approvalConfigs)
+      .where(eq(schema.approvalConfigs.id, id.data));
+    const current = found[0];
+    if (current === undefined) {
+      return c.json({ error: "not_found" }, 404);
+    }
+    const changes: Record<string, { from: unknown; to: unknown }> = {};
+    if (body.name !== undefined && body.name !== current.name) {
+      changes.name = { from: current.name, to: body.name };
+    }
+    if (levels !== undefined && !jsonEqual(current.levels, levels)) {
+      changes.levels = { from: current.levels, to: levels };
+    }
+    if (body.active !== undefined && body.active !== current.active) {
+      changes.active = { from: current.active, to: body.active };
+    }
+    if (Object.keys(changes).length === 0) {
+      return c.json({ config: current });
+    }
+    const actorId = c.get("user").id;
+    const updated = await deps.db.transaction(async (tx) => {
+      // 版本号从台账取（行.version = 台账最新版的不变式,#226）
+      const nextVersion = await nextConfigVersion(tx, "approval_config", id.data);
+      const rows = await tx
+        .update(schema.approvalConfigs)
+        .set({
+          ...(body.name !== undefined ? { name: body.name } : {}),
+          ...(levels !== undefined ? { levels } : {}),
+          ...(body.active !== undefined ? { active: body.active } : {}),
+          version: nextVersion,
+        })
+        .where(eq(schema.approvalConfigs.id, id.data))
+        .returning();
+      const row = rows[0];
+      if (row !== undefined) {
+        await recordConfigRevision(tx, {
+          subjectType: "approval_config",
+          subjectId: id.data,
+          version: nextVersion,
+          actorId,
+          snapshot: approvalConfigSnapshot({ name: row.name, levels: row.levels, active: row.active }),
+          changes,
+          source: "updated",
+        });
+      }
+      return row;
+    });
+    if (updated === undefined) {
+      return c.json({ error: "not_found" }, 404);
+    }
+    await recordAudit(deps.db, {
+      actor: actorId,
+      action: "approval.config_updated",
+      target: id.data,
+      detail: {
+        subjectType: updated.subjectType,
+        configKey: updated.configKey,
+        changes,
+      },
+    });
+    return c.json({ config: updated });
   });
 
   // ── 请求面 ──────────────────────────────────────────────────────────────

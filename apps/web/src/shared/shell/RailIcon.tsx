@@ -20,7 +20,7 @@
 // the labels beside it.
 import type { ReactElement, ReactNode } from "react";
 
-export type RailIconName = "overview" | "ledger" | "tasks" | "approvals" | "hash";
+export type RailIconName = "overview" | "ledger" | "tasks" | "approvals" | "hash" | "stages";
 
 const GLYPHS: Record<RailIconName, ReactNode> = {
   // A gauge: the arc, its baseline and one needle — where things stand.
@@ -63,6 +63,15 @@ const GLYPHS: Record<RailIconName, ReactNode> = {
       <path d="M16.5 4l-2 16" />
       <path d="M4.5 9h16" />
       <path d="M3.5 15h16" />
+    </>
+  ),
+  // A staircase: each step one level further along — an approval line's
+  // ordered levels, climbed in sequence.
+  stages: (
+    <>
+      <path d="M4.75 6.5h14.5" />
+      <path d="M8.25 12h11" />
+      <path d="M11.75 17.5h7.5" />
     </>
   ),
 };
