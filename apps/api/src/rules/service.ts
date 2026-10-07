@@ -1,9 +1,10 @@
-import { and, asc, eq, lte, sql } from "drizzle-orm";
+import { asc, eq, sql } from "drizzle-orm";
 import { z } from "zod";
+import { nextConfigVersion, recordConfigRevision } from "@ally/rules";
 import { schema, type Db } from "@ally/db";
 import { recordAudit } from "../audit/audit-log.ts";
 import type { SubjectWriteDenial } from "../config-versions/registry.ts";
-import { jsonEqual, nextConfigVersion, recordConfigRevision } from "../config-versions/service.ts";
+import { jsonEqual } from "../config-versions/service.ts";
 import {
   assertDecisionTableCompiles,
   decisionTableValueSchema,
@@ -18,9 +19,9 @@ import {
  *   RULE-007）/ isRuleEnabled；值未设（「待填」）或键不存在一律抛错，消费方
  *   fail closed，不猜默认值。
  * - 写：changeRuleValue（立即或定时；改值必填新依据；谁能改按行的角色数组，
- *   owner 恒可——R-16-5 的 owner 直通同源）；applyDueRuleChanges 到点前滚
- *   （定时变更不在调度时刻入台账，激活时刻才记版——台账记录的是「生效了什么」，
- *   调度意图由审计与行上字段承载）。
+ *   owner 恒可——R-16-5 的 owner 直通同源）。定时变更到点的前滚内核
+ *   （applyDueRuleChanges）居 packages/rules，worker 的 rules-due-activation
+ *   到点调用（#233 cron 接线切片的归属裁决见该包 docblock）。
  * - 观测：recordRuleOutcome 累加运行数据（§4.8 触发/例外/越过），无 HTTP 面
  *   ——生产方（门槛、自动化、流程）在各自域内调用；周报属报表域（#225）。
  * - 例外：requestGateException——业务门槛例外的唯一合法通道（§4.7）：开关
@@ -346,121 +347,6 @@ export async function changeRuleValue(
     },
   });
   return { mode: "immediate", changed: true, version };
-}
-
-// ── 定时生效前滚（与 workflow 的 due scan 同裁法：内核纯函数，cron 接线归 worker 域）──
-export interface DueActivation {
-  key: string;
-  ruleId: string;
-  effectiveAt: Date;
-}
-
-/**
- * 把到点的待生效变更前滚为生效值：每条变更一个事务（SELECT FOR UPDATE 认领 →
- * 行更新 + 台账记一版 source='scheduled'），审计在提交后写（调度者为 actor，
- * detail 带调度信息——「生效了什么」在台账，「谁在什么时候定的」在两处都有）。
- * 并发扫描者靠行锁串行化：拿不到锁或已非到期即跳过。无到期变更 = 空数组。
- */
-export async function applyDueRuleChanges(
-  db: Db,
-  opts: { now: Date; limit?: number },
-): Promise<DueActivation[]> {
-  const due = await db
-    .select({ id: schema.registryRules.id })
-    .from(schema.registryRules)
-    .where(
-      and(
-        sql`${schema.registryRules.scheduledEffectiveAt} is not null`,
-        lte(schema.registryRules.scheduledEffectiveAt, opts.now),
-      ),
-    )
-    .orderBy(asc(schema.registryRules.scheduledEffectiveAt))
-    .limit(opts.limit ?? 100);
-  const applied: DueActivation[] = [];
-  for (const candidate of due) {
-    const outcome = await db.transaction(async (tx) => {
-      const locked = await tx
-        .select()
-        .from(schema.registryRules)
-        .where(eq(schema.registryRules.id, candidate.id))
-        .for("update")
-        .limit(1);
-      const rule = locked[0];
-      const dueAt = rule?.scheduledEffectiveAt ?? null;
-      if (rule === undefined || dueAt === null || dueAt.getTime() > opts.now.getTime()) {
-        return null; // 已被并发者处理，或待生效时间被改后不再到期
-      }
-      const rationale = rule.scheduledRationale ?? { refs: rule.adjudicationRefs };
-      const effectiveAt: Date = dueAt;
-      const version = await nextConfigVersion(tx, "registry_rule", rule.id);
-      await tx
-        .update(schema.registryRules)
-        .set({
-          value: rule.scheduledValue,
-          adjudicationRefs: rationale.refs,
-          scheduledValue: null,
-          scheduledEffectiveAt: null,
-          scheduledRationale: null,
-          scheduledById: null,
-          version,
-          updatedAt: new Date(),
-        })
-        .where(eq(schema.registryRules.id, rule.id));
-      await recordConfigRevision(tx, {
-        subjectType: "registry_rule",
-        subjectId: rule.id,
-        version,
-        actorId: rule.scheduledById,
-        snapshot: {
-          label: rule.label,
-          category: rule.category,
-          valueType: rule.valueType,
-          value: rule.scheduledValue ?? null,
-          changeableBy: rule.changeableBy,
-          enableBy: rule.enableBy,
-          adjudicationRefs: rationale.refs,
-          riskFlag: rule.riskFlag,
-          riskNote: rule.riskNote,
-        },
-        changes: {
-          value: { from: rule.value ?? null, to: rule.scheduledValue ?? null },
-          adjudicationRefs: { from: rule.adjudicationRefs, to: rationale.refs },
-        },
-        source: "scheduled",
-      });
-      return {
-        key: rule.key,
-        ruleId: rule.id,
-        scheduledById: rule.scheduledById,
-        from: rule.value ?? null,
-        to: rule.scheduledValue ?? null,
-        rationale,
-        effectiveAt,
-        version,
-      };
-    });
-    if (outcome !== null) {
-      await recordAudit(db, {
-        actor: outcome.scheduledById,
-        action: "rules.scheduled_change_applied",
-        target: outcome.ruleId,
-        detail: {
-          key: outcome.key,
-          from: outcome.from,
-          to: outcome.to,
-          effectiveAt: outcome.effectiveAt.toISOString(),
-          rationale: outcome.rationale,
-          version: outcome.version,
-        },
-      });
-      applied.push({
-        key: outcome.key,
-        ruleId: outcome.ruleId,
-        effectiveAt: outcome.effectiveAt,
-      });
-    }
-  }
-  return applied;
 }
 
 // ── 运行数据（§4.8）：触发 / 例外 / 越过计数；周报属 #225 ───────────────────────

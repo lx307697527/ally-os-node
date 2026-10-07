@@ -50,6 +50,9 @@ importers:
       '@ally/realtime':
         specifier: workspace:*
         version: link:../../packages/realtime
+      '@ally/rules':
+        specifier: workspace:*
+        version: link:../../packages/rules
       '@ally/storage':
         specifier: workspace:*
         version: link:../../packages/storage
@@ -160,6 +163,9 @@ importers:
       '@ally/realtime':
         specifier: workspace:*
         version: link:../../packages/realtime
+      '@ally/rules':
+        specifier: workspace:*
+        version: link:../../packages/rules
       drizzle-orm:
         specifier: ^0.45.3
         version: 0.45.3(@types/pg@8.23.1)(kysely@0.29.6)(pg@8.23.0)
@@ -234,6 +240,15 @@ importers:
       '@ally/realtime':
         specifier: workspace:*
         version: link:../realtime
+
+  packages/rules:
+    dependencies:
+      '@ally/db':
+        specifier: workspace:*
+        version: link:../db
+      drizzle-orm:
+        specifier: ^0.45.3
+        version: 0.45.3(@types/pg@8.23.1)(kysely@0.29.6)(pg@8.23.0)
 
   packages/storage:
     dependencies:
