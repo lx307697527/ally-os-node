@@ -11,7 +11,8 @@ import { recordAudit } from "../audit/audit-log.ts";
 import { loadVisibleSubject } from "../subjects/registry.ts";
 import { formSubjectSpec } from "../custom-fields/registry.ts";
 import { customFieldDefSnapshot } from "../config-versions/families.ts";
-import { nextConfigVersion, recordConfigRevision } from "../config-versions/service.ts";import {
+import { jsonEqual, nextConfigVersion, recordConfigRevision } from "../config-versions/service.ts";
+import {
   CUSTOM_FIELD_TYPES,
   canViewField,
   composeFormSchema,
@@ -19,7 +20,8 @@ import { nextConfigVersion, recordConfigRevision } from "../config-versions/serv
 } from "../custom-fields/service.ts";
 
 /**
- * 自定义字段端点（#222 切片 1：配置工作室的字段配置面 + 表单引擎的读写面）。
+ * 自定义字段端点（#222 切片 1：配置工作室的字段配置面 + 表单引擎的读写面；
+ * 就地改写随本切片进场，#226 后续切片的「内容改写端点」。
  *
  * 分两层：/api/custom-fields* 在 `custom_fields.configure` 权限点后面（owner/admin
  * 默认持有，与 workflow.configure / approval.configure 同一批配置工作室管理者）
@@ -28,9 +30,12 @@ import { nextConfigVersion, recordConfigRevision } from "../config-versions/serv
  * （subjects/registry.ts，与评论/活动/关注同一扇门）和字段级 viewableBy /
  * editableBy 逐字段裁决——配置权和填写权分离。
  *
- * 定义一经创建不改写（与 workflow/approval 配置同一最小纪律，版本化随 #226 进场）：
- * 停用 = active 翻转。表单 schema 端点要求 subject 类型已在 custom-fields/registry.ts
- * 注册（内置字段由属主域提供），未注册回 400——机制先行不留产线。
+ * fieldKey/subjectType 是身份，创建后不改写（键停用后不复用，同 workflow
+ * template_key 纪律）；其余内容走就地 PATCH（strict、真变更才动行）——每次真
+ * 变更同事务 bump 版本 + 记 #226 台账，与 approval/numbering PATCH 同纪律。
+ * 改型（fieldType/options）不改写既有值：值行保留写入时的 JSON，读方按定义
+ * 现值解析；内容校验对「改后的 (fieldType, options) 有效对」收口，不允许把
+ * select 改成没有选项、也不允许给非 select 字段挂选项。
  */
 
 const createBody = z.object({
@@ -48,7 +53,20 @@ const createBody = z.object({
   editableBy: z.array(roleSchema).max(20).default([]),
 });
 
-const patchBody = z.object({ active: z.boolean() });
+// strict PATCH：fieldKey/subjectType 是身份不在内容里；其余就地可改。options
+// 的合法性（select 非空无重复、其余类型无选项）对「改后的有效对」统一收口，
+// 不在形状层单独判——见 PATCH handler 内的 optionsRule
+const patchBody = z
+  .object({
+    label: z.string().trim().min(1).max(200).optional(),
+    fieldType: z.enum(CUSTOM_FIELD_TYPES).optional(),
+    options: z.array(z.string().trim().min(1).max(100)).max(100).nullable().optional(),
+    required: z.boolean().optional(),
+    viewableBy: z.array(roleSchema).max(20).optional(),
+    editableBy: z.array(roleSchema).max(20).optional(),
+    active: z.boolean().optional(),
+  })
+  .strict();
 
 const valuesBody = z.object({ values: z.record(z.string(), z.unknown()) });
 
@@ -164,8 +182,10 @@ export function customFieldsRoutes(deps: { db: Db; logger: Logger }) {
     return c.json({ fields: rows });
   });
 
-  // 停用/恢复 = active 翻转，其余定义不改写（内容改写端点随 #226 后续切片）；
-  // 每次翻转经台账记一个新版本
+  // 就地改写/停用（#222 配置面，#226 台账）：strict PATCH、真变更才 bump 版本
+  // 记台账——无实效变更幂等返回现状，审计和台账不被 no-op 刷屏（approval/numbering
+  // PATCH 同纪律）。纯 active 翻转沿用 field_activated/field_deactivated 的既有
+  // 审计词；内容变更（含与 active 同时改）记 field_updated，changes 全量进 detail
   app.patch("/api/custom-fields/:id", requireCustomFieldsConfigure, async (c) => {
     const id = z.uuid().safeParse(c.req.param("id"));
     if (!id.success) {
@@ -175,36 +195,94 @@ export function customFieldsRoutes(deps: { db: Db; logger: Logger }) {
     if (!parsed.success) {
       return c.json({ error: "invalid_request" }, 400);
     }
-    const actorId = c.get("user").id;
+    const body = parsed.data;
     const found = await deps.db
-      .select({ active: schema.customFieldDefs.active })
+      .select()
       .from(schema.customFieldDefs)
       .where(eq(schema.customFieldDefs.id, id.data))
       .limit(1);
-    const before = found[0];
-    if (before === undefined) {
+    const current = found[0];
+    if (current === undefined) {
       return c.json({ error: "not_found" }, 404);
     }
-    if (before.active === parsed.data.active) {
-      // real-change-only：翻到现状 = 幂等返回，不更新、不记账、不留审计
-      return c.json({ id: id.data, active: before.active });
+    // 有效对 = 请求补过缺省的行内容；选项规则按改后的 (fieldType, options) 收口
+    const effective = {
+      label: body.label ?? current.label,
+      fieldType: body.fieldType ?? current.fieldType,
+      options: body.options !== undefined ? body.options : (current.options ?? null),
+      required: body.required ?? current.required,
+      viewableBy: body.viewableBy ?? current.viewableBy,
+      editableBy: body.editableBy ?? current.editableBy,
+      active: body.active ?? current.active,
+    };
+    if (effective.fieldType === "select") {
+      if (
+        effective.options === null ||
+        effective.options.length === 0 ||
+        new Set(effective.options).size !== effective.options.length
+      ) {
+        return c.json({ error: "invalid_options" }, 422);
+      }
+    } else if (effective.options !== null && effective.options.length > 0) {
+      return c.json({ error: "invalid_options" }, 422);
     }
+    const changes: Record<string, { from: unknown; to: unknown }> = {};
+    if (effective.label !== current.label) {
+      changes.label = { from: current.label, to: effective.label };
+    }
+    if (effective.fieldType !== current.fieldType) {
+      changes.fieldType = { from: current.fieldType, to: effective.fieldType };
+    }
+    if (!jsonEqual(effective.options, current.options ?? null)) {
+      changes.options = { from: current.options ?? null, to: effective.options };
+    }
+    if (effective.required !== current.required) {
+      changes.required = { from: current.required, to: effective.required };
+    }
+    if (!jsonEqual(effective.viewableBy, current.viewableBy)) {
+      changes.viewableBy = { from: current.viewableBy, to: effective.viewableBy };
+    }
+    if (!jsonEqual(effective.editableBy, current.editableBy)) {
+      changes.editableBy = { from: current.editableBy, to: effective.editableBy };
+    }
+    if (effective.active !== current.active) {
+      changes.active = { from: current.active, to: effective.active };
+    }
+    if (Object.keys(changes).length === 0) {
+      return c.json({ field: current });
+    }
+    const actorId = c.get("user").id;
     const row = await deps.db.transaction(async (tx) => {
-      // 停用/恢复也是一次内容变更：版本号从台账取（行.version = 台账最新版，#226）
+      // 停用/恢复/改内容都是一次内容变更：版本号从台账取（行.version = 台账最新
+      // 版的不变式，#226）
       const nextVersion = await nextConfigVersion(tx, "custom_field_def", id.data);
       const updated = await tx
         .update(schema.customFieldDefs)
-        .set({ active: parsed.data.active, version: nextVersion })
+        .set({
+          label: effective.label,
+          fieldType: effective.fieldType,
+          options: effective.options,
+          required: effective.required,
+          viewableBy: [...effective.viewableBy],
+          editableBy: [...effective.editableBy],
+          active: effective.active,
+          version: nextVersion,
+        })
         .where(eq(schema.customFieldDefs.id, id.data))
         .returning({
           id: schema.customFieldDefs.id,
-          active: schema.customFieldDefs.active,
+          subjectType: schema.customFieldDefs.subjectType,
+          fieldKey: schema.customFieldDefs.fieldKey,
           label: schema.customFieldDefs.label,
           fieldType: schema.customFieldDefs.fieldType,
           options: schema.customFieldDefs.options,
           required: schema.customFieldDefs.required,
           viewableBy: schema.customFieldDefs.viewableBy,
           editableBy: schema.customFieldDefs.editableBy,
+          active: schema.customFieldDefs.active,
+          version: schema.customFieldDefs.version,
+          createdById: schema.customFieldDefs.createdById,
+          createdAt: schema.customFieldDefs.createdAt,
         });
       const updatedRow = updated[0];
       if (updatedRow === undefined) {
@@ -224,7 +302,7 @@ export function customFieldsRoutes(deps: { db: Db; logger: Logger }) {
           editableBy: updatedRow.editableBy,
           active: updatedRow.active,
         }),
-        changes: { active: { from: !parsed.data.active, to: parsed.data.active } },
+        changes,
         source: "updated",
       });
       return updatedRow;
@@ -232,12 +310,22 @@ export function customFieldsRoutes(deps: { db: Db; logger: Logger }) {
     if (row === undefined) {
       return c.json({ error: "not_found" }, 404);
     }
-    await recordAudit(deps.db, {
-      actor: actorId,
-      action: row.active ? "custom_fields.field_activated" : "custom_fields.field_deactivated",
-      target: row.id,
-    });
-    return c.json({ id: row.id, active: row.active });
+    const contentChanged = Object.keys(changes).some((key) => key !== "active");
+    if (contentChanged) {
+      await recordAudit(deps.db, {
+        actor: actorId,
+        action: "custom_fields.field_updated",
+        target: row.id,
+        detail: { subjectType: row.subjectType, fieldKey: row.fieldKey, changes },
+      });
+    } else {
+      await recordAudit(deps.db, {
+        actor: actorId,
+        action: row.active ? "custom_fields.field_activated" : "custom_fields.field_deactivated",
+        target: row.id,
+      });
+    }
+    return c.json({ field: row });
   });
 
   // 表单引擎的合成 schema：内置字段（属主域注册的 zod）+ 生效自定义字段，一份

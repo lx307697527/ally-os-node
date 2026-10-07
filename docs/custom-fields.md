@@ -22,7 +22,7 @@ copy"）、SQL 函数签名与 CHECK 约束四处手工同步，靠 parity 测�
 | 数据模型 | `packages/db/src/schema.ts`（migration `0016`） | `custom_field_defs`（subject 开集 text + fieldKey 每类型唯一 + 五种字段类型 + 字段级 viewableBy/editableBy + version = #226 台账版本）、`custom_field_values`（多态 subject + 每字段一行 upsert，值唯一索引防并发双插；形态与 comments/follows 相同，subject 无外键，属主记录删除时各域自清） |
 | 表单 subject 注册表 | `apps/api/src/custom-fields/registry.ts` | `registerFormSubject(type, { builtin })`——属主域给出内置字段的 zod raw shape；本切片注册表为空（询价向导与清场检查表两个消费域都在后面），schema 端点对未注册类型回 400，不出现「能配字段但没地方渲染」的半开机状态。测试经同一条接缝注入夹具域 |
 | 纯函数层 | `apps/api/src/custom-fields/service.ts` | `fieldValueZod`（按定义现算单字段 zod：类型/长度/选项/日历日在服务端收口）、`composeFormSchema`（内置 + 自定义铺进一个 z.object，`z.toJSONSchema` 导出 input 侧；自定义键与内置键撞名炸出）、`canViewField`/`canEditField`（空数组 = 不限制；**可写必须同时可见**——写看不见的字段是瞎写）、`parseValueSubmission`（完整提交语义：未知键/越权键/类型错/必填缺逐键报错，返回 writes 由调用方定事务边界）。属主域可在进程内直接复用，与 esign/approval 的进程内接缝同一裁法 |
-| 路由 | `routes/custom-fields.ts` | 配置面（POST/GET/PATCH）在 `custom_fields.configure` 权限点后；表单面（schema 合成、字段值读/写）登录即可——subject 可见性门（subjects/registry.ts，与评论/活动/关注同一扇）+ 字段级权限逐字段裁决。定义一经创建不改写（内容改写端点随 #226 后续切片），停用 = active 翻转且每次翻转记台账新版本 |
+| 路由 | `routes/custom-fields.ts` | 配置面（POST/GET/PATCH）在 `custom_fields.configure` 权限点后；表单面（schema 合成、字段值读/写）登录即可——subject 可见性门（subjects/registry.ts，与评论/活动/关注同一扇）+ 字段级权限逐字段裁决。fieldKey/subjectType 是身份创建后不改写；其余内容就地 PATCH（strict、真变更才动行，#226 后续切片的「内容改写端点」已随配置面 UI 切片进场），每次真变更 bump 版本记台账 |
 | 权限点 | `authz/permissions.ts` | `custom_fields.configure`：加字段 = 改所有人的表单，配置工作室归 owner/admin；**填值**不在此点后——可见性门 + 字段级 viewableBy/editableBy 各裁各的 |
 | 审计 | `docs/audit.md` 词表 | `custom_fields.field_created` / `field_activated` / `field_deactivated` / `values_updated`（target = subject id，detail 记 fieldKeys——subject 引用在 detail，进对象活动流时间线） |
 
@@ -46,6 +46,29 @@ copy"）、SQL 函数签名与 CHECK 约束四处手工同步，靠 parity 测�
 一行，唯一索引兜并发），updated_by / updated_at 随写更新，审计行与值写入同事务
 （含清值时 detail 的 `clearedFieldKeys`）。
 
+## 已落地：配置面 UI + 内容就地改写（#222 配置面切片）
+
+- **`/system/custom-fields`（System 区 rail「Custom fields」）**：字段定义的
+  配置面。列表带 subject 类型/状态/文本三道筛选，行 = 键/标签/类型与选项/
+  访问摘要（required + 逐组角色或「所有人」）/状态/版本；创建面板（subject
+  类型带 datalist 建议、lower_snake_case 键、五种类型、select 逐行选项、
+  required、viewableBy/editableBy 角色勾选——customer 在词表里，字段可以给
+  客户看）；就地编辑面板（身份两键不可改）；`/system/audit` 同款的 #226
+  台账史 + 一键回滚（回滚 = 恢复版记为新版、历史不改写、可带原因）。
+  服务端 `custom_fields.configure` 门，无权限的账号在页面里得到明确答复。
+- **内容就地改写端点（PATCH 扩展）**：`PATCH /api/custom-fields/:id` strict
+  收口 label/fieldType/options/required/viewableBy/editableBy/active——
+  fieldKey/subjectType 是身份不在内容里；无实效变更幂等返回（不留审计、不
+  记账）；真变更同事务 bump 版本 + 记台账 `source=updated`。选项规则按
+  **改后的有效对**收口：select 必须带非空无重复选项、其余类型不带——不许把
+  select 改成没有选项，也不许给文本字段挂选项。审计：纯 active 翻转沿用
+  `field_activated`/`field_deactivated`；内容变更（含与 active 同次）记一条
+  `custom_fields.field_updated`，detail 带逐字段 from/to。
+- **改型不改值**：fieldType/options 改写（含回滚、草稿发布两条路）从不重写
+  已写入的值——值行保留写入时的 JSON，读方按定义现值解析；这条纪律与
+  「编辑只影响之后的提交」的快照裁决不同向（值的快照在写入时刻，不在定义
+  修订时刻），是字段引擎自己的不变式。
+
 ## 刻意不在这切片里的（#222 保持 open）
 
 - **表单构建器 UI（拖放、分组、条件显示）**：配置工作室前端进场（拖放设计器
@@ -58,8 +81,8 @@ copy"）、SQL 函数签名与 CHECK 约束四处手工同步，靠 parity 测�
 - **对外（未登录）表单提交**：询价向导的公开提交面随获客模块切片设计（防刷、
   限流、turnstile），不预置匿名写路径。
 - **配置版本、审计与回滚（#226）**：台账已进场——字段创建即记 v1，停用/恢复
-  各记一版且可回滚（docs/config-versions.md）；草稿层与一键发布已进场（字段
-  草稿过族契约后一键发布，同 docs）；内容改写端点（label/options 等就地编辑）
-  与受监管变更控制门是 #226 后续切片（在那之前就地改 = 走草稿发布或停旧建新）。
+  与内容改写各记一版且可回滚（docs/config-versions.md）；草稿层与一键发布已
+  进场（字段草稿过族契约后一键发布，同 docs）；就地改写已进场（PATCH，见上
+  节）；受监管变更控制门是 #226 剩余切片（等 #206）。
 - **报表 / 流程门槛 / 自动化规则中使用自定义字段**：值侧表已可统一按字段键查询，
   消费方随 #224/#225/#233 进场。
