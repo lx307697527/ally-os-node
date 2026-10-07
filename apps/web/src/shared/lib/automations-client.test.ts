@@ -238,11 +238,28 @@ describe("spec display helpers (#224)", () => {
 
   it("run-row parsers accept the worker's shapes and reject everything else", () => {
     expect(parseConditionOutcome({ path: "detail.to", op: "eq", passed: true })).toEqual({
+      kind: "path",
       path: "detail.to",
       op: "eq",
       passed: true,
     });
     expect(parseConditionOutcome({ path: "detail.to", op: "eq" })).toBeNull();
+    expect(parseConditionOutcome({ block: "custom_field", passed: true })).toEqual({
+      kind: "block",
+      block: "custom_field",
+      passed: true,
+      error: null,
+    });
+    expect(
+      parseConditionOutcome({ block: "custom_field", passed: false, error: "custom field is not configured: task.vip" }),
+    ).toEqual({
+      kind: "block",
+      block: "custom_field",
+      passed: false,
+      error: "custom field is not configured: task.vip",
+    });
+    expect(parseConditionOutcome({ block: 7, passed: true })).toBeNull();
+    expect(parseConditionOutcome({ passed: true })).toBeNull();
     expect(parseActionResult({ type: "create_task", status: "succeeded", ref: "task-1" })).toEqual({
       type: "create_task",
       status: "succeeded",
@@ -285,8 +302,8 @@ describe("spec draft round trip (#224)", () => {
     });
     expect(draft.trigger).toEqual({ kind: "due", subjectType: "task", anchorField: "dueAt", direction: "after", offsetMinutes: "45" });
     expect(draft.conditions).toEqual([
-      { path: "detail.to", op: "eq", value: '"stage_b"' },
-      { path: "actor", op: "exists", value: "true" },
+      { kind: "path", path: "detail.to", op: "eq", value: '"stage_b"' },
+      { kind: "path", path: "actor", op: "exists", value: "true" },
     ]);
     expect(draft.actions[0]).toEqual({ type: "create_task", title: "Hi", description: "", assigneeId: "", dueInHours: "24" });
     expect(draft.actions[1]).toEqual({ type: "notify", userIdsText: "id-a\nid-b", title: "Hello", body: "World" });
@@ -294,13 +311,26 @@ describe("spec draft round trip (#224)", () => {
 
   it("specToDraft: unknown shapes keep their JSON verbatim — saving an old rule cannot destroy them", () => {
     const webhook = { type: "webhook", config: { url: "https://example.com/hook", secret: "s" } };
+    const unknownBlock = { block: "risk_score", config: { above: 80 } };
     const draft = specToDraft({
       trigger: { kind: "cron", expression: "*/5 * * * *" },
-      conditions: [{ path: "detail.x", op: "eq", value: 7 }],
+      conditions: [{ path: "detail.x", op: "eq", value: 7 }, unknownBlock],
       actions: [webhook, { type: "notify", config: { userIds: ["id-a"], title: "t" } }],
     });
     expect(draft.trigger).toEqual({ kind: "json", json: JSON.stringify({ kind: "cron", expression: "*/5 * * * *" }, null, 2) });
+    expect(draft.conditions[1]).toEqual({ kind: "json", json: JSON.stringify(unknownBlock, null, 2) });
     expect(draft.actions[0]).toEqual({ type: "json", json: JSON.stringify(webhook, null, 2) });
+  });
+
+  it("specToDraft: the custom_field condition block comes back structured", () => {
+    const draft = specToDraft({
+      trigger: { kind: "event", action: "task.updated" },
+      conditions: [{ block: "custom_field", config: { subjectType: "task", fieldKey: "vip", op: "eq", value: true } }],
+      actions: [],
+    });
+    expect(draft.conditions).toEqual([
+      { kind: "custom_field", subjectType: "task", fieldKey: "vip", op: "eq", value: "true" },
+    ]);
   });
 
   it("buildTrigger: event, due bounds, json passthrough", () => {
@@ -336,18 +366,42 @@ describe("spec draft round trip (#224)", () => {
   });
 
   it("buildConditions: per-op value shapes, fail loud per row", () => {
-    expect(buildConditions([{ path: "detail.to", op: "eq", value: '"b"' }])).toEqual({
+    expect(buildConditions([{ kind: "path", path: "detail.to", op: "eq", value: '"b"' }])).toEqual({
       ok: true,
       value: [{ path: "detail.to", op: "eq", value: "b" }],
     });
-    expect(buildConditions([{ path: "actor", op: "exists", value: "true" }])).toEqual({
+    expect(buildConditions([{ kind: "path", path: "actor", op: "exists", value: "true" }])).toEqual({
       ok: true,
       value: [{ path: "actor", op: "exists", value: true }],
     });
-    expectError(buildConditions([{ path: "actor", op: "exists", value: "yes" }]), /true or false/);
-    expectError(buildConditions([{ path: "detail.to", op: "in", value: '{"a":1}' }]), /non-empty JSON array/);
-    expectError(buildConditions([{ path: "detail.to", op: "eq", value: "bare" }]), /not valid JSON/);
-    expectError(buildConditions([{ path: " ", op: "eq", value: "1" }]), /needs a path/);
+    expectError(buildConditions([{ kind: "path", path: "actor", op: "exists", value: "yes" }]), /true or false/);
+    expectError(buildConditions([{ kind: "path", path: "detail.to", op: "in", value: '{"a":1}' }]), /non-empty JSON array/);
+    expectError(buildConditions([{ kind: "path", path: "detail.to", op: "eq", value: "bare" }]), /not valid JSON/);
+    expectError(buildConditions([{ kind: "path", path: " ", op: "eq", value: "1" }]), /needs a path/);
+  });
+
+  it("buildConditions: the custom_field block round-trips; verbatim JSON passes through", () => {
+    expect(
+      buildConditions([
+        { kind: "custom_field", subjectType: " task ", fieldKey: "vip", op: "eq", value: "true" },
+      ]),
+    ).toEqual({
+      ok: true,
+      value: [{ block: "custom_field", config: { subjectType: "task", fieldKey: "vip", op: "eq", value: true } }],
+    });
+    expectError(
+      buildConditions([{ kind: "custom_field", subjectType: "", fieldKey: "vip", op: "eq", value: "1" }]),
+      /record type/,
+    );
+    expectError(
+      buildConditions([{ kind: "custom_field", subjectType: "task", fieldKey: "VIP", op: "eq", value: "1" }]),
+      /lower_snake_case/,
+    );
+    expect(buildConditions([{ kind: "json", json: '{"block":"risk_score","config":{"above":80}}' }])).toEqual({
+      ok: true,
+      value: [{ block: "risk_score", config: { above: 80 } }],
+    });
+    expectError(buildConditions([{ kind: "json", json: "{not json" }]), /not valid JSON/);
   });
 
   it("buildActions: create_task and notify build configs; bounds fail loud", () => {
@@ -539,7 +593,7 @@ describe("spec draft round trip (#224)", () => {
     }
     const broken = emptySpecDraft();
     broken.trigger = { kind: "event", action: "task.created" };
-    broken.conditions = [{ path: "", op: "eq", value: "1" }];
+    broken.conditions = [{ kind: "path", path: "", op: "eq", value: "1" }];
     expectError(buildSpec(broken), /needs a path/);
   });
 

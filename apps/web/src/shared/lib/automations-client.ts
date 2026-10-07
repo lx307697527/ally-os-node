@@ -363,20 +363,30 @@ export function conditionsSummary(conditions: unknown[]): string {
   return `${conditions.length} condition${conditions.length === 1 ? "" : "s"}`;
 }
 
-export interface ConditionOutcomeView {
-  path: string;
-  op: string;
-  passed: boolean;
-}
+/** One per-condition outcome of a run row — path verdicts carry the dotted
+ *  path they judged; block verdicts name the block and, when the block could
+ *  not be evaluated at all, the reason (the honest "why it did not fire").
+ *  null when the shape is not the worker's ConditionOutcome; the cell falls
+ *  back to raw JSON then. */
+export type ConditionOutcomeView =
+  | { kind: "path"; path: string; op: string; passed: boolean }
+  | { kind: "block"; block: string; passed: boolean; error: string | null };
 
-/** One per-condition outcome of a run row — null when the shape is not the
- *  worker's ConditionOutcome; the cell falls back to raw JSON then. */
 export function parseConditionOutcome(raw: unknown): ConditionOutcomeView | null {
   if (!isRecord(raw)) return null;
-  if (typeof raw.path !== "string" || typeof raw.op !== "string" || typeof raw.passed !== "boolean") {
-    return null;
+  if (typeof raw.passed !== "boolean") return null;
+  if (typeof raw.path === "string" && typeof raw.op === "string") {
+    return { kind: "path", path: raw.path, op: raw.op, passed: raw.passed };
   }
-  return { path: raw.path, op: raw.op, passed: raw.passed };
+  if (typeof raw.block === "string") {
+    return {
+      kind: "block",
+      block: raw.block,
+      passed: raw.passed,
+      error: typeof raw.error === "string" ? raw.error : null,
+    };
+  }
+  return null;
 }
 
 export interface ActionResultView {
@@ -446,12 +456,20 @@ export type ActionDraft =
 export const CONDITION_OPS = ["eq", "ne", "in", "exists"] as const;
 export type ConditionOp = (typeof CONDITION_OPS)[number];
 
-export interface ConditionDraft {
-  path: string;
-  op: ConditionOp;
+export interface ConditionDraftBase {
   // The value as authored: JSON text for eq/ne/in, "true"/"false" for exists.
+  op: ConditionOp;
   value: string;
 }
+
+export type ConditionDraft =
+  | ({ kind: "path"; path: string } & ConditionDraftBase)
+  // The one condition block this build draws a structured editor for: the
+  // trigger row's stored custom-field value. Other block names stay verbatim
+  // JSON below — the worker-side registry is an open set this page cannot
+  // enumerate, and editing must never destroy what the form cannot show.
+  | ({ kind: "custom_field"; subjectType: string; fieldKey: string } & ConditionDraftBase)
+  | { kind: "json"; json: string };
 
 export interface SpecDraft {
   trigger: TriggerDraft;
@@ -460,7 +478,7 @@ export interface SpecDraft {
 }
 
 export function emptyConditionDraft(): ConditionDraft {
-  return { path: "", op: "eq", value: "" };
+  return { kind: "path", path: "", op: "eq", value: "" };
 }
 
 export function emptyActionDraft(): ActionDraft {
@@ -481,10 +499,32 @@ function jsonText(value: unknown): string {
 
 function conditionToDraft(raw: unknown): ConditionDraft {
   if (!isRecord(raw)) return emptyConditionDraft();
-  const path = typeof raw.path === "string" ? raw.path : "";
-  const op = CONDITION_OPS.find((candidate) => candidate === raw.op) ?? "eq";
-  if (op === "exists") return { path, op, value: raw.value === true ? "true" : "false" };
-  return { path, op, value: "value" in raw ? jsonText(raw.value) : "" };
+  if (typeof raw.path === "string") {
+    const op = CONDITION_OPS.find((candidate) => candidate === raw.op) ?? "eq";
+    if (op === "exists") {
+      return { kind: "path", path: raw.path, op, value: raw.value === true ? "true" : "false" };
+    }
+    return { kind: "path", path: raw.path, op, value: "value" in raw ? jsonText(raw.value) : "" };
+  }
+  if (raw.block === "custom_field" && isRecord(raw.config)) {
+    const config = raw.config;
+    const subjectType = typeof config.subjectType === "string" ? config.subjectType : "";
+    const fieldKey = typeof config.fieldKey === "string" ? config.fieldKey : "";
+    const op = CONDITION_OPS.find((candidate) => candidate === config.op) ?? "eq";
+    if (op === "exists") {
+      return { kind: "custom_field", subjectType, fieldKey, op, value: config.value === true ? "true" : "false" };
+    }
+    return {
+      kind: "custom_field",
+      subjectType,
+      fieldKey,
+      op,
+      value: "value" in config ? jsonText(config.value) : "",
+    };
+  }
+  // A block name (or condition shape) this build has no editor for keeps its
+  // JSON verbatim.
+  return { kind: "json", json: jsonText(raw) };
 }
 
 function actionToDraft(raw: unknown): ActionDraft {
@@ -612,33 +652,67 @@ export function buildTrigger(draft: TriggerDraft): BuildResult<unknown> {
   return { ok: true, value: parsed };
 }
 
+/** The op × authored-value rules one condition row must satisfy, shared by the
+ *  path and custom-field drafts (same op semantics in both forms). */
+function buildConditionValue(op: ConditionOp, value: string, label: string): BuildResult<unknown> {
+  if (op === "exists") {
+    if (value !== "true" && value !== "false") {
+      return { ok: false, error: `The exists condition on ${label} must be true or false.` };
+    }
+    return { ok: true, value: value === "true" };
+  }
+  if (value.trim() === "") {
+    return { ok: false, error: `The ${op} condition on ${label} needs a value as JSON — strings need quotes.` };
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    return { ok: false, error: `The ${op} condition on ${label} has a value that is not valid JSON.` };
+  }
+  if (op === "in" && (!Array.isArray(parsed) || parsed.length === 0)) {
+    return { ok: false, error: `The in condition on ${label} needs a non-empty JSON array.` };
+  }
+  return { ok: true, value: parsed };
+}
+
 export function buildConditions(conditions: ConditionDraft[]): BuildResult<unknown[]> {
   const built: unknown[] = [];
   for (const condition of conditions) {
+    if (condition.kind === "json") {
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(condition.json);
+      } catch {
+        return { ok: false, error: "A verbatim-JSON condition is not valid JSON." };
+      }
+      built.push(parsed);
+      continue;
+    }
+    if (condition.kind === "custom_field") {
+      const subjectType = condition.subjectType.trim();
+      const fieldKey = condition.fieldKey.trim();
+      if (subjectType === "") {
+        return { ok: false, error: "Every custom-field condition needs a record type — e.g. task." };
+      }
+      if (!/^[a-z][a-z0-9_]*$/.test(fieldKey)) {
+        return { ok: false, error: `The custom-field condition's key must be lower_snake_case — got ${fieldKey || "(empty)"}.` };
+      }
+      const value = buildConditionValue(condition.op, condition.value, `${subjectType}.${fieldKey}`);
+      if (!value.ok) return value;
+      built.push({
+        block: "custom_field",
+        config: { subjectType, fieldKey, op: condition.op, value: value.value },
+      });
+      continue;
+    }
     const path = condition.path.trim();
     if (path === "") {
       return { ok: false, error: "Every condition needs a path into the event context — e.g. detail.to." };
     }
-    if (condition.op === "exists") {
-      if (condition.value !== "true" && condition.value !== "false") {
-        return { ok: false, error: `The exists condition on ${path} must be true or false.` };
-      }
-      built.push({ path, op: "exists", value: condition.value === "true" });
-      continue;
-    }
-    if (condition.value.trim() === "") {
-      return { ok: false, error: `The ${condition.op} condition on ${path} needs a value as JSON — strings need quotes.` };
-    }
-    let value: unknown;
-    try {
-      value = JSON.parse(condition.value);
-    } catch {
-      return { ok: false, error: `The ${condition.op} condition on ${path} has a value that is not valid JSON.` };
-    }
-    if (condition.op === "in" && (!Array.isArray(value) || value.length === 0)) {
-      return { ok: false, error: `The in condition on ${path} needs a non-empty JSON array.` };
-    }
-    built.push({ path, op: condition.op, value });
+    const value = buildConditionValue(condition.op, condition.value, path);
+    if (!value.ok) return value;
+    built.push({ path, op: condition.op, value: value.value });
   }
   return { ok: true, value: built };
 }

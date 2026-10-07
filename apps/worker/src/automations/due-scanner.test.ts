@@ -114,11 +114,56 @@ describe.skipIf(!databaseUrl)("automation due scan (#224 slice 2, integration)",
     return must(inserted[0]).id;
   }
 
-  async function onlyRun(): Promise<{ id: string; status: string; sourceEventId: string }> {
+
+  /** 自定义字段的定义行与值行（条件积木 custom_field 的查场面） */
+  async function insertCustomField(values: {
+    subjectType: string;
+    fieldKey: string;
+  }): Promise<string> {
+    const inserted = await db
+      .insert(schema.customFieldDefs)
+      .values({
+        subjectType: values.subjectType,
+        fieldKey: values.fieldKey,
+        label: values.fieldKey,
+        fieldType: "boolean",
+        createdById: USERS.creator,
+      })
+      .returning({ id: schema.customFieldDefs.id });
+    return must(inserted[0]).id;
+  }
+
+  async function insertCustomValue(values: {
+    subjectType: string;
+    subjectId: string;
+    fieldDefId: string;
+    value: unknown;
+  }): Promise<void> {
+    await db.insert(schema.customFieldValues).values({
+      subjectType: values.subjectType,
+      subjectId: values.subjectId,
+      fieldDefId: values.fieldDefId,
+      value: values.value,
+      updatedById: USERS.creator,
+    });
+  }
+
+  async function onlyRun(): Promise<{
+    id: string;
+    status: string;
+    sourceEventId: string;
+    conditionResults: { block?: string; passed: boolean; error?: string }[];
+  }> {
     const rows = await db.select().from(schema.automationRuns);
     expect(rows).toHaveLength(1);
     const run = must(rows[0]);
-    return { id: run.id, status: run.status, sourceEventId: run.sourceEventId };
+    return {
+      id: run.id,
+      status: run.status,
+      sourceEventId: run.sourceEventId,
+      // JSONB 边界的落库形态（测试读侧），与 automations.test.ts 同一断言先例
+      conditionResults: run.conditionResults as { block?: string; passed: boolean; error?: string }[],
+    };
   }
 
   beforeAll(async () => {
@@ -131,7 +176,7 @@ describe.skipIf(!databaseUrl)("automation due scan (#224 slice 2, integration)",
     sent.length = 0;
     // 单语句 TRUNCATE：runs → rules、notifications/tasks → auth_user 都有 FK
     await db.execute(
-      sql`truncate table ${schema.automationRuns}, ${schema.automationRules}, ${schema.tasks}, ${schema.notifications}, ${schema.auditEvents}, ${schema.authUser} cascade`,
+      sql`truncate table ${schema.automationRuns}, ${schema.automationRules}, ${schema.tasks}, ${schema.notifications}, ${schema.auditEvents}, ${schema.customFieldDefs}, ${schema.customFieldValues}, ${schema.authUser} cascade`,
     );
     await db.insert(schema.authUser).values(
       Object.entries(USERS).map(([name, id]) => ({
@@ -173,6 +218,49 @@ describe.skipIf(!databaseUrl)("automation due scan (#224 slice 2, integration)",
     expect(must(notifications[0]).userId).toBe(USERS.watcher);
     // due 触发不写审计：「到期时刻到了」不是一次业务变更
     expect(await db.select().from(schema.auditEvents)).toHaveLength(0);
+  });
+
+  it("a custom_field condition block reads the due row through the synthesized prefixed target", async () => {
+    const defId = await insertCustomField({ subjectType: "task", fieldKey: "vip" });
+    const taskId = await insertTask({ dueAt: dueAtFiringBefore(60) });
+    await insertCustomValue({ subjectType: "task", subjectId: taskId, fieldDefId: defId, value: true });
+    await insertRule({
+      name: "VIP 任务到期前 1 小时提醒",
+      trigger: { kind: "due", subjectType: "task", anchorField: "dueAt", direction: "before", offsetMinutes: 60 },
+      conditions: [
+        { block: "custom_field", config: { subjectType: "task", fieldKey: "vip", op: "eq", value: true } },
+      ],
+      actions: [{ type: "notify", config: { userIds: [USERS.watcher], title: "VIP 任务快到期" } }],
+    });
+
+    await runAutomationDueScan({ ...deps, sendRunJob });
+    const run = await onlyRun();
+    expect(run.status).toBe("pending");
+    expect(run.sourceEventId).toBe(taskId);
+  });
+
+  it("a block condition configured for another subject than the due row fails loud into the run row", async () => {
+    const defId = await insertCustomField({ subjectType: "lead", fieldKey: "vip" });
+    const taskId = await insertTask({ dueAt: dueAtFiringBefore(60) });
+    await insertCustomValue({ subjectType: "lead", subjectId: taskId, fieldDefId: defId, value: true });
+    await insertRule({
+      name: "对象配错了的规则",
+      trigger: { kind: "due", subjectType: "task", anchorField: "dueAt", direction: "before", offsetMinutes: 60 },
+      conditions: [
+        { block: "custom_field", config: { subjectType: "lead", fieldKey: "vip", op: "eq", value: true } },
+      ],
+      actions: [{ type: "notify", config: { userIds: [USERS.watcher], title: "t" } }],
+    });
+
+    await runAutomationDueScan({ ...deps, sendRunJob });
+    const run = await onlyRun();
+    expect(run.status).toBe("skipped");
+    const outcome = run.conditionResults[0];
+    if (outcome?.error === undefined) {
+      throw new Error("expected an error outcome");
+    }
+    expect(outcome).toMatchObject({ block: "custom_field", passed: false });
+    expect(outcome.error).toContain("different subject than lead");
   });
 
   it("fires once per (rule, row): rescans and the next window do not re-arm", async () => {

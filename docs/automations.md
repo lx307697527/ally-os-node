@@ -152,6 +152,43 @@ pg_cron + pg_net 定时任务里（#32）：逻辑分散在 887 个迁移文件�
   每道闸（注册、target 解析、签名锁、值域、行存在）都 fail loud 抛错进重试协议
   ——重试耗尽终判 failed + 告警，「少改一个字段」必须有人看见。
 
+## 已落地：条件积木注册表（#224 切片 7，自定义字段条件与具名谓词接缝）
+
+- **条件从「点路径断言」扩为并集**：路径条件（原形状，零迁移）+ 条件积木
+  `{ block: string, config?: unknown }`——按名字引用一个具名谓词，回答「事件
+  语境 JSON 里没有的事实」（自定义字段的值住在另一张表、跨对象断言要查属主
+  行）。零 migration（conditions 是 jsonb 开集）、零新路由：保存面由共享
+  schema 自动收口，名字合形状即可入库。
+- **注册表在 worker，与 workflow 积木同一裁法**（`apps/worker/src/automations/
+  condition-registry.ts`）：内核提供形状与求值接缝（`@ally/automations` 的
+  `evaluateConditions` 第三个可选参数 `evaluateBlock`），积木由属主域切片在
+  模块装载时注册（`registerConditionBlock(name, block)`），测试用同一条接缝
+  注入夹具积木。workflow 的积木注册表在 api、自动化的在 worker——同一条
+  「注册表跟执行走」的规矩（workflow 在 api 进程执行，自动化在 worker）。
+- **fail closed 的分寸：「没满足」≠「没法求值」**。保存面看不到 worker 注册表
+  （与 due 未注册锚点同一裁决）：未注册的积木名存得进、求值必败。求值不了
+  （积木未注册、配置坏、触发行解析不了）在 evaluator 接缝里收成
+  `{ passed: false, error }`——run 行 skipped、失败原因落进逐条件结果随 runs
+  可查、扫描器对带 error 的行打告警日志。**刻意不进重试**：条件是过滤器不是
+  副作用，重试修不了配置错（与 update_field 动作 fail-loud-then-retry 刻意
+  不同）；扫描也不因一条坏规则停摆（evaluator 抛错在接缝里收编，包内核再
+  防御一层）。
+- **第一个成员 `custom_field`**：触发目标行（event = 审计 target 裸 id；
+  due = 合成 `subjectType:subjectId`，前缀不匹配 fail loud）的自定义字段值。
+  config = `{ subjectType, fieldKey(lower_snake_case), op, value? }`，op 语义
+  与路径条件**同一份实现**（`conditionValueFitsOp`/`valueSatisfiesOp` 在包里，
+  两处共用）：eq/ne/in/exists，没写过值 = 解析不到（eq/in/ne 不满足，exists
+  显式表达「必须有/没有」）。**定义行存在即可，停用不拦**——停用冻结的是表单
+  写入面，值与引用它的规则还在，规则作者明确点名了这个键；定义行整个不在才是
+  配置错误（error 行）。
+- **求值不短路**：AND 语义下也逐条件全部求值——runs 的逐条件结果要能完整回答
+  「为什么没触发」，积木行带 error 时同屏可见。
+- **UI**：条件编辑器三选一（Field path / Custom field / Raw JSON）；本构建
+  不认识的积木名以原样 JSON 往返（与 trigger/action 的 json 旁路同一纪律，
+  编辑旧规则永不静默销毁操作员看不见表单的部分）；runs 的逐条件裁决画 block
+  行（块名 + ✓/✗ + 失败原因）。表单脚注明说 fail-closed（未配置的字段键存得
+  进、永不通过、worker 告警）。
+
 ## 关键裁决
 
 - **触发统一为「审计事件 action 精确命中」（event）/「日期字段 × 偏移」（due，
@@ -195,8 +232,9 @@ pg_cron + pg_net 定时任务里（#32）：逻辑分散在 887 个迁移文件�
 1. 动作类型扩展：事务短信（等 SMS 通道进场；邮件、出站 webhook、改字段已落，
    见上节）、报名序列、AI 步骤；update_field 的更多可写 subject/field 随属主域
    进场注册（改经办人要先把「可分配面」裁决挪到共享位置，不复制第二份）
-2. 条件积木复用 workflow 的注册表形态（跨对象条件、自定义字段条件——
-   custom_field_values 按字段键查询已备好）
+2. 条件积木机制已落（切片 7，custom_field 首成员）：更多积木随属主域进场——
+   跨对象行投影（「任务所属客户的等级」一类）等真实域需求注册自己的积木，与
+   due subject 注册表同一节奏
 3. 规则效果度量（触发/例外/越过计数，§4.8 周报）与 #233 规则注册表的接驳
 4. #226 配置版本化：台账与草稿发布已进场（每次真实变更记一版、可回滚、可存
    草稿一键发布，见 docs/config-versions.md）；规则配置 UI 已落地

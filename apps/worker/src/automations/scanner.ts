@@ -7,6 +7,7 @@ import {
 } from "@ally/automations";
 import { schema } from "@ally/db";
 import type { ActionDeps } from "./actions.ts";
+import { blockConditionEvaluator } from "./condition-registry.ts";
 
 /**
  * automation-scan 任务：每分钟把「新审计事件 × 启用规则」过一遍（#224 取代老系统
@@ -81,7 +82,22 @@ export async function runAutomationScan(deps: ScanDeps): Promise<void> {
           continue;
         }
         if (!eventMatchesTrigger(spec.data.trigger, event)) continue;
-        const evaluation = evaluateConditions(spec.data.conditions, ctx);
+        const evaluation = await evaluateConditions(
+          spec.data.conditions,
+          ctx,
+          blockConditionEvaluator({ db }),
+        );
+        // 求值不了的条件积木（未注册、配置坏、行解析不了）是规则作者的错：
+        // run 行 skipped 且失败原因在逐条件结果里，这里再打告警——「没满足」
+        // 与「没法求值」在 runs 里是两种答案，后者必须有人看见
+        for (const outcome of evaluation.outcomes) {
+          if ("error" in outcome && outcome.error !== undefined) {
+            deps.logger.warn(
+              { ruleId: row.id, block: outcome.block, error: outcome.error },
+              "automation condition block could not be evaluated, rule skipped",
+            );
+          }
+        }
         const inserted = await db
           .insert(schema.automationRuns)
           .values({

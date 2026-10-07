@@ -1,12 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
   AUTOMATION_ACTOR_PREFIX,
+  conditionValueFitsOp,
   dueEventContext,
   evaluateConditions,
   eventMatchesTrigger,
   resolvePath,
   ruleSpecSchema,
   subjectIdFromTarget,
+  valueSatisfiesOp,
 } from "./index.ts";
 
 const ctx = {
@@ -56,12 +58,12 @@ describe("resolvePath", () => {
 });
 
 describe("evaluateConditions", () => {
-  it("passes with no conditions", () => {
-    expect(evaluateConditions([], ctx).passed).toBe(true);
+  it("passes with no conditions", async () => {
+    expect((await evaluateConditions([], ctx)).passed).toBe(true);
   });
 
-  it("requires every condition (AND)", () => {
-    const result = evaluateConditions(
+  it("requires every condition (AND)", async () => {
+    const result = await evaluateConditions(
       [
         { path: "detail.to", op: "eq", value: "review" },
         { path: "detail.subjectType", op: "in", value: ["lead", "order"] },
@@ -69,7 +71,7 @@ describe("evaluateConditions", () => {
       ctx,
     );
     expect(result.passed).toBe(true);
-    const failing = evaluateConditions(
+    const failing = await evaluateConditions(
       [
         { path: "detail.to", op: "eq", value: "review" },
         { path: "detail.subjectType", op: "eq", value: "order" },
@@ -80,22 +82,22 @@ describe("evaluateConditions", () => {
     expect(failing.outcomes.map((o) => o.passed)).toEqual([true, false]);
   });
 
-  it("fails closed when the path is missing", () => {
-    expect(evaluateConditions([{ path: "detail.missing", op: "eq", value: "x" }], ctx).passed).toBe(false);
-    expect(evaluateConditions([{ path: "detail.missing", op: "ne", value: "x" }], ctx).passed).toBe(false);
-    expect(evaluateConditions([{ path: "detail.missing", op: "in", value: ["x"] }], ctx).passed).toBe(false);
+  it("fails closed when the path is missing", async () => {
+    expect((await evaluateConditions([{ path: "detail.missing", op: "eq", value: "x" }], ctx)).passed).toBe(false);
+    expect((await evaluateConditions([{ path: "detail.missing", op: "ne", value: "x" }], ctx)).passed).toBe(false);
+    expect((await evaluateConditions([{ path: "detail.missing", op: "in", value: ["x"] }], ctx)).passed).toBe(false);
     // exists 是显式表达「必须有/必须没有」的唯一通道
-    expect(evaluateConditions([{ path: "detail.missing", op: "exists", value: false }], ctx).passed).toBe(true);
-    expect(evaluateConditions([{ path: "detail.to", op: "exists", value: true }], ctx).passed).toBe(true);
-    expect(evaluateConditions([{ path: "detail.to", op: "exists", value: false }], ctx).passed).toBe(false);
+    expect((await evaluateConditions([{ path: "detail.missing", op: "exists", value: false }], ctx)).passed).toBe(true);
+    expect((await evaluateConditions([{ path: "detail.to", op: "exists", value: true }], ctx)).passed).toBe(true);
+    expect((await evaluateConditions([{ path: "detail.to", op: "exists", value: false }], ctx)).passed).toBe(false);
   });
 
-  it("ne is satisfied only by a present, different value", () => {
-    expect(evaluateConditions([{ path: "detail.to", op: "ne", value: "draft" }], ctx).passed).toBe(true);
-    expect(evaluateConditions([{ path: "detail.to", op: "ne", value: "review" }], ctx).passed).toBe(false);
+  it("ne is satisfied only by a present, different value", async () => {
+    expect((await evaluateConditions([{ path: "detail.to", op: "ne", value: "draft" }], ctx)).passed).toBe(true);
+    expect((await evaluateConditions([{ path: "detail.to", op: "ne", value: "review" }], ctx)).passed).toBe(false);
   });
 
-  it("evaluates the due scanner's synthesized context like any audit event", () => {
+  it("evaluates the due scanner's synthesized context like any audit event", async () => {
     const due = dueEventContext({
       subjectType: "task",
       subjectId: "0f0a1b2c-3d4e-4f5a-8b9c-0d1e2f3a4b5c",
@@ -104,8 +106,105 @@ describe("evaluateConditions", () => {
     expect(due.action).toBe("task.due");
     expect(due.target).toBe("task:0f0a1b2c-3d4e-4f5a-8b9c-0d1e2f3a4b5c");
     expect(due.actor).toBeNull();
-    expect(evaluateConditions([{ path: "detail.status", op: "eq", value: "open" }], due).passed).toBe(true);
-    expect(evaluateConditions([{ path: "detail.status", op: "eq", value: "done" }], due).passed).toBe(false);
+    expect((await evaluateConditions([{ path: "detail.status", op: "eq", value: "open" }], due)).passed).toBe(true);
+    expect((await evaluateConditions([{ path: "detail.status", op: "eq", value: "done" }], due)).passed).toBe(false);
+  });
+});
+
+describe("block conditions (condition blocks registry, worker-side seam)", () => {
+  it("parses a block condition with config alongside path conditions", () => {
+    const parsed = ruleSpecSchema.safeParse({
+      trigger: { kind: "event", action: "task.updated" },
+      conditions: [
+        { path: "detail.to", op: "eq", value: "review" },
+        { block: "custom_field", config: { subjectType: "task", fieldKey: "vip", op: "eq", value: true } },
+      ],
+      actions: [{ type: "create_task", config: { title: "t" } }],
+    });
+    expect(parsed.success).toBe(true);
+  });
+
+  it("rejects an empty block name and a condition that is neither path nor block", () => {
+    const base = {
+      trigger: { kind: "event", action: "task.updated" },
+      actions: [{ type: "create_task", config: { title: "t" } }],
+    };
+    expect(ruleSpecSchema.safeParse({ ...base, conditions: [{ block: "", config: {} }] }).success).toBe(false);
+    expect(ruleSpecSchema.safeParse({ ...base, conditions: [{ config: {} }] }).success).toBe(false);
+    expect(ruleSpecSchema.safeParse({ ...base, conditions: [{ path: "detail.x", block: "y", op: "eq", value: 1 }] }).success)
+      .toBe(true);
+  });
+
+  it("without an evaluator, a block condition fails closed with an honest error", async () => {
+    const result = await evaluateConditions([{ block: "custom_field", config: { op: "eq", value: true } }], ctx);
+    expect(result.passed).toBe(false);
+    const outcome = result.outcomes[0];
+    if (outcome === undefined) throw new Error("expected exactly one outcome");
+    expect(outcome).toMatchObject({ block: "custom_field", passed: false });
+    if ("error" in outcome) {
+      expect(outcome.error).toContain("evaluator");
+    } else {
+      expect.unreachable("a no-evaluator outcome must carry an error");
+    }
+  });
+
+  it("hands the ref and the event context to the evaluator", async () => {
+    const seen: { ref: unknown; action: string; target: string | null }[] = [];
+    const result = await evaluateConditions([{ block: "custom_field", config: { op: "exists" } }], ctx, (ref, event) => {
+      seen.push({ ref, action: event.action, target: event.target });
+      return Promise.resolve({ passed: true });
+    });
+    expect(result.passed).toBe(true);
+    expect(seen).toEqual([
+      { ref: { block: "custom_field", config: { op: "exists" } }, action: ctx.action, target: ctx.target },
+    ]);
+  });
+
+  it("an evaluator rejection becomes an error outcome, not a thrown scan", async () => {
+    const result = await evaluateConditions([{ block: "custom_field", config: null }], ctx, () =>
+      Promise.reject(new Error("custom field is not configured: task.vip")),
+    );
+    expect(result.passed).toBe(false);
+    const outcome = result.outcomes[0];
+    if (outcome === undefined) throw new Error("expected exactly one outcome");
+    expect(outcome).toMatchObject({ block: "custom_field", passed: false });
+    if (!("error" in outcome)) expect.unreachable("a rejected evaluator must yield an error outcome");
+    expect(outcome.error).toBe("custom field is not configured: task.vip");
+  });
+
+  it("mixes path and block conditions with AND, outcomes in rule order", async () => {
+    const result = await evaluateConditions(
+      [
+        { path: "detail.to", op: "eq", value: "review" },
+        { block: "custom_field", config: { subjectType: "task" } },
+        { path: "detail.subjectType", op: "eq", value: "order" },
+      ],
+      ctx,
+      () => Promise.resolve({ passed: false }),
+    );
+    expect(result.passed).toBe(false);
+    expect(result.outcomes.map((o) => o.passed)).toEqual([true, false, false]);
+    const blockOutcome = result.outcomes[1];
+    if (blockOutcome === undefined) throw new Error("expected three outcomes");
+    expect("block" in blockOutcome && blockOutcome.block).toBe("custom_field");
+  });
+
+  it("exposes one shared op semantics for the path engine and domain blocks", () => {
+    expect(valueSatisfiesOp("eq", "review", "review")).toBe(true);
+    expect(valueSatisfiesOp("eq", null, null)).toBe(true);
+    expect(valueSatisfiesOp("eq", undefined, null)).toBe(false);
+    expect(valueSatisfiesOp("ne", "draft", "review")).toBe(true);
+    expect(valueSatisfiesOp("ne", undefined, "review")).toBe(false);
+    expect(valueSatisfiesOp("in", "lead", ["lead", "order"])).toBe(true);
+    expect(valueSatisfiesOp("in", "task", ["lead"])).toBe(false);
+    expect(valueSatisfiesOp("exists", undefined, false)).toBe(true);
+    expect(valueSatisfiesOp("exists", null, true)).toBe(true);
+    expect(conditionValueFitsOp("eq", true, undefined)).toBe(true);
+    expect(conditionValueFitsOp("eq", false, undefined)).toBe(false);
+    expect(conditionValueFitsOp("in", true, [])).toBe(false);
+    expect(conditionValueFitsOp("in", true, ["a", "b"])).toBe(true);
+    expect(conditionValueFitsOp("exists", true, "true")).toBe(false);
+    expect(conditionValueFitsOp("exists", true, true)).toBe(true);
   });
 });
 

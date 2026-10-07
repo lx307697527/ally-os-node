@@ -6,6 +6,7 @@ import {
 } from "@ally/automations";
 import { schema } from "@ally/db";
 import type { ActionDeps } from "./actions.ts";
+import { blockConditionEvaluator } from "./condition-registry.ts";
 import { dueSubjectSpec } from "./due-registry.ts";
 
 /**
@@ -90,7 +91,20 @@ export async function runAutomationDueScan(deps: DueScanDeps): Promise<void> {
         subjectId: dueRow.id,
         detail: dueRow.detail,
       });
-      const evaluation = evaluateConditions(parsed.data.conditions, ctx);
+      const evaluation = await evaluateConditions(
+        parsed.data.conditions,
+        ctx,
+        blockConditionEvaluator({ db }),
+      );
+      // 与事件扫描器同一纪律：求值不了的条件积木落 error + 告警，扫描不停摆
+      for (const outcome of evaluation.outcomes) {
+        if ("error" in outcome && outcome.error !== undefined) {
+          deps.logger.warn(
+            { ruleId: row.id, block: outcome.block, error: outcome.error },
+            "automation condition block could not be evaluated, rule skipped",
+          );
+        }
+      }
       const inserted = await db
         .insert(schema.automationRuns)
         .values({
