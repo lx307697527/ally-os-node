@@ -10,7 +10,8 @@
 | --- | --- | --- |
 | 数据模型 | `packages/db/src/schema.ts`（0021 迁移） | `registry_rules`：key（稳定 slug，消费方按字面量引用）、label、category（param/switch/gate）、valueType（number/text/boolean/string_list/number_list/json）、value（null = 「待填」）、changeableBy/enableBy（谁能改）、adjudicationRefs（裁决依据）、riskFlag/riskNote（⚠）、三个运行数据计数、scheduled*（待生效变更）、version（= #226 台账最新版） |
 | 首批规则种子 | 0021 迁移（0019 补账先例） | #232 §4.2 表全部条目 + §4.6 五个可插拔模块开关 + §4.8 五个风险开关，共 57 条；默认值全部来自裁决或业主决定；未定数字 value = NULL「待填」；每条规则补 source='created' 的 v1 台账行。刻意跳过两行：标准工时与费率（R-13-4，每道工序的运营数据属生产域）、打样费逐单填（逐单商务条款；系统级含轮数已落 `pricing.sample_included_rounds`） |
-| 内核 | `apps/api/src/rules/service.ts` | `getRule`（消费方带 zod 收口期望形状，键不存在/值未设/形状不符全抛错，绝不猜默认值）、`isRuleEnabled`、`changeRuleValue`（立即/定时）、`applyDueRuleChanges`（到点前滚）、`recordRuleOutcome`（触发/例外/越过计数）、`requestGateException`（业务门槛例外唯一通道） |
+| 内核（改值面） | `apps/api/src/rules/service.ts` | `getRule`（消费方带 zod 收口期望形状，键不存在/值未设/形状不符全抛错，绝不猜默认值）、`isRuleEnabled`、`changeRuleValue`（立即/定时）、`recordRuleOutcome`（触发/例外/越过计数）、`requestGateException`（业务门槛例外唯一通道） |
+| 内核（到点前滚） | `packages/rules`（`@ally/rules`） | `applyDueRuleChanges`：到点的待生效变更前滚为生效值（行锁认领 → 行更新 + 台账记一版 source='scheduled' 同事务）；随 cron 接线切片从 apps/api 下沉——worker 不跨 app 依赖（automations 内核居 packages/automations 同一先例），记账原语（`nextConfigVersion`/`recordConfigRevision`）随之下沉，api 侧经 config-versions 再导出 |
 | HTTP 面 | `apps/api/src/routes/rules.ts` | GET `/api/rules`、GET `/api/rules/:key`（登录即可——全公司共用的业务参数，非敏感数据）、PATCH `/api/rules/:key`（改权逐规则裁决，路由内） |
 | 配置版本 | `config-versions/families.ts` 第六族 `registry_rule` | 史/差异/回滚走 #226 台账；`applyRevision` 落列并**清空待生效变更**；`authorizeWrite` 把「谁能改」强制到回滚/草稿/发布写面（`ConfigSubjectSpec` 的新钩子，#233 引入） |
 | 权限点 | `authz/permissions.ts` | `rules.configure`（owner/admin）——只管配置工作室面（读史/回滚/台账）；规则的**改值**不在这扇门后 |
@@ -31,9 +32,10 @@
 - **生效时间**（§4.2）：缺省立即生效（台账记一版 source='updated'）；给未来的
   `effectiveAt` = 定时变更（落行上 scheduled* 字段 + `rules.change_scheduled`
   审计，**不记台账**——台账记录「生效了什么」，调度意图由审计与行上字段承载）。
-  到点由 `applyDueRuleChanges(db, { now })` 前滚：行更新 + 台账记一版
-  source='scheduled' + `rules.scheduled_change_applied` 审计（actor = 调度者）。
-  cron 接线属 worker 域（见「刻意不在本切片」）。
+  到点由 worker 的 `rules-due-activation`（每分钟）经 `applyDueRuleChanges` 前滚：
+  行更新 + 台账记一版 source='scheduled' 同事务（内核职责），提交后逐条落
+  `rules.scheduled_change_applied` 审计（actor = 调度者；投递层职责，见下文
+  「定时生效接线」）。
 - **幂等**：同值立即变更 → `changed: false`，不记账不审计；同一份待生效变更重复
   提交同样幂等。立即变更不碰已有待生效变更（先定下月改 8%、今天急改 9% 是两个
   都成立的意图）。
@@ -127,15 +129,30 @@ source='created' 的 v1，使「行.version = 台账最新版」从第一行成�
   （0023，见上节）；后续消费域（#223 费率分档等）按同一形态各落自己的路由/分档表。
 - **gate 类别的种子与条件积木**：category 枚举已留 `gate`，门槛条件随 #220 的
   条件积木消费域进场；首个流程门槛落地时把 §4.3 的默认条件登记进来。
-- **定时生效的 cron 接线**：`applyDueRuleChanges` 内核已测；worker 侧 JobDefinition
-  随第一个消费域一起接（同 workflow due scan 的裁法——内核先行，交付归 worker）。
-  结构性前提：内核现居 apps/api，worker 不跨 app 依赖——接线那天内核随消费域
-  一起下沉共享包（automations 内核居 packages/automations 同一先例）。
+- ~~**定时生效的 cron 接线**~~：见下节「定时生效接线」——内核随接线切片下沉
+  packages/rules，worker 的 `rules-due-activation` 到点前滚。
 - ~~**规则效果周报**~~（§4.8 每周汇总）：已落 worker（见上节「规则效果周报」，
   #225 切片）；#225 本身的报表面（Superset 部署、模板管理）仍 open。
 - **改治理本身**（changeableBy/enableBy/riskFlag 的编辑）与规则的新增/退役面：
   治理变更 = 改裁决，随 #226 受监管变更控制（#206）一起裁。
 - ~~**前端配置工作室 UI**~~：见下节。
+
+## 定时生效接线（worker `rules-due-activation`，#233 cron 切片）
+
+- **内核下沉**：`applyDueRuleChanges` 居 `packages/rules`（`@ally/rules`，依赖
+  只有 @ally/db + drizzle）——接线那天「内核随消费域一起下沉共享包」的既定裁法
+  兑现；apps/api 只留改值面（形状、编译探针、改权、调度审计——HTTP 面职责）。
+  台账记账原语（`nextConfigVersion`/`recordConfigRevision`）随内核一起下沉
+  （api 侧 config-versions 再导出，引用方零改动）。
+- **职责切分**：事务归内核（行锁认领 → 行更新 + 台账记版必须原子，记账协议见
+  包内 ledger.ts）；提交后的 `rules.scheduled_change_applied` 审计归 worker 任务
+  （内核返回富结果 from/to/rationale/version/scheduledById，任务逐条落行、不复算）。
+  已知窗口与内核自带审计时相同：前滚提交后、审计落行前进程死掉则该条审计丢失
+  （重试时变更已不再到期）——台账仍是完整事实，调度者可由台账 changedById 补答。
+- **节流与兜底**：每分钟（与 automations 两个扫描同锚），retryLimit 1——下一轮
+  扫描本身就是兜底，错过一分钟下一分钟补上前滚；安静分钟不进日志。registry_rules
+  当前是几十行的小表，逐分钟扫描不建索引（与 reminder 的 value IS NULL 扫描同一
+  取舍），表长大再裁。
 
 ## 配置工作室 UI（`/system/rules`，#233 前端切片）
 

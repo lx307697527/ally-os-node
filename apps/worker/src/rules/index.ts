@@ -4,6 +4,10 @@ import type { Mailer } from "@ally/mailer";
 import type { Db } from "@ally/db";
 import type { JobDefinition } from "../jobs/index.ts";
 import {
+  RULES_DUE_ACTIVATION_JOB,
+  dueActivationJob,
+} from "./due-activation.ts";
+import {
   RULES_EFFECT_DIGEST_JOB,
   runRulesEffectDigestScan,
   type EffectDigestServices,
@@ -11,12 +15,12 @@ import {
 import { RULES_PENDING_REMINDER_JOB, runRulesPendingReminderScan } from "./reminder.ts";
 
 /**
- * 规则注册表域的任务登记（#233 切片 2 待办提醒 + #225 规则效果周报）。
+ * 规则注册表域的任务登记（#233 切片 2 待办提醒 + #225 规则效果周报 + #233 定时
+ * 生效前滚）。
  *
- * db/pool/mailer 由 worker 引导（index.ts）注入。刻意不在此登记 applyDueRuleChanges
- * 的 cron——内核在 apps/api（worker 不跨 app 依赖），按 docs/rules.md 的裁决，定时
- * 生效的接线随第一个消费域一起进场（同 workflow due scan 裁法：内核先行，交付
- * 归 worker）。
+ * db/pool/mailer 由 worker 引导（index.ts）注入。定时生效的前滚内核居
+ * packages/rules（随本切片下沉，docs/rules.md「接线那天内核随消费域一起下沉共享
+ * 包」既定裁法的兑现），任务只做投递与提交后审计（归属裁决见 due-activation.ts）。
  */
 export interface RulesJobsDeps {
   db: Db;
@@ -62,7 +66,8 @@ export function rulesJobs(deps: RulesJobsDeps): JobDefinition[] {
       logger.info(summary, "rules effect digest finished");
     },
   };
-  return [reminder, effectDigest];
+  const dueActivation = dueActivationJob({ db: deps.db });
+  return [reminder, effectDigest, dueActivation];
 }
 
-export { RULES_EFFECT_DIGEST_JOB };
+export { RULES_DUE_ACTIVATION_JOB, RULES_EFFECT_DIGEST_JOB };

@@ -9,6 +9,7 @@
   },
   "dependencies": {
     "@ally/automations": "workspace:*",
+    "@ally/rules": "workspace:*",
     "@ally/config": "workspace:*",
     "@ally/db": "workspace:*",
     "@ally/mailer": "workspace:*",
