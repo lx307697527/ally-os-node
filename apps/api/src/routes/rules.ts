@@ -27,7 +27,8 @@ import { InvalidDecisionTableError } from "../rules/decision-table-schema.ts";
  * PATCH = 改值（立即或定时）。依据必填（refs 至少一条：裁决编号或业主决定
  * 标记）；开关的启用（关→开）过 enableBy 门（R-01-6/8/12 启用需老板确认）；
  * 无实效变更幂等 200 不记账；定时生效先落在行上（调度时刻审计），到点由
- * applyDueRuleChanges 前滚（cron 接线属 worker 域，#233 后续切片）。
+ * applyDueRuleChanges 前滚（内核居 packages/rules，worker 的 rules-due-activation
+ * 到点调用——#233 cron 接线切片）。
  */
 
 function ruleView(rule: RuleRow) {

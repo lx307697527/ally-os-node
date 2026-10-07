@@ -1,11 +1,29 @@
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
+import {
+  nextConfigVersion,
+  recordConfigRevision,
+  type ConfigChanges,
+  type ConfigRevisionSource,
+} from "@ally/rules";
 import { schema } from "@ally/db";
 import { configSubjectSpec, type ConfigRevisionTx } from "./registry.ts";
+
+// 记账原语（nextConfigVersion / recordConfigRevision 及其类型）已下沉共享包
+// @ally/rules——规则注册表的定时生效前滚（packages/rules）要在这里的事务里记账，
+// worker 不跨 app 依赖（#233 cron 接线切片）。api 内消费方仍从本模块引入（下面的
+// 再导出），依赖图保持单一入口；域语义（草稿、回滚、差异）仍归本模块。
+export {
+  nextConfigVersion,
+  recordConfigRevision,
+  type ConfigChanges,
+  type ConfigRevisionSource,
+  type RecordConfigRevisionInput,
+} from "@ally/rules";
 
 /**
  * 配置版本台账服务（#226 切片 1）。
  *
- * 记账协议（各配置面遵守，测试钉住）：
+ * 记账协议（各配置面遵守，测试钉住；机制面见 packages/rules/src/ledger.ts）：
  * 1. 记账与配置行写入同事务——台账缺行比业务失败严重（版本号是回滚的寻址方式，
  *    账外变更会让「行.version = 台账最新版」的不变式断掉）。
  * 2. 先 nextConfigVersion，再写配置行（version 列一并落），再 recordConfigRevision
@@ -18,55 +36,6 @@ import { configSubjectSpec, type ConfigRevisionTx } from "./registry.ts";
  * 唯一事实来源；changes 是顶层字段摘要（与审计 detail 的 from/to 同形），嵌套
  * 路径级差异由 diffSnapshots 从两份快照现算，不入库。
  */
-
-/** 变更摘要：{ 字段: { from, to } }，顶层键；created 记账无此字段（null） */
-export type ConfigChanges = Record<string, { from: unknown; to: unknown }>;
-
-export type ConfigRevisionSource = (typeof schema.configRevisionSource.enumValues)[number];
-
-export interface RecordConfigRevisionInput {
-  subjectType: string;
-  subjectId: string;
-  version: number;
-  actorId: string | null;
-  snapshot: Record<string, unknown>;
-  changes: ConfigChanges | null;
-  source: ConfigRevisionSource;
-}
-
-/** (subject_type, subject_id) 内下一个版本号 = 台账当前最大版 + 1（空史 = 1） */
-export async function nextConfigVersion(
-  tx: Pick<ConfigRevisionTx, "select">,
-  subjectType: string,
-  subjectId: string,
-): Promise<number> {
-  const rows = await tx
-    .select({ maxVersion: sql<number | null>`max(${schema.configRevisions.version})` })
-    .from(schema.configRevisions)
-    .where(
-      and(
-        eq(schema.configRevisions.subjectType, subjectType),
-        eq(schema.configRevisions.subjectId, subjectId),
-      ),
-    );
-  return (rows[0]?.maxVersion ?? 0) + 1;
-}
-
-/** 记一版。version 由调用方经 nextConfigVersion 算好传入（写配置行要用同一个值） */
-export async function recordConfigRevision(
-  tx: Pick<ConfigRevisionTx, "insert">,
-  input: RecordConfigRevisionInput,
-): Promise<void> {
-  await tx.insert(schema.configRevisions).values({
-    subjectType: input.subjectType,
-    subjectId: input.subjectId,
-    version: input.version,
-    snapshot: input.snapshot,
-    changes: input.changes,
-    source: input.source,
-    changedById: input.actorId,
-  });
-}
 
 export interface ConfigRevisionRow {
   version: number;

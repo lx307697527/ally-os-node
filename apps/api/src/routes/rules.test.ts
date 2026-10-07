@@ -7,8 +7,8 @@ import { createDb, runMigrations, schema } from "@ally/db";
 import { createApp } from "../app.ts";
 import type { SessionData } from "../auth/session.ts";
 import { createAuthzStore } from "../authz/service.ts";
+import { applyDueRuleChanges } from "@ally/rules";
 import {
-  applyDueRuleChanges,
   changeRuleValue,
   GateExceptionDisabledError,
   GateExceptionForbiddenError,
@@ -552,7 +552,8 @@ describe.skipIf(!databaseUrl)("rule registry: adjudication as configuration (#23
     const early = await applyDueRuleChanges(db, { now: new Date() });
     expect(early).toEqual([]);
     expect((await getRuleView("contracts.sign_reminder_interval_days")).value).toBe(3);
-    // 到点前滚：值生效、待生效清空、台账 source='scheduled'、审计以调度者为 actor
+    // 到点前滚：值生效、待生效清空、台账 source='scheduled'（提交后审计归 worker
+    // 的 rules-due-activation，见 apps/worker/src/rules/due-activation.test.ts）
     const applied = await applyDueRuleChanges(db, { now: new Date(Date.now() + 2 * 86_400_000) });
     expect(applied.map((a) => a.key)).toEqual(["contracts.sign_reminder_interval_days"]);
     const after = await getRuleView("contracts.sign_reminder_interval_days");
@@ -563,12 +564,6 @@ describe.skipIf(!databaseUrl)("rule registry: adjudication as configuration (#23
       headers: adminHeaders,
     });
     expect((await detail.json() as { revision: { source: string } }).revision.source).toBe("scheduled");
-    const appliedAudits = await auditsByKey(
-      "rules.scheduled_change_applied",
-      "contracts.sign_reminder_interval_days",
-    );
-    expect(appliedAudits).toHaveLength(1);
-    expect(appliedAudits[0]?.actor).toBe(USERS.admin);
     // 再扫一遍无事可做
     expect(await applyDueRuleChanges(db, { now: new Date(Date.now() + 3 * 86_400_000) })).toEqual([]);
   });
