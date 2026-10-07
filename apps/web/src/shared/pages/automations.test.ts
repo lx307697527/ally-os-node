@@ -73,6 +73,19 @@ describe("automations page rulings (#224)", () => {
     expect(collapsedPage).toContain("an unregistered pair saves fine but never fires");
   });
 
+  it("send_email 编辑面把收件人裁决说在前头:站内用户、发送时解析邮箱、不收外部地址", () => {
+    // 类型进选择器,编辑器/展示各有结构化分支
+    expect(page).toContain('<option value="send_email">Send email</option>');
+    expect(page).toContain('data-testid="automations-action-send-email"');
+    expect(page).toContain("automations-${prefix}-action-email-subject");
+    expect(page).toContain("automations-${prefix}-action-email-body");
+    // 收件人 = 站内用户,邮件发到账号地址;规则不能寄任意外部地址;删除的收件人 fail loud
+    expect(collapsedPage).toContain("Recipients are in-app users");
+    expect(collapsedPage).toContain("each account's address at send time");
+    expect(collapsedPage).toContain("A rule cannot mail arbitrary external addresses");
+    expect(collapsedPage).toContain("a deleted recipient fails the action");
+  });
+
   it("写失败按内核 reason 说话,编辑区分「无实效变化」与「真变更」", () => {
     expect(collapsedPage).toContain("No effective change — version");
     expect(collapsedPage).toContain("is live now, the ledger has the change");

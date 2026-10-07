@@ -6,12 +6,14 @@ import {
   userChannel,
   type RealtimeBusPayload,
 } from "@ally/realtime";
-import type { ActionResult, CreateTaskAction, NotifyAction } from "@ally/automations";
+import type { ActionResult, CreateTaskAction, NotifyAction, SendEmailAction } from "@ally/automations";
 import { AUTOMATION_ACTOR_PREFIX } from "@ally/automations";
+import { escapeHtml, htmlToPlainText, type Mailer } from "@ally/mailer";
+import { inArray } from "drizzle-orm";
 import { schema, type Db } from "@ally/db";
 
 /**
- * 动作执行器（#224 切片 1 的两个内核动作：建任务、发通知）。
+ * 动作执行器（#224 的内核动作：建任务、发通知、发邮件）。
  *
  * 动作是内核的、实现在这里而不在 API：它们由 worker 的 automation-run 任务在
  * 重试语境里调用（#224「动作通过 pg-boss 执行」），API 不执行动作。幂等协议
@@ -36,6 +38,8 @@ export interface ActionDeps {
   logger: Logger;
   /** 总线信封的 instanceId（跨进程广播标记来源实例，worker 启动时生成） */
   instanceId: string;
+  /** 邮件通道（#116 渠道层的 @ally/mailer；send_email 动作的唯一传输） */
+  mailer: Mailer;
 }
 
 /** 经 pg_notify 总线发铃铛「催」；失败不抛（通知行已落库，推送只是加速器） */
@@ -58,13 +62,15 @@ async function nudgeBells(services: ActionServices, userIds: string[]): Promise<
   });
 }
 
-/** 动作的非 DB 依赖（发布执行器、日志、实例标识）——与 db 通道分开注入 */
+/** 动作的非 DB 依赖（发布执行器、邮件通道、日志、实例标识）——与 db 通道分开注入 */
 export interface ActionServices {
   /** pg_notify 总线的发布执行器（与 packages/realtime RealtimeBus.publish 同一条 SQL） */
   publishExecutor: PublishExecutor;
   logger: Logger;
   /** 总线信封的 instanceId（跨进程广播标记来源实例，worker 启动时生成） */
   instanceId: string;
+  /** 邮件通道（@ally/mailer；未配 Resend key 时是日志模式，动作照样「成功」） */
+  mailer: Mailer;
 }
 
 export interface ActionContext {
@@ -157,4 +163,55 @@ export async function executeNotify(
   );
   await nudgeBells(services, userIds);
   return { type: "notify", status: "succeeded" };
+}
+
+/** 邮件正文的 HTML 形态：作者写的是纯文本，转义后换行成 <br>，尾注署名规则 */
+function renderEmailBody(body: string, ruleName: string): { html: string; text: string } {
+  const html =
+    `<p>${escapeHtml(body).replace(/\n/g, "<br>")}</p>` +
+    `<p style="color:#6b7280;font-size:12px">` +
+    `Sent automatically by the Ally OS rule &quot;${escapeHtml(ruleName)}&quot;.</p>`;
+  return { html, text: htmlToPlainText(html) };
+}
+
+/**
+ * send_email 动作（#224 切片 4，#116 渠道层解锁）：收件人按 id 解析账号邮箱，
+ * 逐人一封（收件人之间不见地址），传输走 @ally/mailer——未配 Resend key 时是
+ * 日志模式（动作照样成功，本地开发可从日志取信），与老系统「传输只是接缝、
+ * 内容是调用方策略」的 comms 裁法同构，但这里没有第二套传输。
+ *
+ * 投递语义是 at-least-once：信是真金白银的外部副作用，丢了比重复更糟——
+ * 部分收件人发送失败时动作失败进重试，已收到的重试后会再收到一封（窗口 =
+ * 第一个失败点之前的收件人）；铃铛「催」的 at-most-once 与此刻意相反，便宜的
+ * 加速器可以丢，付费的信不能凭空消失。发送在 runner 的动作事务内：事务回滚
+ * （如 action_results 写失败）同样可能重发，同一个语义。
+ *
+ * 收件人被删 = 抛错进重试协议（重试耗尽终判 failed + 告警），不静默跳过——
+ * 「少发一个人」必须有人看见。邮件本身不写审计、不进通知表：发送事实在
+ * automation_runs 的 action_results 里（与 notify 的通知行即台账同一裁法）。
+ */
+export async function executeSendEmail(
+  db: Pick<Db, "select">,
+  services: ActionServices,
+  ctx: ActionContext,
+  action: SendEmailAction,
+): Promise<ActionResult> {
+  const config = action.config;
+  const userIds = [...new Set(config.userIds)];
+  const rows = await db
+    .select({ id: schema.authUser.id, email: schema.authUser.email })
+    .from(schema.authUser)
+    .where(inArray(schema.authUser.id, userIds));
+  const emailById = new Map(rows.map((row) => [row.id, row.email]));
+  const missing = userIds.filter((id) => !emailById.has(id));
+  if (missing.length > 0) {
+    throw new Error(`send_email recipients no longer exist: ${missing.join(",")}`);
+  }
+  const { html, text } = renderEmailBody(config.body, ctx.ruleName);
+  for (const id of userIds) {
+    const to = emailById.get(id);
+    if (to === undefined) throw new Error(`send_email recipient vanished mid-send: ${id}`);
+    await services.mailer.send({ to, subject: config.subject, html, text });
+  }
+  return { type: "send_email", status: "succeeded" };
 }

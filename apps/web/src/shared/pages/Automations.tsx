@@ -165,6 +165,19 @@ function ActionCard({ action }: { action: unknown }) {
       </div>
     );
   }
+  if (record.type === "send_email") {
+    const recipients = Array.isArray(config.userIds) ? config.userIds.length : 0;
+    const subject = typeof config.subject === "string" ? config.subject : "";
+    return (
+      <div className="rounded-control border border-line p-3" data-testid="automations-action-send-email">
+        <Paragraph className="font-medium">Send email — {subject}</Paragraph>
+        <Paragraph className="mt-1 text-ui-sm text-ink-soft">
+          {recipients} recipient{recipients === 1 ? "" : "s"} by user id — each account's email address
+          {typeof config.body === "string" && config.body !== "" ? ` · ${config.body}` : ""}
+        </Paragraph>
+      </div>
+    );
+  }
   return (
     <div className="rounded-control border border-line p-3" data-testid="automations-action-unknown">
       <Paragraph className="text-ui-sm text-ink-soft">
@@ -492,11 +505,13 @@ function SpecEditor({ draft, onChange, prefix }: SpecEditorProps): ReactElement 
                     const type = e.target.value;
                     if (type === "create_task") updateAction(index, emptyActionDraft());
                     else if (type === "notify") updateAction(index, { type: "notify", userIdsText: "", title: "", body: "" });
+                    else if (type === "send_email") updateAction(index, { type: "send_email", userIdsText: "", subject: "", body: "" });
                     else updateAction(index, { type: "json", json: "" });
                   }}
                 >
                   <option value="create_task">Create task</option>
                   <option value="notify">Notify (in-app bell)</option>
+                  <option value="send_email">Send email</option>
                   <option value="json">Raw JSON — a type this build does not draw</option>
                 </select>
               </label>
@@ -592,6 +607,50 @@ function SpecEditor({ draft, onChange, prefix }: SpecEditorProps): ReactElement 
                   <Input
                     className="mt-1 block w-full"
                     data-testid={`automations-${prefix}-action-notify-body`}
+                    value={action.body}
+                    onChange={(e) => {
+                      updateAction(index, { ...action, body: e.target.value });
+                    }}
+                  />
+                </label>
+              </div>
+            ) : null}
+            {action.type === "send_email" ? (
+              <div className="mt-2 grid gap-2">
+                <Paragraph className="text-ui-sm text-ink-soft">
+                  Recipients are in-app users — the mail goes to each account's address at send time.
+                  A rule cannot mail arbitrary external addresses, and a deleted recipient fails the
+                  action (retry, then a visible failure) instead of skipping them quietly.
+                </Paragraph>
+                <label className="text-ui-sm text-ink">
+                  Recipient ids — one per line (1–50)
+                  <textarea
+                    className="mt-1 block w-full rounded-control border border-line bg-card p-[var(--pad-control)] font-mono text-ui text-ink"
+                    rows={2}
+                    data-testid={`automations-${prefix}-action-email-user-ids`}
+                    value={action.userIdsText}
+                    onChange={(e) => {
+                      updateAction(index, { ...action, userIdsText: e.target.value });
+                    }}
+                  />
+                </label>
+                <label className="text-ui-sm text-ink">
+                  Subject
+                  <Input
+                    className="mt-1 block w-full"
+                    data-testid={`automations-${prefix}-action-email-subject`}
+                    value={action.subject}
+                    onChange={(e) => {
+                      updateAction(index, { ...action, subject: e.target.value });
+                    }}
+                  />
+                </label>
+                <label className="text-ui-sm text-ink">
+                  Body (plain text — the html version is derived from it)
+                  <textarea
+                    className="mt-1 block w-full rounded-control border border-line bg-card p-[var(--pad-control)] font-mono text-ui text-ink"
+                    rows={4}
+                    data-testid={`automations-${prefix}-action-email-body`}
                     value={action.body}
                     onChange={(e) => {
                       updateAction(index, { ...action, body: e.target.value });

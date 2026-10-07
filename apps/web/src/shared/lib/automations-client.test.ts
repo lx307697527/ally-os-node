@@ -387,6 +387,37 @@ describe("spec draft round trip (#224)", () => {
     expectError(buildActions([{ type: "json", json: "[1]" }]), /JSON object/);
   });
 
+  it("send_email: drafts structured, builds the config, and round-trips through the edit form", () => {
+    const spec = {
+      trigger: { kind: "event", action: "approval.completed" },
+      conditions: [],
+      actions: [
+        { type: "send_email", config: { userIds: ["id-a", "id-b"], subject: "Approved", body: "It is done." } },
+      ],
+    };
+    const draft = specToDraft(spec);
+    expect(draft.actions[0]).toEqual({
+      type: "send_email",
+      userIdsText: "id-a\nid-b",
+      subject: "Approved",
+      body: "It is done.",
+    });
+    expect(buildActions(draft.actions)).toEqual({ ok: true, value: spec.actions });
+
+    expectError(
+      buildActions([{ type: "send_email", userIdsText: " ", subject: "s", body: "b" }]),
+      /at least one recipient/,
+    );
+    expectError(
+      buildActions([{ type: "send_email", userIdsText: "id-a", subject: " ", body: "b" }]),
+      /needs a subject/,
+    );
+    expectError(
+      buildActions([{ type: "send_email", userIdsText: "id-a", subject: "s", body: " " }]),
+      /needs a body/,
+    );
+  });
+
   it("buildSpec: composes the three builders; first failure wins", () => {
     const good = emptySpecDraft();
     good.trigger = { kind: "event", action: "task.created" };
