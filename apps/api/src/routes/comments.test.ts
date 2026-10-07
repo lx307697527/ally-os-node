@@ -1,11 +1,18 @@
 import { randomUUID } from "node:crypto";
+import { File } from "node:buffer";
 import { eq, sql } from "drizzle-orm";
 import pino from "pino";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createDb, runMigrations, schema } from "@ally/db";
 import { createApp } from "../app.ts";
 import type { SessionData } from "../auth/session.ts";
-import { mentionsName } from "./comments.ts";
+import {
+  isAdmittedContentType,
+  MAX_FILES_PER_COMMENT,
+  MAX_FILE_BYTES,
+  mentionsName,
+  sanitizeFileName,
+} from "./comments.ts";
 
 // 集成测试：需要真实 PostgreSQL（行属门、审计同事务、提及扇出通知）。
 // 未设 DATABASE_URL 时跳过。
@@ -63,6 +70,28 @@ describe.skipIf(!databaseUrl)("comment endpoints (#110 slice 1, integration)", (
   // #110 slice 2: collector for the realtime nudge callback
   const nudged: string[][] = [];
 
+  // 内存版对象存储：键 → 字节。附件端点的字节面断言全走它（谁收到了字节、
+  // 删除有没有清对象），不碰真 S3
+  const storageObjects = new Map<string, { body: Uint8Array; contentType?: string }>();
+  const storage = {
+    put: (key: string, body: Uint8Array | string, contentType?: string) => {
+      storageObjects.set(key, {
+        body: typeof body === "string" ? new TextEncoder().encode(body) : body,
+        ...(contentType === undefined ? {} : { contentType }),
+      });
+      return Promise.resolve();
+    },
+    signedGetUrl: (key: string, expiresInSeconds?: number) =>
+      Promise.resolve(
+        `http://storage.test/get/${key}${expiresInSeconds === undefined ? "" : `?expires=${String(expiresInSeconds)}`}`,
+      ),
+    signedPutUrl: (key: string) => Promise.resolve(`http://storage.test/put/${key}`),
+    delete: (key: string) => {
+      storageObjects.delete(key);
+      return Promise.resolve();
+    },
+  };
+
   const app = createApp({
     logger,
     db,
@@ -78,6 +107,7 @@ describe.skipIf(!databaseUrl)("comment endpoints (#110 slice 1, integration)", (
       return Promise.resolve(sessionFor(USERS[name], name));
     },
     socialProviders: [],
+    storage,
     authzStore: {
       getRoles: () => Promise.resolve([]),
       getDirectPermissions: () => Promise.resolve([]),
@@ -110,11 +140,13 @@ describe.skipIf(!databaseUrl)("comment endpoints (#110 slice 1, integration)", (
   });
 
   beforeEach(async () => {
-    // 整库是本文件的：四张表每条测试前清空
-    await db.execute(sql`truncate table ${schema.comments}`);
+    // 整库是本文件的：五张表每条测试前清空（comment_attachments 挂在 comments
+    // 的 FK 下，TRUNCATE 必须同句，否则 0A000）
+    await db.execute(sql`truncate table ${schema.commentAttachments}, ${schema.comments}`);
     await db.execute(sql`truncate table ${schema.tasks}`);
     await db.execute(sql`truncate table ${schema.notifications}`);
     await db.execute(sql`truncate table ${schema.auditEvents}`);
+    storageObjects.clear();
     nudged.length = 0;
   });
 
@@ -147,6 +179,56 @@ describe.skipIf(!databaseUrl)("comment endpoints (#110 slice 1, integration)", (
     author: { id: string; name: string } | null;
     createdAt: string;
     editedAt: string | null;
+    attachments: AttachmentRow[];
+  }
+
+  interface AttachmentRow {
+    id: string;
+    fileName: string;
+    contentType: string;
+    sizeBytes: number;
+    createdAt: string;
+  }
+
+  async function attach(
+    headers: Record<string, string>,
+    commentId: string,
+    files: File[],
+  ): Promise<{ status: number; attachments: AttachmentRow[]; code: string | null }> {
+    const form = new FormData();
+    for (const file of files) form.append("files", file);
+    const res = await app.request(`/api/comments/${commentId}/attachments`, {
+      method: "POST",
+      headers,
+      body: form,
+    });
+    const json = (await res.json()) as { attachments?: AttachmentRow[]; code?: string };
+    return { status: res.status, attachments: json.attachments ?? [], code: json.code ?? null };
+  }
+
+  async function attachmentUrl(
+    headers: Record<string, string>,
+    commentId: string,
+    attachmentId: string,
+  ): Promise<{ status: number; url: string | null; expiresInSeconds: number | null }> {
+    const res = await app.request(
+      `/api/comments/${commentId}/attachments/${attachmentId}/url`,
+      { headers },
+    );
+    const json = (await res.json()) as { url?: string; expiresInSeconds?: number };
+    return { status: res.status, url: json.url ?? null, expiresInSeconds: json.expiresInSeconds ?? null };
+  }
+
+  async function removeAttachment(
+    headers: Record<string, string>,
+    commentId: string,
+    attachmentId: string,
+  ): Promise<number> {
+    const res = await app.request(`/api/comments/${commentId}/attachments/${attachmentId}`, {
+      method: "DELETE",
+      headers,
+    });
+    return res.status;
   }
 
   async function listComments(
@@ -502,6 +584,155 @@ describe.skipIf(!databaseUrl)("comment endpoints (#110 slice 1, integration)", (
     expect(page.comments[0]?.body).toBe("bob's note while assigned");
     expect(await auditRows("comment.updated")).toHaveLength(0);
   });
+
+  // ── 附件（#110 收尾切片）─────────────────────────────────────────────────
+
+  it("the author attaches a file: bytes land in storage, row and audit land in the same transaction, viewers see it in the list", async () => {
+    const taskId = await seedTask(USERS.alice, USERS.bob);
+    const made = await postComment(bob, { subjectType: "task", subjectId: taskId, body: "see attached spec" });
+    const commentId = made.comment?.id;
+    if (commentId === undefined) throw new Error("comment creation returned no id");
+    const bytes = new TextEncoder().encode("%PDF-1.7 fake spec body");
+    const added = await attach(bob, commentId, [new File([bytes], "spec.pdf", { type: "application/pdf" })]);
+    expect(added.status).toBe(201);
+    const row = added.attachments[0];
+    expect(row?.fileName).toBe("spec.pdf");
+    expect(row?.contentType).toBe("application/pdf");
+    expect(row?.sizeBytes).toBe(bytes.byteLength);
+    // 字节在桶里：key 不含用户输入，命名空间/评论 id/uuid 三段
+    expect(storageObjects.size).toBe(1);
+    const storedKey = [...storageObjects.keys()][0];
+    expect(storedKey).toSatisfy(
+      (key: string) =>
+        key.startsWith(`comment-attachments/${commentId}/`) &&
+        /^comment-attachments\/[^/]+\/[0-9a-f-]{36}$/.test(key),
+    );
+    expect(storageObjects.get(storedKey ?? "")?.contentType).toBe("application/pdf");
+    // 行与审计同一事务；subject 引用进 detail，活动流投影自动收录
+    const audits = await auditRows("comment.attachment_added");
+    expect(audits).toHaveLength(1);
+    expect(audits[0]?.detail).toMatchObject({
+      subjectType: "task",
+      subjectId: taskId,
+      attachmentId: row?.id,
+      fileName: "spec.pdf",
+      sizeBytes: bytes.byteLength,
+    });
+    // 名单读法：另一个可见者看得到；文件名/大小随行
+    const page = await listComments(alice, "task", taskId);
+    expect(page.comments[0]?.attachments).toHaveLength(1);
+    expect(page.comments[0]?.attachments[0]?.fileName).toBe("spec.pdf");
+    // 附件不是新的动静：没有通知、没有实时催
+    expect(await notificationsFor(USERS.alice)).toHaveLength(0);
+    expect(nudged).toEqual([]);
+  });
+
+  it("download URLs are minted on demand for viewers; another comment's attachment is not reachable", async () => {
+    const taskId = await seedTask(USERS.alice, USERS.bob);
+    const mine = await postComment(bob, { subjectType: "task", subjectId: taskId, body: "with file" });
+    const other = await postComment(alice, { subjectType: "task", subjectId: taskId, body: "without file" });
+    const commentId = mine.comment?.id;
+    const otherId = other.comment?.id;
+    if (commentId === undefined || otherId === undefined) throw new Error("comment creation returned no id");
+    const added = await attach(bob, commentId, [new File([new Uint8Array(4)], "x.png", { type: "image/png" })]);
+    const attachmentId = added.attachments[0]?.id;
+    if (attachmentId === undefined) throw new Error("attachment upload returned no id");
+    const minted = await attachmentUrl(alice, commentId, attachmentId);
+    expect(minted.status).toBe(200);
+    expect(minted.url).toContain(`comment-attachments/${commentId}/`);
+    expect(minted.expiresInSeconds).toBe(900);
+    // 同一评论不可见者（圈外人）与挂错评论的附件都是 404，与不存在同回答
+    expect((await attachmentUrl({ "x-test-user": "carol" }, commentId, attachmentId)).status).toBe(404);
+    expect((await attachmentUrl(bob, otherId, attachmentId)).status).toBe(404);
+    expect((await attachmentUrl(bob, commentId, randomUUID())).status).toBe(404);
+  });
+
+  it("attaching is the author's verb: another viewer gets 403 and an outsider 404", async () => {
+    const taskId = await seedTask(USERS.alice, USERS.bob);
+    const made = await postComment(alice, { subjectType: "task", subjectId: taskId, body: "alice's comment" });
+    const commentId = made.comment?.id;
+    if (commentId === undefined) throw new Error("comment creation returned no id");
+    const file = new File([new Uint8Array(3)], "note.txt", { type: "text/plain" });
+    const byCoViewer = await attach(bob, commentId, [file]);
+    expect(byCoViewer.status).toBe(403);
+    expect(byCoViewer.code).toBe("author_only");
+    expect(storageObjects.size).toBe(0);
+    const byOutsider = await attach({ "x-test-user": "carol" }, commentId, [file]);
+    expect(byOutsider.status).toBe(404);
+  });
+
+  it("admission is a closed vocabulary: type, size, emptiness, filename and missing files are refused before a byte is stored", async () => {
+    const taskId = await seedTask(USERS.alice, USERS.bob);
+    const made = await postComment(bob, { subjectType: "task", subjectId: taskId, body: "trying files" });
+    const commentId = made.comment?.id;
+    if (commentId === undefined) throw new Error("comment creation returned no id");
+    const refused = async (file: File, code: string) => {
+      const attempt = await attach(bob, commentId, [file]);
+      expect(attempt.status).toBe(400);
+      expect(attempt.code).toBe(code);
+    };
+    await refused(new File([new Uint8Array(2)], "virus.exe", { type: "application/x-msdownload" }), "file_type_not_allowed");
+    await refused(new File([new Uint8Array(MAX_FILE_BYTES + 1)], "big.png", { type: "image/png" }), "file_too_large");
+    await refused(new File([new Uint8Array(0)], "empty.pdf", { type: "application/pdf" }), "empty_file");
+    await refused(new File([new Uint8Array(1)], "bad\u0000name.png", { type: "image/png" }), "invalid_file_name");
+    const none = await attach(bob, commentId, []);
+    expect(none.status).toBe(400);
+    expect(none.code).toBe("no_files");
+    expect(storageObjects.size).toBe(0);
+    expect(await auditRows("comment.attachment_added")).toHaveLength(0);
+  });
+
+  it("no more than five files per comment; the sixth is refused and nothing was stored", async () => {
+    const taskId = await seedTask(USERS.alice, USERS.bob);
+    const made = await postComment(bob, { subjectType: "task", subjectId: taskId, body: "screenshot dump" });
+    const commentId = made.comment?.id;
+    if (commentId === undefined) throw new Error("comment creation returned no id");
+    const five = Array.from({ length: MAX_FILES_PER_COMMENT }, (_, i) =>
+      new File([new Uint8Array([i])], `shot-${String(i)}.png`, { type: "image/png" }));
+    const first = await attach(bob, commentId, five);
+    expect(first.status).toBe(201);
+    expect(first.attachments).toHaveLength(MAX_FILES_PER_COMMENT);
+    expect(storageObjects.size).toBe(MAX_FILES_PER_COMMENT);
+    const sixth = await attach(bob, commentId, [new File([new Uint8Array(1)], "one.png", { type: "image/png" })]);
+    expect(sixth.status).toBe(400);
+    expect(sixth.code).toBe("too_many_files");
+    expect(storageObjects.size).toBe(MAX_FILES_PER_COMMENT);
+  });
+
+  it("removing an attachment is the author's verb: the row, the audit and the stored object all go", async () => {
+    const taskId = await seedTask(USERS.alice, USERS.bob);
+    const made = await postComment(bob, { subjectType: "task", subjectId: taskId, body: "wrong file, sorry" });
+    const commentId = made.comment?.id;
+    if (commentId === undefined) throw new Error("comment creation returned no id");
+    const added = await attach(bob, commentId, [new File([new Uint8Array(5)], "draft.pdf", { type: "application/pdf" })]);
+    const attachmentId = added.attachments[0]?.id;
+    if (attachmentId === undefined) throw new Error("attachment upload returned no id");
+    // 另一个可见者不是动词主
+    expect(await removeAttachment(alice, commentId, attachmentId)).toBe(403);
+    expect(await removeAttachment(bob, commentId, attachmentId)).toBe(200);
+    // 行没了、字节清了、审计留了
+    expect(storageObjects.size).toBe(0);
+    const page = await listComments(alice, "task", taskId);
+    expect(page.comments[0]?.attachments).toHaveLength(0);
+    const removals = await auditRows("comment.attachment_removed");
+    expect(removals).toHaveLength(1);
+    expect(removals[0]?.detail).toMatchObject({ subjectType: "task", subjectId: taskId, fileName: "draft.pdf" });
+  });
+
+  it("deleting the comment takes the stored objects with it (rows cascade, bytes cleaned best-effort)", async () => {
+    const taskId = await seedTask(USERS.alice, USERS.bob);
+    const made = await postComment(bob, { subjectType: "task", subjectId: taskId, body: "will be deleted" });
+    const commentId = made.comment?.id;
+    if (commentId === undefined) throw new Error("comment creation returned no id");
+    await attach(bob, commentId, [
+      new File([new Uint8Array(1)], "a.png", { type: "image/png" }),
+      new File([new Uint8Array(2)], "b.pdf", { type: "application/pdf" }),
+    ]);
+    expect(storageObjects.size).toBe(2);
+    const res = await app.request(`/api/comments/${commentId}`, { method: "DELETE", headers: bob });
+    expect(res.status).toBe(200);
+    expect(storageObjects.size).toBe(0);
+  });
 });
 
 describe("mentionsName (pure, #110 slice 1)", () => {
@@ -520,6 +751,28 @@ describe("mentionsName (pure, #110 slice 1)", () => {
     expect(mentionsName("thanks @Alice!", "Alice")).toBe(true);
     expect(mentionsName("thanks @Alice.", "Alice")).toBe(true);
     expect(mentionsName("@Alice", "Alice")).toBe(true);
+  });
+});
+
+describe("attachment admission (pure, #110)", () => {
+  it("content types are a closed vocabulary: document and image families in, everything else out", () => {
+    expect(isAdmittedContentType("application/pdf")).toBe(true);
+    expect(isAdmittedContentType("image/png")).toBe(true);
+    expect(isAdmittedContentType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")).toBe(true);
+    expect(isAdmittedContentType("application/x-msdownload")).toBe(false);
+    expect(isAdmittedContentType("image/svg+xml")).toBe(false);
+    expect(isAdmittedContentType("")).toBe(false);
+    // 客户端声明按字面匹配，不做大小写归一（浏览器发的本来就是小写）
+    expect(isAdmittedContentType("Image/PNG")).toBe(false);
+  });
+
+  it("file names are sanity-checked only (they never enter the storage key)", () => {
+    expect(sanitizeFileName("  spec (v2).pdf  ")).toBe("spec (v2).pdf");
+    expect(sanitizeFileName("../../etc/passwd")).toBe("../../etc/passwd");
+    expect(sanitizeFileName("")).toBe(null);
+    expect(sanitizeFileName(" ".repeat(256))).toBe(null);
+    expect(sanitizeFileName("bad\u0000name")).toBe(null);
+    expect(sanitizeFileName("bad\u001fname")).toBe(null);
   });
 });
 

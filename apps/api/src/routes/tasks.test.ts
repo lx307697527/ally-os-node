@@ -74,6 +74,13 @@ describe.skipIf(!databaseUrl)("task endpoints (#113 slice 1, integration)", () =
       return Promise.resolve(sessionFor(USERS[name], name));
     },
     socialProviders: [],
+    // 本套件不 exercise 附件端点；真被调到会在这里大声炸（AppDeps.storage 必选）
+    storage: {
+      put: () => Promise.reject(new Error("storage not used in this suite")),
+      signedGetUrl: () => Promise.reject(new Error("storage not used in this suite")),
+      signedPutUrl: () => Promise.reject(new Error("storage not used in this suite")),
+      delete: () => Promise.reject(new Error("storage not used in this suite")),
+    },
     authzStore: {
       getRoles: () => Promise.resolve([]),
       getDirectPermissions: () => Promise.resolve([]),

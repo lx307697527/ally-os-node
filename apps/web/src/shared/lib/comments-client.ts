@@ -15,6 +15,17 @@ import { z } from "zod";
 
 const personSchema = z.object({ id: z.string(), name: z.string() });
 
+// #110 attachments slice: an attachment row as the list read carries it —
+// no URL field (short-lived download URLs are minted on demand, a list that
+// logs well must not carry them)
+const attachmentRowSchema = z.object({
+  id: z.string(),
+  fileName: z.string(),
+  contentType: z.string(),
+  sizeBytes: z.number().int().nonnegative(),
+  createdAt: z.string(),
+});
+
 const commentRowSchema = z.object({
   id: z.string(),
   subjectType: z.string(),
@@ -24,6 +35,7 @@ const commentRowSchema = z.object({
   createdAt: z.string(),
   // #110 slice 5: null = never edited; the "(edited)" marker's only source
   editedAt: z.string().nullable(),
+  attachments: z.array(attachmentRowSchema),
 });
 
 const commentListSchema = z.object({
@@ -48,6 +60,21 @@ const commentEditedSchema = z.object({
 
 export type Person = z.infer<typeof personSchema>;
 export type CommentRow = z.infer<typeof commentRowSchema>;
+export type AttachmentRow = z.infer<typeof attachmentRowSchema>;
+
+// #110 attachments slice: the server's admission codes (closed vocabulary, see
+// the route) — the page maps each to a plain sentence instead of showing codes
+const attachmentRejectionCodeSchema = z.enum([
+  "no_files",
+  "not_a_file",
+  "empty_file",
+  "file_too_large",
+  "file_type_not_allowed",
+  "invalid_file_name",
+  "too_many_files",
+]);
+
+export type AttachmentRejectionCode = z.infer<typeof attachmentRejectionCodeSchema>;
 
 export interface CommentListQuery {
   subjectType: string;
@@ -78,11 +105,40 @@ export type CommentEditResult =
   | { ok: true; data: z.infer<typeof commentEditedSchema> }
   | { ok: false; reason: "forbidden" | "notfound" | "conflict" | "unavailable" };
 
+export type AttachmentAttachResult =
+  | { ok: true; data: { attachments: AttachmentRow[] } }
+  | { ok: false; reason: "forbidden" | "notfound" }
+  // a refusal always carries the server's admission code (null only if the
+  // body was unparseable — the page falls back to a generic sentence)
+  | { ok: false; reason: "conflict"; code: AttachmentRejectionCode | null }
+  | { ok: false; reason: "unavailable" };
+
+export type AttachmentUrlResult =
+  | {
+      ok: true;
+      data: {
+        url: string;
+        fileName: string;
+        contentType: string;
+        sizeBytes: number;
+        expiresInSeconds: number;
+      };
+    }
+  | { ok: false; reason: "notfound" | "unavailable" };
+
+export type AttachmentRemoveResult =
+  | { ok: true }
+  | { ok: false; reason: "forbidden" | "notfound" | "unavailable" };
+
 export interface CommentAdapters {
   list(query: CommentListQuery): Promise<CommentListResult>;
   create(input: CommentCreateInput): Promise<CommentCreateResult>;
   edit(id: string, body: string): Promise<CommentEditResult>;
   remove(id: string): Promise<CommentDeleteResult>;
+  // #110 attachments slice: the author's upload/download/remove verbs
+  attach(id: string, files: File[]): Promise<AttachmentAttachResult>;
+  attachmentUrl(id: string, attachmentId: string): Promise<AttachmentUrlResult>;
+  removeAttachment(id: string, attachmentId: string): Promise<AttachmentRemoveResult>;
 }
 
 export function createCommentAdapters(fetchFn: typeof fetch = fetch): CommentAdapters {
@@ -140,6 +196,70 @@ export function createCommentAdapters(fetchFn: typeof fetch = fetch): CommentAda
     async remove(id: string): Promise<CommentDeleteResult> {
       try {
         const res = await fetchFn(`/api/comments/${encodeURIComponent(id)}`, { method: "DELETE" });
+        if (res.status === 403) return { ok: false, reason: "forbidden" };
+        if (res.status === 404) return { ok: false, reason: "notfound" };
+        if (!res.ok) return { ok: false, reason: "unavailable" };
+        return { ok: true };
+      } catch {
+        return { ok: false, reason: "unavailable" };
+      }
+    },
+
+    // #110 attachments slice: multipart upload — no content-type header here,
+    // the browser builds the multipart boundary; a 400 carries the server's
+    // admission code so the page can say WHY the file was refused
+    async attach(id: string, files: File[]): Promise<AttachmentAttachResult> {
+      try {
+        const form = new FormData();
+        for (const file of files) form.append("files", file);
+        const res = await fetchFn(`/api/comments/${encodeURIComponent(id)}/attachments`, {
+          method: "POST",
+          body: form,
+        });
+        if (res.status === 403) return { ok: false, reason: "forbidden" };
+        if (res.status === 404) return { ok: false, reason: "notfound" };
+        if (res.status === 400) {
+          const body = (await res.json().catch(() => null)) as { code?: string } | null;
+          const code = attachmentRejectionCodeSchema.safeParse(body?.code);
+          return { ok: false, reason: "conflict", code: code.success ? code.data : null };
+        }
+        if (!res.ok) return { ok: false, reason: "unavailable" };
+        return { ok: true, data: z.object({ attachments: z.array(attachmentRowSchema) }).parse(await res.json()) };
+      } catch {
+        return { ok: false, reason: "unavailable" };
+      }
+    },
+
+    async attachmentUrl(id: string, attachmentId: string): Promise<AttachmentUrlResult> {
+      try {
+        const res = await fetchFn(
+          `/api/comments/${encodeURIComponent(id)}/attachments/${encodeURIComponent(attachmentId)}/url`,
+        );
+        if (res.status === 404) return { ok: false, reason: "notfound" };
+        if (!res.ok) return { ok: false, reason: "unavailable" };
+        return {
+          ok: true,
+          data: z
+            .object({
+              url: z.string(),
+              fileName: z.string(),
+              contentType: z.string(),
+              sizeBytes: z.number().int().nonnegative(),
+              expiresInSeconds: z.number().int().positive(),
+            })
+            .parse(await res.json()),
+        };
+      } catch {
+        return { ok: false, reason: "unavailable" };
+      }
+    },
+
+    async removeAttachment(id: string, attachmentId: string): Promise<AttachmentRemoveResult> {
+      try {
+        const res = await fetchFn(
+          `/api/comments/${encodeURIComponent(id)}/attachments/${encodeURIComponent(attachmentId)}`,
+          { method: "DELETE" },
+        );
         if (res.status === 403) return { ok: false, reason: "forbidden" };
         if (res.status === 404) return { ok: false, reason: "notfound" };
         if (!res.ok) return { ok: false, reason: "unavailable" };

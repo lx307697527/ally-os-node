@@ -1,4 +1,4 @@
-import { GetObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import { DeleteObjectCommand, GetObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 
 // 只依赖 S3 协议：AWS S3、MinIO、阿里云 OSS、腾讯云 COS 都能用同一份代码，
@@ -7,6 +7,8 @@ export interface Storage {
   put(key: string, body: Uint8Array | string, contentType?: string): Promise<void>;
   signedGetUrl(key: string, expiresInSeconds?: number): Promise<string>;
   signedPutUrl(key: string, contentType: string, expiresInSeconds?: number): Promise<string>;
+  /** 删除对象（#110 附件切片）：生命周期清理用，调用方自担「对象已不在」的 404 */
+  delete(key: string): Promise<void>;
 }
 
 export interface S3StorageOptions {
@@ -51,6 +53,9 @@ export function createS3Storage(opts: S3StorageOptions): Storage {
         new PutObjectCommand({ Bucket: opts.bucket, Key: assertSafeKey(key), ContentType: contentType }),
         { expiresIn: expiresInSeconds },
       );
+    },
+    async delete(key) {
+      await client.send(new DeleteObjectCommand({ Bucket: opts.bucket, Key: assertSafeKey(key) }));
     },
   };
 }

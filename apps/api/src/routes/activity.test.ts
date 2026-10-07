@@ -79,6 +79,13 @@ describe.skipIf(!databaseUrl)("activity endpoint (#110 slice 3, integration)", (
       return Promise.resolve(sessionFor(USERS[name], name));
     },
     socialProviders: [],
+    // 本套件不 exercise 附件端点；真被调到会在这里大声炸（AppDeps.storage 必选）
+    storage: {
+      put: () => Promise.reject(new Error("storage not used in this suite")),
+      signedGetUrl: () => Promise.reject(new Error("storage not used in this suite")),
+      signedPutUrl: () => Promise.reject(new Error("storage not used in this suite")),
+      delete: () => Promise.reject(new Error("storage not used in this suite")),
+    },
     authzStore: {
       getRoles: () => Promise.resolve([]),
       getDirectPermissions: () => Promise.resolve([]),
@@ -106,7 +113,7 @@ describe.skipIf(!databaseUrl)("activity endpoint (#110 slice 3, integration)", (
   });
 
   beforeEach(async () => {
-    await db.execute(sql`truncate table ${schema.comments}`);
+    await db.execute(sql`truncate table ${schema.commentAttachments}, ${schema.comments}`);
     await db.execute(sql`truncate table ${schema.tasks}`);
     await db.execute(sql`truncate table ${schema.notifications}`);
     await db.execute(sql`truncate table ${schema.auditEvents}`);

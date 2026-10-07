@@ -96,6 +96,13 @@ describe.skipIf(!databaseUrl)("automation rule endpoints (#224 slice 1, integrat
       return Promise.resolve(sessionFor(USERS[name], name));
     },
     socialProviders: [],
+    // 本套件不 exercise 附件端点；真被调到会在这里大声炸（AppDeps.storage 必选）
+    storage: {
+      put: () => Promise.reject(new Error("storage not used in this suite")),
+      signedGetUrl: () => Promise.reject(new Error("storage not used in this suite")),
+      signedPutUrl: () => Promise.reject(new Error("storage not used in this suite")),
+      delete: () => Promise.reject(new Error("storage not used in this suite")),
+    },
     authzStore: createAuthzStore(db),
     notifyUsers: () => Promise.resolve(),
   });
