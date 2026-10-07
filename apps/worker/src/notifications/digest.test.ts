@@ -60,6 +60,15 @@ describe("digest email rendering (#116, unit)", () => {
     );
   });
 
+  it("收款告警的事实行原样进摘要（#193 剩余③）：类型 + detail + 时刻，不另养一套文案", () => {
+    const detail =
+      "A stripe payment of USD 1,500.00 (ref pi_x) for invoice INV-0301 arrived but could not be " +
+      "recorded: the invoice is still a draft (finance has not confirmed it). " +
+      "The provider will keep retrying — no money is booked until this is resolved.";
+    const rendered = renderDigest([{ eventType: "payment.unbookable", detail, when: "2026-10-08 05:30 UTC" }], 1, undefined);
+    expect(rendered.text).toContain(`- payment.unbookable — ${detail} (2026-10-08 05:30 UTC)`);
+  });
+
   it("webAppUrl 配了给链接，没配诚实降级不放死链", () => {
     const linked = renderDigest([{ ...base, detail: null }], 1, "https://os.example.com");
     expect(linked.text).toContain("Open Ally OS: https://os.example.com/overview");

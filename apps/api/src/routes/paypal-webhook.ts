@@ -6,6 +6,12 @@ import { schema } from "@ally/db";
 import type { AppEnv } from "../auth/session.ts";
 import { recordAudit } from "../audit/audit-log.ts";
 import { PaymentExistsError, PaymentStateError, recordPayment } from "../billing/payments.ts";
+import {
+  PAYMENT_UNBOOKABLE_EVENT,
+  type PaymentAlertChannel,
+  recordPaymentAlert,
+  unbookableReasonText,
+} from "../billing/payment-alerts.ts";
 import type { NormalizedPayPalEvent, PayPalChannel, PayPalTransmission } from "../billing/paypal.ts";
 import { normalizePayPalEvent, payPalMisconfigured } from "../billing/paypal.ts";
 
@@ -28,11 +34,52 @@ import { normalizePayPalEvent, payPalMisconfigured } from "../billing/paypal.ts"
  *   APPROVED 该 capture 但 capture 调用失败。**绝不 2xx 确认记不了的钱**；
  *   502 让 PayPal 重投，等财务确认（R-12-6 人的闸门，webhook 靠重试跨过它）。
  *
+ * 站内告警（#193 剩余③）：每一条 502 路径都先给 invoices.manage 持有者落一行
+ * 铃铛（老系统 Sentry/Slack 分流的替代面）——502 本身让 PayPal 重投等人的闸门，
+ * 但「有笔钱在等处理」必须有人知道：重投只会重试，不会通知。告警是尽力面：写
+ * 不进只记日志，响应照旧 502；重投会带着同一把 dedupe_key 重试告警写入，
+ * (user_id, dedupe_key) 部分唯一索引保证每条事实最多一行/人。失败的支付尝试类
+ * 事件（DECLINED 等）保持既有 no-op 裁决：其载荷形状无老系统参照，不猜 provider
+ * 载荷；告警面先落钱的事实，渠道侧失败事件随真实载荷样例进场。
+ *
  * 幂等：source = ("paypal", capture id)——重放/补发撞 payments_source_idx，
  * PaymentExistsError 被「已记账成功」语义吃掉回 200。审计与记账同事务。
  */
-export function paypalWebhookRoutes(deps: { db: Db; logger: Logger; paypal: PayPalChannel | undefined }) {
+const CHANNEL: PaymentAlertChannel = "paypal";
+
+export function paypalWebhookRoutes(deps: {
+  db: Db;
+  logger: Logger;
+  paypal: PayPalChannel | undefined;
+  notifyUsers: (userIds: string[]) => Promise<void>;
+}) {
   const app = new Hono<AppEnv>();
+
+  /** 502 路径的尽力告警：写不进只记日志——响应照旧 502，重投会重试告警写入 */
+  async function alertBestEffort(input: {
+    reasonCode: string;
+    reason: string;
+    externalId: string;
+    invoiceId: string | null;
+    amountCents: number | null;
+  }): Promise<void> {
+    try {
+      const alerted = await deps.db.transaction((tx) =>
+        recordPaymentAlert(tx, {
+          eventType: PAYMENT_UNBOOKABLE_EVENT,
+          channel: CHANNEL,
+          currency: null,
+          ...input,
+        }),
+      );
+      if (alerted.length > 0) {
+        deps.logger.info({ reasonCode: input.reasonCode, externalId: input.externalId, recipients: alerted.length }, "paypal webhook unbookable payment reported to finance");
+        await deps.notifyUsers(alerted);
+      }
+    } catch (err) {
+      deps.logger.error({ err, reasonCode: input.reasonCode, externalId: input.externalId }, "paypal webhook payment alert could not be written; provider redelivery will retry it");
+    }
+  }
 
   // 方法集合显式枚举（不用 app.all）：路由普查（route-auth.test.ts）按 method
   // 逐条对册，ALL 会被当成中间件漏掉（stripe-webhook.ts 同款）。非 POST 在
@@ -89,6 +136,16 @@ export function paypalWebhookRoutes(deps: { db: Db; logger: Logger; paypal: PayP
     }
     if (event.kind === "unparsable") {
       deps.logger.error({ reason: event.reason }, "paypal webhook paid event unparsable; asking PayPal to redeliver");
+      // 读不出账的钱也是钱：capture id 读得出的就提醒财务（尽力面，响应照旧 502）
+      if (event.externalId !== null) {
+        await alertBestEffort({
+          reasonCode: "unparsable_event",
+          reason: unbookableReasonText("unparsable_event", event.reason),
+          externalId: event.externalId,
+          invoiceId: event.invoiceId,
+          amountCents: event.amountCents,
+        });
+      }
       return c.json({ error: "unparsable_event" }, 502);
     }
     if (event.kind === "capture_request") {
@@ -133,6 +190,14 @@ export function paypalWebhookRoutes(deps: { db: Db; logger: Logger; paypal: PayP
       return c.json({ received: true, capture: outcome.outcome });
     } catch (err) {
       deps.logger.error({ orderId: event.orderId, err }, "paypal capture failed; asking PayPal to redeliver");
+      // 客户批了钱、capture 没成：APPROVED 重投会再来，但财务该知道这单卡住了
+      await alertBestEffort({
+        reasonCode: "capture_failed",
+        reason: unbookableReasonText("capture_failed", null),
+        externalId: event.orderId,
+        invoiceId: event.invoiceId,
+        amountCents: null,
+      });
       return c.json({ error: "capture_failed" }, 502);
     }
   }
@@ -144,6 +209,13 @@ export function paypalWebhookRoutes(deps: { db: Db; logger: Logger; paypal: PayP
     if (event.invoiceId === null) {
       if (event.invoiceIdInvalid) {
         deps.logger.error({ externalId: event.externalId }, "paypal webhook custom_id invoice id is not a uuid; asking PayPal to redeliver");
+        await alertBestEffort({
+          reasonCode: "unparsable_event",
+          reason: unbookableReasonText("unparsable_event", "the payment's invoice anchor (custom_id) is not a valid invoice id"),
+          externalId: event.externalId,
+          invoiceId: null,
+          amountCents: event.amountCents,
+        });
         return c.json({ error: "unparsable_event" }, 502);
       }
       deps.logger.warn(
@@ -191,6 +263,13 @@ export function paypalWebhookRoutes(deps: { db: Db; logger: Logger; paypal: PayP
       });
       if (recorded === null) {
         deps.logger.error({ invoiceId, externalId: event.externalId }, "paypal webhook payment for unknown invoice; asking PayPal to redeliver");
+        await alertBestEffort({
+          reasonCode: "invoice_not_found",
+          reason: unbookableReasonText("invoice_not_found", null),
+          externalId: event.externalId,
+          invoiceId,
+          amountCents: event.amountCents,
+        });
         return c.json({ error: "invoice_not_found" }, 502);
       }
       deps.logger.info(
@@ -209,6 +288,13 @@ export function paypalWebhookRoutes(deps: { db: Db; logger: Logger; paypal: PayP
           { invoiceId, externalId: event.externalId, code: err.code },
           "paypal webhook payment refused by invoice state; asking PayPal to redeliver",
         );
+        await alertBestEffort({
+          reasonCode: err.code,
+          reason: unbookableReasonText(err.code, null),
+          externalId: event.externalId,
+          invoiceId,
+          amountCents: event.amountCents,
+        });
         return c.json({ error: err.code }, 502);
       }
       throw err;

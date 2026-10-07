@@ -263,11 +263,23 @@ export const notifications = pgTable(
     //（exactly-once 投递，隔天不重复念旧账；应用内已读与否不影响它——邮件是
     // 「别错过」的兜底，不是已读状态的投影）。
     digestSentAt: timestamp("digest_sent_at", { withTimezone: true }),
+    // 事实幂等键（#193 失败付款提醒切片，本表注释预告的「老 (user_id, outbox_id)
+    // 唯一约束一并补列」）：同一笔钱的同一状态对同一个人只投一次。webhook 的 502
+    // 会被 provider 反复重投、失败事件会重发——没有这个键，每次重投都是一行新的
+    // 铃铛噪声。键由生产者从事实拼出（渠道+外部 id+拒绝码），重投撞唯一索引被
+    // onConflictDoNothing 吃掉 = 「已提醒过」语义；业务生产者（任务/评论/审批）
+    // 保持 null 不受约束。补列 + 部分唯一索引，expand-only。
+    dedupeKey: text("dedupe_key"),
   },
   (t) => [
     index("notifications_user_recent_idx").on(t.userId, desc(t.createdAt)),
     // 铃铛的未读计数不 count(*)：部分索引让「有没有未读、封顶几条」只扫未读行
     index("notifications_user_unread_idx").on(t.userId).where(sql`${t.isRead} = false`),
+    // 幂等的唯一性是「人对事实」：(user_id, dedupe_key)——键对全体收件人相同
+    //（同一笔钱的同一个状态），唯一约束只挡同一人收到第二行
+    uniqueIndex("notifications_user_dedupe_idx")
+      .on(t.userId, t.dedupeKey)
+      .where(sql`${t.dedupeKey} is not null`),
   ],
 );
 

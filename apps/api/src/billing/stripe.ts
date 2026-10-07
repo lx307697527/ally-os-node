@@ -241,9 +241,12 @@ const stripeEventSchema = z.object({
 
 export type StripeEvent = z.infer<typeof stripeEventSchema>;
 
-/** 归一结果：payment = 有钱可记；ignored = 与记账无关（含失败/退款类事件）；
- * unparsable = 是钱的事件但读不出可信的账——金额读不出、或 surcharge 拆分对不上
- * （拿不准的钱不确认，502 让 Stripe 重投） */
+/** 归一结果：payment = 有钱可记；payment_failed = 支付尝试失败（钱没动，#193
+ * 告警切片开始消费）；ignored = 与记账无关（退款类 refund.* 仍显式 no-op，
+ * #240 的流程）；unparsable = 是钱的事件但读不出可信的账——金额读不出、或
+ * surcharge 拆分对不上（拿不准的钱不确认，502 让 Stripe 重投）。unparsable
+ * 尽可能携带可读出的事实（外部 id/金额/锚点）：这些事实喂给站内告警，让财务
+ * 知道「有笔钱在等处理」——事件读不出账不等于事件不存在。 */
 export type NormalizedStripeEvent =
   | {
       kind: "payment";
@@ -256,10 +259,36 @@ export type NormalizedStripeEvent =
       /** 我们创建的 session 才带 metadata.invoice_id；缺 = 不是发票支付（无锚点） */
       invoiceId: string | null;
       invoiceIdInvalid: boolean;
+      /** 事件对象的币种（小写 ISO）；缺 = 事件没带——只进告警文案，记账不读它 */
+      currency: string | null;
       receivedAt: Date;
       eventType: string;
     }
-  | { kind: "unparsable"; reason: string }
+  | {
+      kind: "payment_failed";
+      /** 幂等键：payment_intent ?? 对象 id——同一笔尝试的重发归一到同一把告警键 */
+      externalId: string;
+      /** 我们的有效锚点；null = 不是本系统的尝试（不告警，ack 了事——老裁决） */
+      invoiceId: string | null;
+      invoiceIdInvalid: boolean;
+      /** "card" / "bank account" / 渠道原词 / "unknown method"（老系统同款读法） */
+      method: string;
+      /** Stripe 给的拒绝理由（code — decline_code — message，削到定长） */
+      reason: string;
+      amountCents: number | null;
+      currency: string | null;
+      occurredAt: Date;
+      eventType: string;
+    }
+  | {
+      kind: "unparsable";
+      reason: string;
+      /** 读得出多少算多少：告警的事实半边（全 null = 信封形状都读不出，无从告警） */
+      externalId: string | null;
+      grossCents: number | null;
+      currency: string | null;
+      invoiceId: string | null;
+    }
   | { kind: "ignored" };
 
 /**
@@ -300,44 +329,123 @@ function normalizeMetadata(object: Record<string, unknown>): Record<string, unkn
     : {};
 }
 
+function normalizeCurrency(object: Record<string, unknown>): string | null {
+  return typeof object.currency === "string" && object.currency !== "" ? object.currency : null;
+}
+
+/** externalId = payment_intent ?? object.id（事件对象自身：cs_… / pi_…）。信封的
+ * event.id 不行——同一笔钱会发多个事件（completed + succeeded），幂等键必须在
+ * 对象上，重放才归一到同一行 */
+function normalizeExternalId(object: Record<string, unknown>): string | null {
+  const intentCandidate = object.payment_intent;
+  const objectCandidate = object.id;
+  return typeof intentCandidate === "string" && intentCandidate !== ""
+    ? intentCandidate
+    : typeof objectCandidate === "string" && objectCandidate !== ""
+      ? objectCandidate
+      : null;
+}
+
+// ── 失败尝试的事实读法（payment_failed；老系统 paymentMethodLabel/
+// paymentRefusalReason 的移植，BUG-774 的告警面）────────────────────────────
+
+/** "bank account" / "card" / 渠道原词——职员嘴里的轨道名（老系统同款映射） */
+function paymentMethodLabel(object: Record<string, unknown>): string {
+  const error = object.last_payment_error;
+  const errorRecord = typeof error === "object" && error !== null ? (error as Record<string, unknown>) : {};
+  const paymentMethod = errorRecord.payment_method;
+  const methodRecord =
+    typeof paymentMethod === "object" && paymentMethod !== null ? (paymentMethod as Record<string, unknown>) : {};
+  const fromError = methodRecord.type;
+  const types = object.payment_method_types;
+  const fromSession = Array.isArray(types) && typeof types[0] === "string" ? types[0] : "";
+  const type = typeof fromError === "string" && fromError !== "" ? fromError : fromSession;
+  if (type === "us_bank_account") return "bank account";
+  if (type === "card") return "card";
+  return type === "" ? "unknown method" : type;
+}
+
+/** Stripe 自己的拒绝词：`code — decline_code — message`，有啥读啥（老系统同款）。
+ * 定长收口：告警 payload 不是 Stripe 的日志归档，500 字符装得下任何人话理由。 */
+const PAYMENT_FAILURE_REASON_MAX_LENGTH = 500;
+
+function paymentRefusalReason(object: Record<string, unknown>): string {
+  const error = object.last_payment_error;
+  const errorRecord = typeof error === "object" && error !== null ? (error as Record<string, unknown>) : {};
+  const parts = [errorRecord.code, errorRecord.decline_code, errorRecord.message].filter(
+    (part): part is string => typeof part === "string" && part.trim() !== "",
+  );
+  const reason = parts.length > 0 ? parts.join(" — ") : "Stripe gave no reason";
+  return reason.length > PAYMENT_FAILURE_REASON_MAX_LENGTH
+    ? `${reason.slice(0, PAYMENT_FAILURE_REASON_MAX_LENGTH)}…`
+    : reason;
+}
+
+/** 失败尝试的金额：pi 对象带 amount；session 对象带 amount_total。读不出 = null */
+function attemptAmountCents(object: Record<string, unknown>): number | null {
+  const candidates = [object.amount, object.amount_total];
+  for (const candidate of candidates) {
+    if (typeof candidate === "number" && Number.isInteger(candidate) && candidate >= 0) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
+// 老系统 FEAT-802/BUG-774 的两个失败事件：银行借记提交后被银行打回（票还欠着）
+// 与支付尝试被拒/被风控拦下（分文未扣）。带我们锚点的才报（老裁决原文：
+// only attempts that carry our invoice_id are ours to report）。
+const FAILED_ATTEMPT_EVENT_TYPES = new Set([
+  "checkout.session.async_payment_failed",
+  "payment_intent.payment_failed",
+]);
+
 export function normalizeStripeEvent(parsed: unknown): NormalizedStripeEvent {
   const envelope = stripeEventSchema.safeParse(parsed);
   if (!envelope.success) {
-    return { kind: "unparsable", reason: "event envelope shape unexpected" };
+    return { kind: "unparsable", reason: "event envelope shape unexpected", externalId: null, grossCents: null, currency: null, invoiceId: null };
   }
   const event = envelope.data;
+  const object = event.data.object;
+  if (FAILED_ATTEMPT_EVENT_TYPES.has(event.type)) {
+    const metadata = normalizeMetadata(object);
+    const { invoiceId, invalid } = normalizeInvoiceId(metadata);
+    return {
+      kind: "payment_failed",
+      externalId: normalizeExternalId(object) ?? event.id,
+      // 有钱没动的事件没有「读不出外部 id」的死路：真读不出（形状被渠道侧动过）
+      // 退回信封 id——告警键仍然稳定，重投照样归一
+      invoiceId,
+      invoiceIdInvalid: invalid,
+      method: paymentMethodLabel(object),
+      reason: paymentRefusalReason(object),
+      amountCents: attemptAmountCents(object),
+      currency: normalizeCurrency(object),
+      occurredAt: new Date(Math.min(event.created * 1000, Date.now())),
+      eventType: event.type,
+    };
+  }
   if (!PAID_EVENT_TYPES.has(event.type)) {
-    // 失败类（async_payment_failed / payment_failed）与退款类（refund.*，#240 的
-    // 流程）在此显式 no-op：没有钱进账，不该拦下投递
+    // 退款类（refund.*，#240 的流程）显式 no-op：没有钱进账，不该拦下投递
     return { kind: "ignored" };
   }
-  const object = event.data.object;
+  const metadata = normalizeMetadata(object);
+  const externalId = normalizeExternalId(object);
+  const currency = normalizeCurrency(object);
   const grossCents = normalizeAmountCents(object);
   if (grossCents === null) {
-    return { kind: "unparsable", reason: "paid event without a trustworthy integer amount" };
+    return { kind: "unparsable", reason: "paid event without a trustworthy integer amount", externalId, grossCents: null, currency, invoiceId: null };
   }
-  // externalId = payment_intent ?? object.id（事件对象自身：cs_… / pi_…）。信封的
-  // event.id 不行——同一笔钱会发多个事件（completed + succeeded），幂等键必须在
-  // 对象上，重放才归一到同一行
-  const intentCandidate = object.payment_intent;
-  const objectCandidate = object.id;
-  const externalId =
-    typeof intentCandidate === "string" && intentCandidate !== ""
-      ? intentCandidate
-      : typeof objectCandidate === "string" && objectCandidate !== ""
-        ? objectCandidate
-        : null;
   if (externalId === null) {
-    return { kind: "unparsable", reason: "paid event without an external id" };
+    return { kind: "unparsable", reason: "paid event without an external id", externalId: null, grossCents, currency, invoiceId: null };
   }
-  const metadata = normalizeMetadata(object);
+  const { invoiceId, invalid } = normalizeInvoiceId(metadata);
   // surcharge 对账（billing/surcharge.ts 四种命名拒绝）：拆不开的钱连「结清多少、
   // 费是多少」都说不清，锚不锚都一样不确认——无锚点 + 拆分成立时才走「留认领」
   const split = splitSurchargedCapture(grossCents, metadata);
   if (split === null) {
-    return { kind: "unparsable", reason: "surcharge split does not reconcile with the amount received" };
+    return { kind: "unparsable", reason: "surcharge split does not reconcile with the amount received", externalId, grossCents, currency, invoiceId };
   }
-  const { invoiceId, invalid } = normalizeInvoiceId(metadata);
   // received_at 的「不未来」不变式在这里收口：Stripe 与本机的钟差（未来的事件
   // 时刻）夹到 now，不把偏差写进台账
   const receivedAt = new Date(Math.min(event.created * 1000, Date.now()));
@@ -348,6 +456,7 @@ export function normalizeStripeEvent(parsed: unknown): NormalizedStripeEvent {
     surchargeCents: split.surchargeCents,
     invoiceId,
     invoiceIdInvalid: invalid,
+    currency,
     receivedAt,
     eventType: event.type,
   };

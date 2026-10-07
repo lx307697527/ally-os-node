@@ -120,6 +120,40 @@ function checkoutCompletedEvent(input: {
   });
 }
 
+/** 失败尝试事件的线格式（#193 剩余③）：pi 对象（payment_intent.payment_failed）
+ * 或 session 对象（checkout.session.async_payment_failed），锚点在 metadata */
+function paymentFailedEvent(input: {
+  eventType: "payment_intent.payment_failed" | "checkout.session.async_payment_failed";
+  invoiceId?: string;
+  paymentIntent?: string;
+  /** last_payment_error.payment_method.type（老系统 method 标签的来源） */
+  methodType?: "card" | "us_bank_account";
+  amountCents?: number;
+}): string {
+  const intent = input.paymentIntent ?? `pi_${randomUUID()}`;
+  const isIntent = input.eventType === "payment_intent.payment_failed";
+  return JSON.stringify({
+    id: `evt_${randomUUID()}`,
+    type: input.eventType,
+    created: Math.floor(Date.now() / 1000) - 30,
+    data: {
+      object: {
+        id: isIntent ? intent : `cs_${randomUUID()}`,
+        ...(isIntent ? {} : { payment_intent: intent }),
+        ...(input.amountCents !== undefined ? { amount: input.amountCents } : {}),
+        currency: "usd",
+        ...(input.invoiceId !== undefined ? { metadata: { invoice_id: input.invoiceId } } : {}),
+        last_payment_error: {
+          code: "card_declined",
+          ...(input.methodType === "us_bank_account" ? { decline_code: "bank_account_disabled" } : {}),
+          message: "Your card was declined.",
+          ...(input.methodType !== undefined ? { payment_method: { type: input.methodType } } : {}),
+        },
+      },
+    },
+  });
+}
+
 describe.skipIf(!databaseUrl)("stripe checkout & webhook (#193, integration)", () => {
   const dbName = `stripe_test_${String(Date.now())}_${String(process.pid)}`;
   const admin = createDb(adminUrl(databaseUrl));
@@ -134,6 +168,13 @@ describe.skipIf(!databaseUrl)("stripe checkout & webhook (#193, integration)", (
   const { db, pool } = createDb(scopedUrl);
 
   const gateway = fakeGateway();
+  // 实时「催」的记录器：告警切片（#193 剩余③）的断言面——催名单 = 真正拿到
+  // 新通知行的人，重投的既有收件人不再催
+  const notifyCalls: string[][] = [];
+  const notifyUsers = (userIds: string[]): Promise<void> => {
+    notifyCalls.push(userIds);
+    return Promise.resolve();
+  };
   const app = createApp({
     logger,
     db,
@@ -164,7 +205,7 @@ describe.skipIf(!databaseUrl)("stripe checkout & webhook (#193, integration)", (
       grantRole: () => Promise.reject(new Error("not used")),
       revokeRole: () => Promise.reject(new Error("not used")),
     },
-    notifyUsers: () => Promise.resolve(),
+    notifyUsers,
     stripe: channel(gateway.gateway),
     paypal: undefined,
   });
@@ -235,7 +276,9 @@ describe.skipIf(!databaseUrl)("stripe checkout & webhook (#193, integration)", (
   beforeEach(async () => {
     await db.execute(sql`truncate table ${schema.payments}, ${schema.invoiceLines}, ${schema.invoices} cascade`);
     await db.execute(sql`truncate table ${schema.auditEvents}`);
+    await db.execute(sql`truncate table ${schema.notifications} cascade`);
     gateway.state.calls = [];
+    notifyCalls.length = 0;
   });
 
   afterAll(async () => {
@@ -668,6 +711,165 @@ describe.skipIf(!databaseUrl)("stripe checkout & webhook (#193, integration)", (
       expect((res.json as { paymentStatus: string }).paymentStatus).toBe("partial");
       const detail = await app.request(`/api/invoices/${invoice.id}`, { headers: fin });
       expect(((await detail.json()) as InvoiceJson).paidCents).toBe(50000);
+    });
+  });
+
+  describe("payment alerts (#193 剩余③: failed attempts & unbookable money)", () => {
+    async function notificationRows() {
+      return db.select().from(schema.notifications).orderBy(schema.notifications.userId);
+    }
+
+    async function notificationCount(): Promise<number> {
+      const rows = await db.select({ n: sql<string>`count(*)` }).from(schema.notifications);
+      return Number(rows[0]?.n ?? 0);
+    }
+
+    it("reports a failed card attempt to every invoices.manage holder; nothing is booked", async () => {
+      const invoice = await seedIssuedInvoice();
+      const body = paymentFailedEvent({
+        eventType: "payment_intent.payment_failed",
+        invoiceId: invoice.id,
+        methodType: "card",
+        amountCents: 150000,
+      });
+      const res = await deliverWebhook(body);
+      expect(res.status).toBe(200);
+      expect(res.json).toMatchObject({ received: true });
+
+      const rows = await notificationRows();
+      // 收件人 = fin（finance 角色）+ own（owner 角色）；sal（sales）不持 invoices.manage
+      expect(rows.map((row) => row.userId)).toEqual([USERS.fin, USERS.own].sort());
+      const first = rows[0];
+      if (first === undefined) throw new Error("notification row missing");
+      expect(first.eventType).toBe("payment.attempt_failed");
+      expect(first.aggregateType).toBe("invoice");
+      expect(first.aggregateId).toBe(invoice.id);
+      expect(first.payload).toMatchObject({
+        invoiceNumber: invoice.number,
+        method: "card",
+        channel: "stripe",
+        amountCents: 150000,
+      });
+      expect(String(first.payload.title)).toContain(`invoice ${invoice.number} is still owed`);
+      expect(String(first.payload.detail)).toContain("Your card was declined");
+
+      // 钱没动：无收款行、无审计；催名单 = 真正拿到新行的人
+      expect(await paymentRowCount()).toBe(0);
+      expect(await auditCount("payment.recorded")).toBe(0);
+      expect(notifyCalls).toEqual([[USERS.fin, USERS.own].sort()]);
+    });
+
+    it("deduplicates a redelivered failed attempt and does not re-nudge the holders", async () => {
+      const invoice = await seedIssuedInvoice();
+      const body = paymentFailedEvent({
+        eventType: "payment_intent.payment_failed",
+        invoiceId: invoice.id,
+        paymentIntent: "pi_replay_same",
+        methodType: "card",
+      });
+      expect((await deliverWebhook(body)).status).toBe(200);
+      notifyCalls.length = 0;
+      const replay = await deliverWebhook(body);
+      expect(replay.status).toBe(200);
+      expect(await notificationCount()).toBe(2); // fin + own，各一行，没有第二行
+      expect(notifyCalls).toEqual([]); // 重投的既有收件人不再催
+    });
+
+    it("labels a failed bank debit as a bank account (async_payment_failed, session object)", async () => {
+      const invoice = await seedIssuedInvoice();
+      const res = await deliverWebhook(
+        paymentFailedEvent({
+          eventType: "checkout.session.async_payment_failed",
+          invoiceId: invoice.id,
+          methodType: "us_bank_account",
+          amountCents: 200000,
+        }),
+      );
+      expect(res.status).toBe(200);
+      const rows = await notificationRows();
+      expect(rows).toHaveLength(2);
+      const first = rows[0];
+      if (first === undefined) throw new Error("notification row missing");
+      expect(first.payload).toMatchObject({ method: "bank account", channel: "stripe" });
+      expect(String(first.payload.detail)).toContain("bank account");
+    });
+
+    it("acks a failed attempt without our anchor: not ours to report (old BUG-774 ruling)", async () => {
+      await seedIssuedInvoice();
+      const res = await deliverWebhook(paymentFailedEvent({ eventType: "payment_intent.payment_failed" }));
+      expect(res.status).toBe(200);
+      expect(await notificationCount()).toBe(0);
+      expect(notifyCalls).toEqual([]);
+    });
+
+    it("tells finance about money stuck on a draft invoice; the redelivery adds no rows", async () => {
+      const draft = await seedDraftInvoice();
+      const body = checkoutCompletedEvent({ invoiceId: draft.id, amountCents: 20000 });
+
+      const refused = await deliverWebhook(body);
+      expect(refused.status).toBe(502);
+      expect((refused.json as { error: string }).error).toBe("not_issued");
+      const rows = await notificationRows();
+      expect(rows.map((row) => row.userId)).toEqual([USERS.fin, USERS.own].sort());
+      const first = rows[0];
+      if (first === undefined) throw new Error("notification row missing");
+      expect(first.eventType).toBe("payment.unbookable");
+      expect(first.payload).toMatchObject({ reasonCode: "not_issued", invoiceNumber: draft.number, amountCents: 20000 });
+      expect(notifyCalls).toEqual([[USERS.fin, USERS.own].sort()]);
+
+      // 重投：同一把 dedupe_key，零新行、零再催，响应照旧 502
+      notifyCalls.length = 0;
+      expect((await deliverWebhook(body)).status).toBe(502);
+      expect(await notificationCount()).toBe(2);
+      expect(notifyCalls).toEqual([]);
+
+      // 财务确认后重投记账成功：钱的事实闭环，且不产生新告警
+      const confirmed = await app.request(`/api/invoices/${draft.id}/confirm`, { method: "POST", headers: fin });
+      expect(confirmed.status).toBe(200);
+      const booked = await deliverWebhook(body);
+      expect(booked.status).toBe(200);
+      expect((booked.json as { paymentStatus: string }).paymentStatus).toBe("paid");
+      expect(await paymentRowCount()).toBe(1);
+      expect(await notificationCount()).toBe(2);
+    });
+
+    it("tells finance about money for an invoice that does not exist, and about a voided one", async () => {
+      const unknownId = randomUUID();
+      const unknown = await deliverWebhook(checkoutCompletedEvent({ invoiceId: unknownId, amountCents: 100 }));
+      expect(unknown.status).toBe(502);
+      let rows = await notificationRows();
+      expect(rows.map((row) => row.aggregateId)).toEqual([unknownId, unknownId]);
+      expect(rows[0]?.payload).toMatchObject({ reasonCode: "invoice_not_found" });
+
+      const draft = await seedDraftInvoice();
+      await app.request(`/api/invoices/${draft.id}/void`, { method: "POST", headers: fin });
+      const onVoid = await deliverWebhook(checkoutCompletedEvent({ invoiceId: draft.id, amountCents: 20000 }));
+      expect(onVoid.status).toBe(502);
+      rows = await notificationRows();
+      // 两笔不同的钱：unknown 一行/人 + voided 一行/人 = 4 行
+      expect(rows).toHaveLength(4);
+      const voided = rows.find((row) => row.aggregateId === draft.id);
+      expect(voided?.payload).toMatchObject({ reasonCode: "invoice_voided", invoiceNumber: draft.number });
+      expect(await paymentRowCount()).toBe(0);
+    });
+
+    it("tells finance about a surcharge capture that does not reconcile (amount is a fact)", async () => {
+      const invoice = await seedIssuedInvoice();
+      const res = await deliverWebhook(
+        checkoutCompletedEvent({
+          invoiceId: invoice.id,
+          amountCents: 155000,
+          split: { principalCents: 150000, surchargeCents: 5850 },
+        }),
+      );
+      expect(res.status).toBe(502);
+      const rows = await notificationRows();
+      expect(rows).toHaveLength(2);
+      const first = rows[0];
+      if (first === undefined) throw new Error("notification row missing");
+      expect(first.payload).toMatchObject({ reasonCode: "unparsable_event", amountCents: 155000, invoiceNumber: invoice.number });
+      expect(String(first.payload.detail)).toContain("surcharge split does not reconcile");
+      expect(await paymentRowCount()).toBe(0);
     });
   });
 });
