@@ -246,6 +246,9 @@ export async function applyTransition(db: Db, cmd: TransitionCommand): Promise<T
       currentState: transition.target,
       stateEnteredAt: enteredAt,
       stateDueAt: dueAt,
+      // 超时提醒台账按状态占用计时：新占用的状态从未被催过，进状态即重置
+      // （#220 投递切片；与 stateEnteredAt/stateDueAt 同一次写入，不可分离）
+      stateReminderAt: null,
     })
     .where(
       and(eq(schema.workflowInstances.id, instance.id), eq(schema.workflowInstances.currentState, instance.currentState)),
@@ -408,9 +411,9 @@ export interface DueInstanceRow {
 
 /**
  * 超时扫描（#220「停留超过设定时间时提醒负责人」的内核半边）：stateDueAt 在
- * 每次进入状态时按快照一次算好，扫描是纯索引查询。「提醒负责人怎么送」不是
- * 内核的裁决——属主域给不出负责人之前，本函数只对内暴露（未来定时任务 +
- * #116 通知渠道的第一个接缝），不设路由。
+ * 每次进入状态时按快照一次算好，扫描是纯索引查询。投递半边已随 #116 渠道层
+ * 落在 worker（`workflow-timeout-reminders`，worker 不跨 app 依赖、对实例行做
+ * 自己的窄读取投影），本函数是 api 侧的内核读法（测试与未来 api 内消费），不设路由。
  */
 export async function findDueInstances(db: Db, opts: { now: Date; limit: number }): Promise<DueInstanceRow[]> {
   const rows = await db

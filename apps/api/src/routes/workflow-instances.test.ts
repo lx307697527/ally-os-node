@@ -292,6 +292,45 @@ describe.skipIf(!databaseUrl)("workflow instances (#220, integration)", () => {
     expect(due).toEqual([]);
   });
 
+  it("超时提醒台账按状态占用计时：推进随新占用重置 (#220 投递切片)", async () => {
+    const owner = await signUpVerified();
+    await grantRole(owner, "owner");
+    const cookie = await signInAs(owner);
+    await createTemplate(cookie);
+    const subjectId = fixtureSubject({ viewers: [owner] });
+    expect(
+      await startWorkflow(db, { subjectType: SUBJECT_TYPE, subjectId, startedById: owner }),
+    ).toMatchObject({ status: "started" });
+
+    // 旧占用被催过的台账痕迹（直接盖章模拟上一轮扫描）
+    await db
+      .update(schema.workflowInstances)
+      .set({ stateReminderAt: new Date(Date.now() - 25 * 3_600_000) })
+      .where(eq(schema.workflowInstances.subjectId, subjectId));
+
+    // 推进后新占用从未被催过 → 台账随进状态一次重置（与 stateEnteredAt/stateDueAt
+    // 同一次写入）；contacted 没配超时 → 无提醒语义
+    expect(
+      await applyTransition(db, {
+        subjectType: SUBJECT_TYPE,
+        subjectId,
+        actorId: owner,
+        actorRoles: ["owner"],
+        event: "CONTACT",
+      }),
+    ).toMatchObject({ status: "applied", to: "contacted" });
+
+    const rows = await db
+      .select({
+        reminderAt: schema.workflowInstances.stateReminderAt,
+        dueAt: schema.workflowInstances.stateDueAt,
+      })
+      .from(schema.workflowInstances)
+      .where(eq(schema.workflowInstances.subjectId, subjectId));
+    expect(rows[0]?.reminderAt).toBeNull();
+    expect(rows[0]?.dueAt).toBeNull();
+  });
+
   it("resolves templates by product type first and falls back to the default", async () => {
     const owner = await signUpVerified();
     await grantRole(owner, "owner");

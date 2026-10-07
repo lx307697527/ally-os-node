@@ -643,6 +643,11 @@ export const workflowInstances = pgTable(
     // stateDueAt 由推进方按快照里的 timeoutAfterHours 一次性算好，到期扫描不碰 jsonb
     stateEnteredAt: timestamp("state_entered_at", { withTimezone: true }).notNull().defaultNow(),
     stateDueAt: timestamp("state_due_at", { withTimezone: true }),
+    // 超时提醒台账（#220 投递切片）：当前这次状态占用最近一次被催的时刻。推进方
+    // 重置为 null（与 stateEnteredAt/stateDueAt 同一次写入）——计时按状态占用算，
+    // 与 approval_requests.last_reminder_* 同一裁法：台账在行上，盖章带 currentState
+    // 条件，扫描期间被推进的不催、重试与重扫不重复投递
+    stateReminderAt: timestamp("state_reminder_at", { withTimezone: true }),
     startedById: uuid("started_by_id").references(() => authUser.id, { onDelete: "set null" }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },

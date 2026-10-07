@@ -10,6 +10,7 @@ import { notificationsJobs } from "./notifications/index.ts";
 import { rulesJobs } from "./rules/index.ts";
 import { registerJobs, type JobFailureAlerter } from "./runner.ts";
 import { createSlackAlerter, formatJobFailure } from "./slack.ts";
+import { workflowJobs } from "./workflow/index.ts";
 
 const env = parseEnv(process.env);
 const logger = pino({ level: env.LOG_LEVEL });
@@ -49,6 +50,7 @@ await registerJobs(
     ...approvalJobs({ db, pool, logger }),
     ...rulesJobs({ db, pool, mailer, webAppUrl: env.WEB_APP_URL, logger }),
     ...notificationsJobs({ db, mailer, webAppUrl: env.WEB_APP_URL, logger }),
+    ...workflowJobs({ db, pool, logger }),
   ],
   {
     logger,

@@ -107,6 +107,17 @@ real destination and there is no invoice page (#192 remaining ④) — the paylo
 carries `title`/`detail` facts for the honest fallback face (same ruling as
 `approval.completed`), and the email digest reads the same facts.
 
+Worker-side producer (#220 timeout slice, 2026-10-08): the workflow timeout scan
+(`workflow-timeout-reminders`, hourly at :50) inserts `workflow.state_overdue` rows
+for the responsible people of instances stuck past their state's `timeoutAfterHours`
+— the starter plus the holders of roles named on the current state's outbound
+transitions (unrestricted transitions recruit nobody; that would page all staff).
+The delivery ledger lives on the instance row (`state_reminder_at`, reset by every
+transition), so the reconcile scan is idempotent — the same shape as the approval
+reminders. No carrier page for workflow instances exists yet, so like the payment
+alerts it stays OFF the bell whitelist and carries `title`/`detail` facts for the
+honest fallback face; the email digest reads the same facts.
+
 Task-domain ruling (#113, 2026-10-07): the follower fan-out exists for the
 status transition (`task.status_changed`, facts `taskTitle`/`actorName`/`from`/`to`);
 **reassignment has no follower event, by structure** — a reassignment removes the
