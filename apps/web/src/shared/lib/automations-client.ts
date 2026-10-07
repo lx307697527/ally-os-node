@@ -439,6 +439,7 @@ export type ActionDraft =
   | { type: "create_task"; title: string; description: string; assigneeId: string; dueInHours: string }
   | { type: "notify"; userIdsText: string; title: string; body: string }
   | { type: "send_email"; userIdsText: string; subject: string; body: string }
+  | { type: "send_webhook"; url: string; method: string; headersText: string; bodyText: string }
   | { type: "json"; json: string };
 
 export const CONDITION_OPS = ["eq", "ne", "in", "exists"] as const;
@@ -513,6 +514,19 @@ function actionToDraft(raw: unknown): ActionDraft {
       userIdsText: Array.isArray(config.userIds) ? config.userIds.map((id) => String(id)).join("\n") : "",
       subject: typeof config.subject === "string" ? config.subject : "",
       body: typeof config.body === "string" ? config.body : "",
+    };
+  }
+  if (raw.type === "send_webhook") {
+    const headers = isRecord(config.headers) ? config.headers : {};
+    return {
+      type: "send_webhook",
+      url: typeof config.url === "string" ? config.url : "",
+      method: typeof config.method === "string" ? config.method : "POST",
+      headersText: Object.entries(headers)
+        .filter((entry): entry is [string, string] => typeof entry[1] === "string")
+        .map(([name, value]) => `${name}: ${value}`)
+        .join("\n"),
+      bodyText: "body" in config && config.body !== undefined ? jsonText(config.body) : "",
     };
   }
   // A type this build has no editor for keeps its JSON verbatim.
@@ -671,6 +685,38 @@ export function buildActions(drafts: ActionDraft[]): BuildResult<unknown[]> {
         return { ok: false, error: "Every send-email action needs a body." };
       }
       built.push({ type: "send_email", config: { userIds, subject, body } });
+    } else if (draft.type === "send_webhook") {
+      const url = draft.url.trim();
+      if (url === "") {
+        return { ok: false, error: "Every webhook action needs an https URL on a public host — private and loopback targets are refused." };
+      }
+      const headers: Record<string, string> = {};
+      for (const line of draft.headersText.split("\n").map((entry) => entry.trim()).filter((entry) => entry !== "")) {
+        const colon = line.indexOf(":");
+        if (colon <= 0) {
+          return { ok: false, error: "Webhook headers are one per line as \"Name: Value\"." };
+        }
+        headers[line.slice(0, colon).trim()] = line.slice(colon + 1).trim();
+      }
+      const method = draft.method === "PUT" || draft.method === "PATCH" ? draft.method : "POST";
+      const hasBody = draft.bodyText.trim() !== "";
+      let body: unknown;
+      if (hasBody) {
+        try {
+          body = JSON.parse(draft.bodyText);
+        } catch {
+          return { ok: false, error: "The webhook body is not valid JSON." };
+        }
+      }
+      built.push({
+        type: "send_webhook",
+        config: {
+          url,
+          method,
+          ...(Object.keys(headers).length > 0 ? { headers } : {}),
+          ...(hasBody ? { body } : {}),
+        },
+      });
     } else {
       let parsed: unknown;
       try {

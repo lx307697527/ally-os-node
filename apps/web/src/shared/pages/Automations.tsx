@@ -178,6 +178,27 @@ function ActionCard({ action }: { action: unknown }) {
       </div>
     );
   }
+  if (record.type === "send_webhook") {
+    const url = typeof config.url === "string" ? config.url : "";
+    const method = typeof config.method === "string" ? config.method : "POST";
+    const headerCount =
+      typeof config.headers === "object" && config.headers !== null && !Array.isArray(config.headers)
+        ? Object.keys(config.headers).length
+        : 0;
+    const hasBody = config.body !== undefined;
+    return (
+      <div className="rounded-control border border-line p-3" data-testid="automations-action-send-webhook">
+        <Paragraph className="font-medium">
+          Webhook — {method} <span className="font-mono">{url}</span>
+        </Paragraph>
+        <Paragraph className="mt-1 text-ui-sm text-ink-soft">
+          {headerCount} header{headerCount === 1 ? "" : "s"}
+          {hasBody ? " · JSON body as saved (no templating)" : " · no body"} — https public targets
+          only, delivery is at-least-once.
+        </Paragraph>
+      </div>
+    );
+  }
   return (
     <div className="rounded-control border border-line p-3" data-testid="automations-action-unknown">
       <Paragraph className="text-ui-sm text-ink-soft">
@@ -506,12 +527,14 @@ function SpecEditor({ draft, onChange, prefix }: SpecEditorProps): ReactElement 
                     if (type === "create_task") updateAction(index, emptyActionDraft());
                     else if (type === "notify") updateAction(index, { type: "notify", userIdsText: "", title: "", body: "" });
                     else if (type === "send_email") updateAction(index, { type: "send_email", userIdsText: "", subject: "", body: "" });
+                    else if (type === "send_webhook") updateAction(index, { type: "send_webhook", url: "", method: "POST", headersText: "", bodyText: "" });
                     else updateAction(index, { type: "json", json: "" });
                   }}
                 >
                   <option value="create_task">Create task</option>
                   <option value="notify">Notify (in-app bell)</option>
                   <option value="send_email">Send email</option>
+                  <option value="send_webhook">Webhook (outbound)</option>
                   <option value="json">Raw JSON — a type this build does not draw</option>
                 </select>
               </label>
@@ -654,6 +677,68 @@ function SpecEditor({ draft, onChange, prefix }: SpecEditorProps): ReactElement 
                     value={action.body}
                     onChange={(e) => {
                       updateAction(index, { ...action, body: e.target.value });
+                    }}
+                  />
+                </label>
+              </div>
+            ) : null}
+            {action.type === "send_webhook" ? (
+              <div className="mt-2 grid gap-2">
+                <Paragraph className="text-ui-sm text-ink-soft">
+                  The target must be https on a public host — loopback, private ranges, and
+                  *.local / *.internal names are refused at save time and re-checked (DNS included,
+                  every resolved address) at send time. Delivery is at-least-once: a timeout or 5xx
+                  after the receiver processed the request means the same payload may arrive twice.
+                </Paragraph>
+                <label className="text-ui-sm text-ink">
+                  URL (https, public host)
+                  <Input
+                    className="mt-1 block w-full font-mono"
+                    data-testid={`automations-${prefix}-action-webhook-url`}
+                    value={action.url}
+                    onChange={(e) => {
+                      updateAction(index, { ...action, url: e.target.value });
+                    }}
+                  />
+                </label>
+                <label className="text-ui-sm text-ink">
+                  Method
+                  <select
+                    className={CONTROL_CLASS}
+                    data-testid={`automations-${prefix}-action-webhook-method`}
+                    value={action.method}
+                    onChange={(e) => {
+                      updateAction(index, { ...action, method: e.target.value });
+                    }}
+                  >
+                    <option value="POST">POST</option>
+                    <option value="PUT">PUT</option>
+                    <option value="PATCH">PATCH</option>
+                  </select>
+                </label>
+                <label className="text-ui-sm text-ink">
+                  Headers — one per line as &quot;Name: Value&quot; (optional, at most 10; secrets
+                  here live in the rule config and never appear in run errors)
+                  <textarea
+                    className="mt-1 block w-full rounded-control border border-line bg-card p-[var(--pad-control)] font-mono text-ui text-ink"
+                    rows={2}
+                    data-testid={`automations-${prefix}-action-webhook-headers`}
+                    value={action.headersText}
+                    onChange={(e) => {
+                      updateAction(index, { ...action, headersText: e.target.value });
+                    }}
+                  />
+                </label>
+                <label className="text-ui-sm text-ink">
+                  Body — JSON (optional; sent as application/json, exactly as saved — no
+                  templating)
+                  <textarea
+                    className="mt-1 block w-full rounded-control border border-line bg-card p-[var(--pad-control)] font-mono text-ui text-ink"
+                    rows={4}
+                    data-testid={`automations-${prefix}-action-webhook-body`}
+                    value={action.bodyText}
+                    onChange={(e) => {
+                      updateAction(index, { ...action, bodyText: e.target.value });
                     }}
                   />
                 </label>
