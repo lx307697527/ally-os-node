@@ -239,6 +239,13 @@
       "when": 1791400526801,
       "tag": "0033_great_giant_girl",
       "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1791407759744,
+      "tag": "0034_daily_doctor_spectrum",
+      "breakpoints": true
     }
   ]
 }

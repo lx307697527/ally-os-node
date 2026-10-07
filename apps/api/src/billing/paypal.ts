@@ -156,7 +156,15 @@ export type NormalizedPayPalEvent =
        * 不是本系统建的订单（或不认识它的形状），正确动作是不 capture 并 ack */
       invoiceId: string | null;
     }
-  | { kind: "unparsable"; reason: string }
+  | {
+      kind: "unparsable";
+      reason: string;
+      /** 读得出多少算多少：站内告警的事实半边（#193 剩余③；全 null = 资源形状
+       * 都读不出，无从告警）。capture id 读得出的就带上——重投的告警靠它去重 */
+      externalId: string | null;
+      amountCents: number | null;
+      invoiceId: string | null;
+    }
   | { kind: "ignored" };
 
 /**
@@ -185,12 +193,12 @@ function receivedAtOf(createTime: string | undefined): Date {
 function normalizeCaptureCompleted(eventType: string, resource: unknown): NormalizedPayPalEvent {
   const parsed = captureResourceSchema.safeParse(resource);
   if (!parsed.success) {
-    return { kind: "unparsable", reason: "capture resource shape unexpected" };
+    return { kind: "unparsable", reason: "capture resource shape unexpected", externalId: null, amountCents: null, invoiceId: null };
   }
   const capture = parsed.data;
   const grossCents = payPalAmountToCents(capture.amount.value);
   if (grossCents === null) {
-    return { kind: "unparsable", reason: "capture event without a trustworthy decimal amount" };
+    return { kind: "unparsable", reason: "capture event without a trustworthy decimal amount", externalId: capture.id, amountCents: null, invoiceId: null };
   }
   const customId = capture.custom_id;
   if (customId === undefined || customId.trim() === "") {
@@ -209,14 +217,14 @@ function normalizeCaptureCompleted(eventType: string, resource: unknown): Normal
   }
   const carrier = parseCustomId(customId);
   if (carrier === null) {
-    return { kind: "unparsable", reason: "custom_id carrier does not parse" };
+    return { kind: "unparsable", reason: "custom_id carrier does not parse", externalId: capture.id, amountCents: grossCents, invoiceId: null };
   }
   const { invoiceId, invalid } = invoiceIdOf(carrier.invoiceId);
   // 四种命名拒绝在 splitSurchargedCapture 里（surcharge.ts 文件头）：拆不开的
   // 钱连「结清多少、费是多少」都说不清，锚不锚都一样不确认（502）
   const split = splitSurchargedCapture(grossCents, carrier.declaration);
   if (split === null) {
-    return { kind: "unparsable", reason: "surcharge split does not reconcile with the amount captured" };
+    return { kind: "unparsable", reason: "surcharge split does not reconcile with the amount captured", externalId: capture.id, amountCents: grossCents, invoiceId };
   }
   return {
     kind: "payment",
@@ -264,7 +272,7 @@ function normalizeOrderApproved(resource: unknown): NormalizedPayPalEvent {
 export function normalizePayPalEvent(parsed: unknown): NormalizedPayPalEvent {
   const envelope = payPalEventSchema.safeParse(parsed);
   if (!envelope.success) {
-    return { kind: "unparsable", reason: "event envelope shape unexpected" };
+    return { kind: "unparsable", reason: "event envelope shape unexpected", externalId: null, amountCents: null, invoiceId: null };
   }
   const eventType = envelope.data.event_type;
   if (eventType === "PAYMENT.CAPTURE.COMPLETED") {

@@ -92,6 +92,21 @@ inside the business transaction and then call
 contracted to never reject, so a realtime outage degrades to the poll, never fails the
 business request.
 
+**Webhook-face producers** (#193 remaining-③ slice, 2026-10-08): the payment
+channels alert finance (`invoices.manage` holders) via billing/payment-alerts.ts —
+`payment.attempt_failed` (a customer's payment attempt failed; nothing charged,
+invoice still owed) and `payment.unbookable` (money arrived but could not be
+recorded — the 502 paths of both webhook endpoints). One discipline separates
+them from the business producers: their facts REDELIVER (providers retry
+non-2xx), so each row carries a `dedupe_key` and the `(user_id, dedupe_key)`
+partial unique index (migration 0034, expand-only) turns a redelivered fact into
+a no-op — at most one row per person per fact, the structural answer to retry
+spam. The realtime nudge goes only to users who actually got a NEW row.
+Deliberately NOT in the bell whitelist yet: the href-parity guard requires a
+real destination and there is no invoice page (#192 remaining ④) — the payload
+carries `title`/`detail` facts for the honest fallback face (same ruling as
+`approval.completed`), and the email digest reads the same facts.
+
 Task-domain ruling (#113, 2026-10-07): the follower fan-out exists for the
 status transition (`task.status_changed`, facts `taskTitle`/`actorName`/`from`/`to`);
 **reassignment has no follower event, by structure** — a reassignment removes the

@@ -238,7 +238,8 @@ null,detail 带 `eventType`)一个 commit——「钱记了、审计没了」的
 `risk_note` 同文)。老系统对照 FEAT-581(supabase/functions/stripe-webhook 的
 splitSurchargedCapture + billing.card_payment_policy):对账纪律原样带过来,
 费率存储换规则注册表(#233 的 registry_rules,不再单设 policy 表),告警分流
-(Sentry/Slack)刻意不带——失败付款站内提醒随通知域进场。
+(Sentry/Slack)刻意不带——失败付款站内提醒随通知域进场(已落地,见下
+「失败付款与记不了的站内告警」节)。
 
 ### 三个裁决
 
@@ -344,19 +345,58 @@ webhook 响应契约与 Stripe 渠道同构:200 记账成功/幂等重放/无关
 `invoice.payment_link_created` 沿用(detail 带 `provider: "paypal"` 与 `orderId`,
 Stripe 半边带 `sessionId`——同一词条记两个渠道的发链动作)。
 
+## 已落地:失败付款与记不了的站内告警(#193 剩余③切片)
+
+老系统对照:stripe-webhook 的 Sentry/Slack 分流——银行借记失败(FEAT-802)、
+支付尝试被拒(BUG-774:2026-10-02 一笔 $4,000 的银行借记被拦,唯一的发现渠道
+是客户自己开口)、附加费拆分对不上(FEAT-581)三类告警,Sentry fingerprint 按
+externalId 去重。新系统的告警面是**通知域**(既定裁法:外部聊天分流刻意不带),
+告警即铃铛一行,收件人 = `invoices.manage` 持有者(owner/finance 角色默认 +
+user_permission 个人授权)。
+
+两类告警(billing/payment-alerts.ts,两渠道共用):
+
+1. **支付尝试失败**(`payment.attempt_failed`):新消费 `payment_intent.payment_failed`
+   与 `checkout.session.async_payment_failed`——钱没动、票还欠着,客户重试或换
+   渠道之前财务该知道。只报带我们有效锚点的尝试(老裁决原文:only attempts that
+   carry our invoice_id are ours to report);payload 带方式标签(card /
+   bank account / 渠道原词)、Stripe 的拒绝词(code — decline_code — message,
+   500 字符收口)、金额与票号。**告警是这个事件的全部事实**:写入成功才 200;
+   写不进 502 让 Stripe 重投(dedupe 保幂等)——绝不 ack 一条没人看见的失败。
+2. **钱到了记不了**(`payment.unbookable`):两个 webhook 的每一条 502 路径
+   (not_issued / invoice_voided / invoice_not_found / unparsable_event /
+   capture_failed)先落告警再答 502。502 本身让 provider 重投等财务确认(R-12-6
+   人的闸门),但「有笔钱在等处理」必须有人知道——重投只会重试,不会通知。尽力面:
+   告警写不进只记日志,响应照旧 502,重投会重试告警写入。无锚点入账
+   (metadata/custom_id 缺席)维持 200 ack 不告警——认领面随 #181 进场。
+
+**幂等靠结构**:notifications.dedupe_key(0034,expand-only,注释预告的
+「老 (user_id, outbox_id) 唯一约束一并补列」)+ `(user_id, dedupe_key)` 部分唯一
+索引。键由事实拼出(`pay:attempt-failed:<渠道>:<外部id>` /
+`pay:unbookable:<渠道>:<外部id>:<拒绝码>`),provider 对同一事实的重投被
+onConflictDoNothing 吃掉 = 「已提醒过」——每条事实对每人是至多一行,与 payments
+的 source 唯一索引同一「由结构保证,不靠先查后插」纪律。拒绝码在键里:状态演变
+(草稿→作废)是新事实,值得新提醒。实时「催」只催真正拿到新行的人。
+
+**展示面**:这两种事件类型刻意不进 web 铃铛白名单——href parity 测试强制白名单
+事件有真实去处,而发票页(#192 剩余④)未落地;payload 携带 title/detail 事实走
+兜底面(approval.completed 同款裁决:诚实的占位,有了承载页再进白名单)。邮件
+摘要的 payloadDetail 读 title/detail,自动带走。PayPal 的失败尝试类事件
+(DECLINED/DENIED)维持既有 no-op 裁决:其载荷形状无老系统参照,不猜 provider
+载荷;告警面先落钱的事实,渠道侧失败事件随真实载荷样例进场。
+
 ## 剩余(#192 保持 open,Part of #192)
 
 1. **触发点接线**(属主域各自进场):打样/调味费(#238)、定金(#231,比例
    50%–100%,低于 50% 走财务审批 R-08-2——审批线 #221 已可表达)、每批尾款
    (完工 + 实际产量 + 运营确认 R-11-6;结算量 = min(实际, 报价×110%),少产
    超 10% 拦开票 R-11-4)——调 `createDraftInvoice` 传 source 幂等键;
-2. Stripe webhook 已落地(#193:checkout 链接 + 验签消费 + 幂等记账 + 附加费
-   R-12-2/3 拆分对账);PayPal 渠道已落地(同一接缝,活体验签,webhook 驱动
-   capture,读 `payments.paypal_surcharge_pct`,拆分对账与记账路径零改动复用);
-   剩失败付款/拒付的站内提醒(老系统 Sentry/Slack 分流在新系统走通知域;附加费
-   对账拒绝的可见性同批进场);
+2. Stripe 与 PayPal 渠道均已落地(checkout 链接/订单 + 验签消费 + 幂等记账 +
+   附加费 R-12-2/3 拆分对账 + 失败付款/对账拒绝的站内告警,#193 剩余③);
+   剩真渠道测试环境的端到端(部署面:webhook URL + 密钥)与客户门户的发起面
+   (#186);
 3. 到期前提醒(R-12-7,渠道层 + due 扫描)、收款状态回写订单/批次(#241 发货
    门槛,读 `computePaymentStatus`)、QuickBooks 推送(#181,含银行流水认领)、
    第一笔款到账转正式客户(R-02-5)等收款触发业务;
 4. PDF 存档(#128 统一 PDF 服务)、分期/更正/贷项(红冲动词)、财务确认页
-   (web)。
+   (web;落地时把 payment.* 两类告警进白名单并深链)。

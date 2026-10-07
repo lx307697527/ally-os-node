@@ -220,13 +220,115 @@ describe("normalizeStripeEvent (#193)", () => {
     );
   });
 
-  it("ignores non-money events (failures, refunds, everything else)", () => {
-    expect(
-      normalizeStripeEvent(paidEvent({ id: "cs_1" }, "checkout.session.async_payment_failed")).kind,
-    ).toBe("ignored");
-    expect(normalizeStripeEvent(paidEvent({ id: "pi_1" }, "payment_intent.payment_failed")).kind).toBe("ignored");
+  it("ignores non-money events (refunds, everything else)", () => {
     expect(normalizeStripeEvent(paidEvent({ id: "re_1" }, "refund.created")).kind).toBe("ignored");
-    expect(normalizeStripeEvent(paidEvent({ id: "cs_1" }, "customer.subscription.updated")).kind).toBe("ignored");
+    expect(normalizeStripeEvent(paidEvent({ id: "cs_1" }, "customer.subscription.updated")).kind).toBe(
+      "ignored",
+    );
+  });
+
+  it("normalizes a failed card attempt: method label, refusal reason, amount, anchor (#193 剩余③)", () => {
+    const event = normalizeStripeEvent(
+      paidEvent(
+        {
+          id: "pi_fail_1",
+          amount: 150000,
+          currency: "usd",
+          metadata: { invoice_id: invoiceId },
+          last_payment_error: {
+            code: "card_declined",
+            decline_code: "generic_decline",
+            message: "Your card was declined.",
+            payment_method: { type: "card" },
+          },
+        },
+        "payment_intent.payment_failed",
+      ),
+    );
+    expect(event).toMatchObject({
+      kind: "payment_failed",
+      externalId: "pi_fail_1",
+      invoiceId,
+      invoiceIdInvalid: false,
+      method: "card",
+      reason: "card_declined — generic_decline — Your card was declined.",
+      amountCents: 150000,
+      currency: "usd",
+    });
+  });
+
+  it("labels a failed bank debit as a bank account and pins the session's intent as the id", () => {
+    const event = normalizeStripeEvent(
+      paidEvent(
+        {
+          id: "cs_bank",
+          payment_intent: "pi_bank",
+          amount_total: 200000,
+          last_payment_error: {
+            code: "charge_exceeds_source_limit",
+            payment_method: { type: "us_bank_account" },
+          },
+        },
+        "checkout.session.async_payment_failed",
+      ),
+    );
+    expect(event).toMatchObject({
+      kind: "payment_failed",
+      externalId: "pi_bank",
+      method: "bank account",
+      reason: "charge_exceeds_source_limit",
+      amountCents: 200000,
+    });
+  });
+
+  it("falls back gracefully on a failed attempt Stripe explains nothing about", () => {
+    const event = normalizeStripeEvent(
+      paidEvent({ id: "pi_mute" }, "payment_intent.payment_failed"),
+    );
+    expect(event).toMatchObject({
+      kind: "payment_failed",
+      method: "unknown method",
+      reason: "Stripe gave no reason",
+      amountCents: null,
+    });
+  });
+
+  it("reports a failed attempt without an object id under the envelope id (dedupe stays stable)", () => {
+    const event = normalizeStripeEvent(paidEvent({}, "payment_intent.payment_failed"));
+    expect(event).toMatchObject({ kind: "payment_failed", externalId: "evt_1" });
+  });
+
+  it("carries the readable facts on an unparsable paid event so the alert can speak", () => {
+    // 拆分对不上：外部 id、gross、锚点都读得出——告警的事实半边
+    const split = normalizeStripeEvent(
+      paidEvent({
+        id: "cs_split",
+        payment_intent: "pi_split",
+        amount_total: 155000,
+        amount_received: 155000,
+        currency: "usd",
+        metadata: { invoice_id: invoiceId, surcharge_amount_cents: "5850" },
+      }),
+    );
+    expect(split).toMatchObject({
+      kind: "unparsable",
+      externalId: "pi_split",
+      grossCents: 155000,
+      currency: "usd",
+      invoiceId,
+    });
+    // 金额读不出：外部 id 仍在（告警至少知道哪笔钱说不清）
+    const amount = normalizeStripeEvent(paidEvent({ id: "cs_amt", payment_intent: "pi_amt" }));
+    expect(amount).toMatchObject({ kind: "unparsable", externalId: "pi_amt", grossCents: null });
+    // 信封都读不出：全 null，无从告警
+    const garbage = normalizeStripeEvent({ nonsense: true });
+    expect(garbage).toMatchObject({
+      kind: "unparsable",
+      externalId: null,
+      grossCents: null,
+      currency: null,
+      invoiceId: null,
+    });
   });
 
   it("refuses to confirm a paid event whose amount is unreadable (fail loud, retry)", () => {

@@ -172,6 +172,12 @@ describe.skipIf(!databaseUrl)("paypal checkout & webhook (#193, integration)", (
   const { db, pool } = createDb(scopedUrl);
 
   const state = apiState();
+  // 实时「催」的记录器（#193 剩余③）：催名单 = 真正拿到新通知行的人
+  const notifyCalls: string[][] = [];
+  const notifyUsers = (userIds: string[]): Promise<void> => {
+    notifyCalls.push(userIds);
+    return Promise.resolve();
+  };
   const app = createApp({
     logger,
     db,
@@ -202,7 +208,7 @@ describe.skipIf(!databaseUrl)("paypal checkout & webhook (#193, integration)", (
       grantRole: () => Promise.reject(new Error("not used")),
       revokeRole: () => Promise.reject(new Error("not used")),
     },
-    notifyUsers: () => Promise.resolve(),
+    notifyUsers,
     stripe: undefined,
     paypal: channel(fakeApi(state)),
   });
@@ -238,7 +244,7 @@ describe.skipIf(!databaseUrl)("paypal checkout & webhook (#193, integration)", (
       grantRole: () => Promise.reject(new Error("not used")),
       revokeRole: () => Promise.reject(new Error("not used")),
     },
-    notifyUsers: () => Promise.resolve(),
+    notifyUsers,
     stripe: undefined,
     paypal: undefined,
   });
@@ -272,11 +278,13 @@ describe.skipIf(!databaseUrl)("paypal checkout & webhook (#193, integration)", (
 
   beforeEach(async () => {
     await db.execute(sql`truncate table ${schema.payments}, ${schema.invoiceLines}, ${schema.invoices} cascade`);
+    await db.execute(sql`truncate table ${schema.notifications} cascade`);
     await db.execute(sql`truncate table ${schema.auditEvents}`);
     state.orders = [];
     state.captures = [];
     state.verifyStatus = "SUCCESS";
     state.captureBehavior = "ok";
+    notifyCalls.length = 0;
   });
 
   afterAll(async () => {
@@ -342,6 +350,11 @@ describe.skipIf(!databaseUrl)("paypal checkout & webhook (#193, integration)", (
 
   async function paymentRowCount(): Promise<number> {
     const rows = await db.select({ n: sql<string>`count(*)` }).from(schema.payments);
+    return Number(rows[0]?.n ?? 0);
+  }
+
+  async function notificationCount(): Promise<number> {
+    const rows = await db.select({ n: sql<string>`count(*)` }).from(schema.notifications);
     return Number(rows[0]?.n ?? 0);
   }
 
@@ -670,6 +683,61 @@ describe.skipIf(!databaseUrl)("paypal checkout & webhook (#193, integration)", (
       });
       expect(res.status).toBe(500);
       expect(((await res.json()) as { error: string }).error).toBe("misconfigured");
+    });
+  });
+
+  describe("payment alerts (#193 剩余③: unbookable money)", () => {
+    it("tells finance about money stuck on a draft invoice; the redelivery adds no rows", async () => {
+      const draft = await seedDraftInvoice();
+      const body = captureCompletedEvent({ invoiceId: draft.id, amount: "200.00" });
+
+      const refused = await deliverWebhook(body);
+      expect(refused.status).toBe(502);
+      const rows = await db.select().from(schema.notifications).orderBy(schema.notifications.userId);
+      expect(rows.map((row) => row.userId)).toEqual([USERS.fin, USERS.own].sort());
+      const first = rows[0];
+      if (first === undefined) throw new Error("notification row missing");
+      expect(first.eventType).toBe("payment.unbookable");
+      expect(first.aggregateType).toBe("invoice");
+      expect(first.aggregateId).toBe(draft.id);
+      expect(first.payload).toMatchObject({
+        channel: "paypal",
+        reasonCode: "not_issued",
+        invoiceNumber: draft.number,
+        amountCents: 20000,
+      });
+      expect(notifyCalls).toEqual([[USERS.fin, USERS.own].sort()]);
+
+      // 重投：同一把 dedupe_key，零新行、零再催，响应照旧 502；确认后记账成功
+      notifyCalls.length = 0;
+      expect((await deliverWebhook(body)).status).toBe(502);
+      expect(await notificationCount()).toBe(2);
+      expect(notifyCalls).toEqual([]);
+      await app.request(`/api/invoices/${draft.id}/confirm`, { method: "POST", headers: fin });
+      expect((await deliverWebhook(body)).status).toBe(200);
+      expect(await paymentRowCount()).toBe(1);
+    });
+
+    it("tells finance about a capture failure after an approved order (dedupe key pins the order)", async () => {
+      const invoice = await seedIssuedInvoice();
+      const orderId = "ORDER-STUCK-1";
+      state.captureBehavior = "fail";
+      expect((await deliverWebhook(orderApprovedEvent({ orderId, invoiceId: invoice.id }))).status).toBe(502);
+
+      const rows = await db.select().from(schema.notifications);
+      expect(rows).toHaveLength(2);
+      const first = rows[0];
+      if (first === undefined) throw new Error("notification row missing");
+      expect(first.payload).toMatchObject({
+        channel: "paypal",
+        reasonCode: "capture_failed",
+        externalId: orderId,
+      });
+      expect(String(first.payload.detail)).toContain("failed to capture");
+      // APPROVED 重投：capture 再失败，同一把 dedupe_key，零新行
+      expect((await deliverWebhook(orderApprovedEvent({ orderId, invoiceId: invoice.id }))).status).toBe(502);
+      expect(await notificationCount()).toBe(2);
+      expect(await paymentRowCount()).toBe(0);
     });
   });
 
