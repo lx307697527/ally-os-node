@@ -5,7 +5,7 @@ import { z } from "zod";
  *
  * 规则模型借鉴 Odoo：触发（新建、字段变化、进入阶段 → 本切片统一为「审计事件
  * action 精确命中」，域事件由各域写审计时产生）→ 过滤条件（对事件语境的点路径
- * 断言）→ 动作（建任务、发通知；其余动作类型随所属域切片进场）。本包零依赖
+ * 断言）→ 动作（建任务、发通知、发邮件；其余动作类型随所属域切片进场）。本包零依赖
  * （只有 zod）：API 的规则 CRUD 用同一份 schema 做保存时校验，worker 的扫描/
  * 执行用同一份 schema 做运行时解析——两端不会长出两套形状。
  *
@@ -101,9 +101,26 @@ export const notifyActionSchema = z.object({
 });
 export type NotifyAction = z.infer<typeof notifyActionSchema>;
 
+export const sendEmailActionSchema = z.object({
+  type: z.literal("send_email"),
+  config: z.object({
+    /**
+     * 收件人是站内用户（保存时点死的 uuid 列表，发送时按 id 解析账号邮箱）。
+     * 自动化无人值守地发信，不给规则作者任意外部地址的入口——对外邮件是属主域
+     * 写路径与 #237 营销邮件审批面的事。收件人被删 = 动作失败进重试/告警，
+     * 不静默跳过（与 notify 收件人的 FK 约束同一裁法）。
+     */
+    userIds: z.array(z.uuid()).min(1).max(50),
+    subject: z.string().trim().min(1).max(200),
+    body: z.string().trim().min(1).max(5000),
+  }),
+});
+export type SendEmailAction = z.infer<typeof sendEmailActionSchema>;
+
 export const actionSpecSchema = z.discriminatedUnion("type", [
   createTaskActionSchema,
   notifyActionSchema,
+  sendEmailActionSchema,
 ]);
 export type ActionSpec = z.infer<typeof actionSpecSchema>;
 

@@ -438,6 +438,7 @@ export type TriggerDraft =
 export type ActionDraft =
   | { type: "create_task"; title: string; description: string; assigneeId: string; dueInHours: string }
   | { type: "notify"; userIdsText: string; title: string; body: string }
+  | { type: "send_email"; userIdsText: string; subject: string; body: string }
   | { type: "json"; json: string };
 
 export const CONDITION_OPS = ["eq", "ne", "in", "exists"] as const;
@@ -503,6 +504,14 @@ function actionToDraft(raw: unknown): ActionDraft {
       type: "notify",
       userIdsText: Array.isArray(config.userIds) ? config.userIds.map((id) => String(id)).join("\n") : "",
       title: typeof config.title === "string" ? config.title : "",
+      body: typeof config.body === "string" ? config.body : "",
+    };
+  }
+  if (raw.type === "send_email") {
+    return {
+      type: "send_email",
+      userIdsText: Array.isArray(config.userIds) ? config.userIds.map((id) => String(id)).join("\n") : "",
+      subject: typeof config.subject === "string" ? config.subject : "",
       body: typeof config.body === "string" ? config.body : "",
     };
   }
@@ -645,6 +654,23 @@ export function buildActions(drafts: ActionDraft[]): BuildResult<unknown[]> {
       const config: Record<string, unknown> = { userIds, title };
       if (draft.body.trim() !== "") config.body = draft.body.trim();
       built.push({ type: "notify", config });
+    } else if (draft.type === "send_email") {
+      const userIds = draft.userIdsText
+        .split("\n")
+        .map((line) => line.trim())
+        .filter((line) => line !== "");
+      if (userIds.length === 0) {
+        return { ok: false, error: "Every send-email action needs at least one recipient id — one per line. Recipients are in-app users; the mail goes to each account's email address." };
+      }
+      const subject = draft.subject.trim();
+      if (subject === "") {
+        return { ok: false, error: "Every send-email action needs a subject." };
+      }
+      const body = draft.body.trim();
+      if (body === "") {
+        return { ok: false, error: "Every send-email action needs a body." };
+      }
+      built.push({ type: "send_email", config: { userIds, subject, body } });
     } else {
       let parsed: unknown;
       try {

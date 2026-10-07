@@ -65,6 +65,7 @@ describe.skipIf(!databaseUrl)("automation due scan (#224 slice 2, integration)",
     publishExecutor: { query: () => Promise.resolve(undefined) },
     logger,
     instanceId: "worker-due-test",
+    mailer: { send: () => Promise.resolve() },
   };
   const sendRunJob = (runId: string): Promise<void> => {
     sent.push(runId);

@@ -45,7 +45,7 @@ await registerJobs(
   boss,
   [
     ...jobs,
-    ...automationJobs({ db, pool, boss, logger }),
+    ...automationJobs({ db, pool, boss, logger, mailer }),
     ...approvalJobs({ db, pool, logger }),
     ...rulesJobs({ db, pool, logger }),
     ...notificationsJobs({ db, mailer, webAppUrl: env.WEB_APP_URL, logger }),

@@ -4,6 +4,7 @@ import { schema, type Db } from "@ally/db";
 import {
   executeCreateTask,
   executeNotify,
+  executeSendEmail,
   type ActionContext,
   type ActionDeps,
   type ActionServices,
@@ -147,13 +148,23 @@ export async function runAutomationRun(deps: ActionDeps, data: AutomationRunJobD
         const base = baseResults(run.actionResults);
         if (base[index]?.status === "succeeded") return;
         // 动作只写行：insert 面的通道直接接事务连接（完整 Db 带 $client，
-        // 事务对象不满足），发布/日志走 services
+        // 事务对象不满足），发布/邮件/日志走 services。
+        // 分发是穷举 switch：动作联合新进类型而这里没接执行器时，编译期
+        // 「使用前未赋值」直接挡住，不留运行期静默漏派的口子
         const services: ActionServices = deps;
         try {
-          const result =
-            action.type === "create_task"
-              ? await executeCreateTask(tx, services, rule.ctx, action)
-              : await executeNotify(tx, services, rule.ctx, action);
+          let result: ActionResult;
+          switch (action.type) {
+            case "create_task":
+              result = await executeCreateTask(tx, services, rule.ctx, action);
+              break;
+            case "notify":
+              result = await executeNotify(tx, services, rule.ctx, action);
+              break;
+            case "send_email":
+              result = await executeSendEmail(tx, services, rule.ctx, action);
+              break;
+          }
           await tx
             .update(schema.automationRuns)
             .set({ actionResults: [...base.slice(0, index), result] })

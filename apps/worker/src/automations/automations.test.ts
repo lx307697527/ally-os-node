@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import pino from "pino";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import type { MailMessage } from "@ally/mailer";
 import { createDb, runMigrations, schema } from "@ally/db";
 import { REALTIME_LISTEN_CHANNEL, userChannel } from "@ally/realtime";
 import type { ActionDeps } from "./actions.ts";
@@ -52,6 +53,17 @@ describe.skipIf(!databaseUrl)("automation scan/run (#224 slice 1, integration)",
   const sent: string[] = [];
   const notifyCalls: { text: string; values?: unknown[] | undefined }[] = [];
 
+  /** 假邮件通道：收下的信都在 outbox；failSendsOn 里的地址发送必败（模拟部分失败） */
+  const outbox: MailMessage[] = [];
+  const failSendsOn = new Set<string>();
+  const mailer = {
+    send: (message: MailMessage): Promise<void> => {
+      if (failSendsOn.has(message.to)) return Promise.reject(new Error("smtp unavailable"));
+      outbox.push(message);
+      return Promise.resolve();
+    },
+  };
+
   const deps: ActionDeps = {
     db,
     publishExecutor: {
@@ -62,6 +74,7 @@ describe.skipIf(!databaseUrl)("automation scan/run (#224 slice 1, integration)",
     },
     logger,
     instanceId: "worker-test",
+    mailer,
   };
   const sendRunJob = (runId: string): Promise<void> => {
     sent.push(runId);
@@ -121,6 +134,8 @@ describe.skipIf(!databaseUrl)("automation scan/run (#224 slice 1, integration)",
   beforeEach(async () => {
     sent.length = 0;
     notifyCalls.length = 0;
+    outbox.length = 0;
+    failSendsOn.clear();
     // 单语句 TRUNCATE：runs → rules、notifications/tasks → auth_user 都有 FK
     await db.execute(
       sql`truncate table ${schema.automationRuns}, ${schema.automationRules}, ${schema.tasks}, ${schema.notifications}, ${schema.auditEvents}, ${schema.authUser} cascade`,
@@ -437,5 +452,102 @@ describe.skipIf(!databaseUrl)("automation scan/run (#224 slice 1, integration)",
     await runAutomationScan({ ...deps, sendRunJob });
     expect(await db.select().from(schema.automationRuns)).toHaveLength(0);
     expect(sent).toHaveLength(0);
+  });
+
+  it("send_email resolves account emails, renders escaped html, and leaves no notification rows", async () => {
+    await insertRule({
+      name: "审批完成 <发信> & 提醒",
+      trigger: { kind: "event", action: "approval.completed" },
+      actions: [
+        {
+          type: "send_email",
+          config: {
+            userIds: [USERS.watcher, USERS.watcher, USERS.assignee],
+            subject: "审批已完成",
+            body: '第一步通过。\n<script>alert("x")</script> & 下一步见系统',
+          },
+        },
+      ],
+    });
+    await insertAuditEvent({ action: "approval.completed", detail: {} });
+    await runAutomationScan({ ...deps, sendRunJob });
+    const run = await onlyRun();
+    await runAutomationRun(deps, { runId: run.id });
+
+    const finishedRows = await db.select().from(schema.automationRuns).where(eq(schema.automationRuns.id, run.id));
+    const finished = must(finishedRows[0]);
+    expect(finished.status).toBe("succeeded");
+    const results = finished.actionResults as { type: string; status: string }[];
+    expect(results).toEqual([{ type: "send_email", status: "succeeded" }]);
+
+    // 收件人按 id 解析成账号邮箱、去重；逐人一封
+    expect(outbox.map((m) => m.to).sort()).toEqual(["assignee@example.com", "watcher@example.com"]);
+    for (const message of outbox) {
+      expect(message.subject).toBe("审批已完成");
+      // 正文转义（BUG-285 的教训：规则作者写的东西进 HTML 前必须转义）
+      expect(message.html).not.toContain("<script>");
+      expect(message.html).toContain("&lt;script&gt;");
+      expect(message.html).toContain("&amp; 下一步");
+      expect(message.html).toContain("<br>");
+      // 尾注署名规则（规则名里的 HTML 同样转义）
+      expect(message.html).toContain("Ally OS rule");
+      expect(message.html).not.toContain("<发信>");
+      // text 从 html 推导（一份内容两个形态）
+      expect(message.text).toContain("第一步通过。");
+      expect(message.text).not.toContain("<p>");
+    }
+
+    // 邮件不是通知：notifications 无行、铃铛不催——执行事实只在 action_results
+    expect(await db.select().from(schema.notifications)).toHaveLength(0);
+    expect(notifyCalls).toHaveLength(0);
+  });
+
+  it("send_email fails loudly when a recipient no longer exists", async () => {
+    await insertRule({
+      name: "收件人已删",
+      trigger: { kind: "event", action: "task.created" },
+      actions: [{ type: "send_email", config: { userIds: [randomUUID()], subject: "s", body: "b" } }],
+    });
+    await insertAuditEvent({ action: "task.created", detail: {} });
+    await runAutomationScan({ ...deps, sendRunJob });
+    const run = await onlyRun();
+
+    await expect(runAutomationRun(deps, { runId: run.id })).rejects.toThrow(/automation action failed/);
+    const after = await onlyRun();
+    expect(after.status).toBe("pending");
+    const results = after.actionResults as { type: string; status: string; error?: string }[];
+    expect(results[0]).toMatchObject({ type: "send_email", status: "failed" });
+    expect(results[0]?.error).toContain("no longer exist");
+    // 一封都没发出去（先解析全员再发信）
+    expect(outbox).toHaveLength(0);
+  });
+
+  it("send_email is at-least-once: recipients before a send failure get a second copy on retry", async () => {
+    await insertRule({
+      name: "第二封会失败一次",
+      trigger: { kind: "event", action: "task.created" },
+      actions: [
+        {
+          type: "send_email",
+          config: { userIds: [USERS.watcher, USERS.assignee], subject: "s", body: "b" },
+        },
+      ],
+    });
+    await insertAuditEvent({ action: "task.created", detail: {} });
+    await runAutomationScan({ ...deps, sendRunJob });
+    const run = await onlyRun();
+
+    // 第一次尝试：第一封（watcher）发出，第二封（assignee）失败 → 动作失败进重试
+    failSendsOn.add("assignee@example.com");
+    await expect(runAutomationRun(deps, { runId: run.id })).rejects.toThrow(/automation action failed/);
+    expect(outbox.map((m) => m.to)).toEqual(["watcher@example.com"]);
+
+    // 重试成功：watcher 收到第二封（at-least-once 的已文档化重复窗口），assignee 收到第一封
+    failSendsOn.clear();
+    await runAutomationRun(deps, { runId: run.id });
+    const finishedRows = await db.select().from(schema.automationRuns).where(eq(schema.automationRuns.id, run.id));
+    expect(must(finishedRows[0]).status).toBe("succeeded");
+    expect(outbox.filter((m) => m.to === "watcher@example.com")).toHaveLength(2);
+    expect(outbox.filter((m) => m.to === "assignee@example.com")).toHaveLength(1);
   });
 });

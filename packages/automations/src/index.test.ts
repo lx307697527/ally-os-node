@@ -212,6 +212,47 @@ describe("ruleSpecSchema", () => {
       }).success,
     ).toBe(false);
   });
+
+  it("accepts a send_email action addressed to internal users", () => {
+    const parsed = ruleSpecSchema.safeParse({
+      trigger: { kind: "event", action: "approval.completed" },
+      actions: [
+        {
+          type: "send_email",
+          config: {
+            userIds: ["6c1f7e2a-1d6e-4a7b-9c3d-2e5f8a9b0c1d"],
+            subject: "审批已完成",
+            body: "你关注的审批已通过。",
+          },
+        },
+      ],
+    });
+    expect(parsed.success).toBe(true);
+  });
+
+  it("rejects a send_email action with bad recipients or empty subject/body", () => {
+    const base = { trigger: { kind: "event", action: "x" } };
+    const action = (config: unknown) => [{ type: "send_email", config }];
+    expect(
+      ruleSpecSchema.safeParse({ ...base, actions: action({ userIds: [], subject: "s", body: "b" }) }).success,
+    ).toBe(false);
+    expect(
+      ruleSpecSchema.safeParse({ ...base, actions: action({ userIds: ["not-a-uuid"], subject: "s", body: "b" }) })
+        .success,
+    ).toBe(false);
+    expect(
+      ruleSpecSchema.safeParse({ ...base, actions: action({ userIds: ["6c1f7e2a-1d6e-4a7b-9c3d-2e5f8a9b0c1d"], subject: "", body: "b" }) })
+        .success,
+    ).toBe(false);
+    expect(
+      ruleSpecSchema.safeParse({ ...base, actions: action({ userIds: ["6c1f7e2a-1d6e-4a7b-9c3d-2e5f8a9b0c1d"], subject: "s" }) })
+        .success,
+    ).toBe(false);
+    expect(
+      ruleSpecSchema.safeParse({ ...base, actions: action({ userIds: ["6c1f7e2a-1d6e-4a7b-9c3d-2e5f8a9b0c1d"], subject: "s", body: "   " }) })
+        .success,
+    ).toBe(false);
+  });
 });
 
 describe("AUTOMATION_ACTOR_PREFIX", () => {

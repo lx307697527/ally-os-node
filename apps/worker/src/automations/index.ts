@@ -3,6 +3,7 @@ import type { PgBoss } from "pg-boss";
 import type { Logger } from "pino";
 import { z } from "zod";
 import type { Db } from "@ally/db";
+import type { Mailer } from "@ally/mailer";
 import type { JobDefinition } from "../jobs/index.ts";
 import type { ActionDeps } from "./actions.ts";
 import { AUTOMATION_DUE_SCAN_JOB, runAutomationDueScan } from "./due-scanner.ts";
@@ -15,8 +16,9 @@ import { AUTOMATION_SCAN_JOB, runAutomationScan } from "./scanner.ts";
  * 的队列配置走 runner.ts 默认值（重试 3 次、60s 指数退避、失败告警），收紧为
  * 重试 1 次——下一轮扫描本身就是兜底，多侧重试只会放大重复扫描。
  *
- * db/pool 由 worker 引导（index.ts）注入：动作与扫描都只要 SQL 通道；铃铛「催」
- * 用 pool 当 pg_notify 发布执行器（与 API 的 RealtimeBus.publish 同一条 SQL）。
+ * db/pool/mailer 由 worker 引导（index.ts）注入：动作与扫描都只要 SQL 通道；
+ * 铃铛「催」用 pool 当 pg_notify 发布执行器（与 API 的 RealtimeBus.publish 同
+ * 一条 SQL）；send_email 动作走 worker 已有的 @ally/mailer 通道（#116 渠道层）。
  */
 export interface AutomationJobsDeps {
   db: Db;
@@ -24,6 +26,8 @@ export interface AutomationJobsDeps {
   pool: { query(text: string, values?: unknown[]): Promise<unknown> };
   boss: PgBoss;
   logger: Logger;
+  /** 邮件通道（send_email 动作；与通知摘要同一个 mailer 实例） */
+  mailer: Mailer;
 }
 
 const runJobData = z.object({ runId: z.uuid() });
@@ -34,6 +38,7 @@ export function automationJobs(deps: AutomationJobsDeps): JobDefinition[] {
     publishExecutor: deps.pool,
     logger: deps.logger,
     instanceId: `automation-worker-${randomUUID()}`,
+    mailer: deps.mailer,
   };
   const sendRunJob = async (runId: string): Promise<void> => {
     // singletonKey 去重：同一 run 的执行任务在排队/在途时，重复发送自动忽略
