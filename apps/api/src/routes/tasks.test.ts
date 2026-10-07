@@ -113,8 +113,9 @@ describe.skipIf(!databaseUrl)("task endpoints (#113 slice 1, integration)", () =
   });
 
   beforeEach(async () => {
-    // 整库是本文件的：三张共享面表每条测试前清空
+    // 整库是本文件的：共享面表每条测试前清空
     await db.execute(sql`truncate table ${schema.tasks}`);
+    await db.execute(sql`truncate table ${schema.follows}`);
     await db.execute(sql`truncate table ${schema.notifications}`);
     await db.execute(sql`truncate table ${schema.auditEvents}`);
     nudged.length = 0;
@@ -388,6 +389,76 @@ describe.skipIf(!databaseUrl)("task endpoints (#113 slice 1, integration)", () =
       body: JSON.stringify({ title: "越权改" }),
     });
     expect(stranger.status).toBe(404);
+  });
+
+  it("状态流转对关注者的投递：关注者收 task.status_changed（from/to 事实齐），操作者不收自己的动作，no-op 零通知", async () => {
+    const { task } = await createTask(alice, { title: "扇出流转", assigneeId: USERS.bob });
+    const id = task?.id;
+    expect(id).toBeTruthy();
+    // 创建人与经办人都可见，都关注（关注门 = 同一扇可见性门）
+    expect((await app.request(`/api/follows/task/${id}`, { method: "PUT", headers: alice })).status).toBe(200);
+    expect((await app.request(`/api/follows/task/${id}`, { method: "PUT", headers: bob })).status).toBe(200);
+
+    const done = await app.request(`/api/tasks/${id}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json", ...bob },
+      body: JSON.stringify({ status: "done" }),
+    });
+    expect(done.status).toBe(200);
+    const aliceNotes = await notificationsFor(USERS.alice);
+    expect(aliceNotes).toHaveLength(1);
+    expect(aliceNotes[0]?.eventType).toBe("task.status_changed");
+    expect(aliceNotes[0]?.payload).toEqual({
+      taskTitle: "扇出流转",
+      actorName: "Bob",
+      from: "open",
+      to: "done",
+    });
+    // 操作者本人虽关注，不收自己的动作；手里只有创建时的 task.assigned
+    const bobNotes = await notificationsFor(USERS.bob);
+    expect(bobNotes.map((n) => n.eventType)).toEqual(["task.assigned"]);
+    expect(nudged).toEqual([[USERS.bob], [USERS.alice]]);
+
+    // no-op（同值）PATCH：无通知无催
+    const noop = await app.request(`/api/tasks/${id}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json", ...bob },
+      body: JSON.stringify({ status: "done" }),
+    });
+    expect(noop.status).toBe(200);
+    expect(await notificationsFor(USERS.alice)).toHaveLength(1);
+    expect(nudged).toEqual([[USERS.bob], [USERS.alice]]);
+  });
+
+  it("改派没有关注者事件：旧经办人随改派失去可见性（投递按当前可见者收口），重获可见性时定向事件优先、一人一个 PATCH 至多一条", async () => {
+    const { task } = await createTask(alice, { title: "改派收口", assigneeId: USERS.bob });
+    const id = task?.id;
+    expect(id).toBeTruthy();
+    expect((await app.request(`/api/follows/task/${id}`, { method: "PUT", headers: bob })).status).toBe(200);
+
+    const move = await app.request(`/api/tasks/${id}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json", ...alice },
+      body: JSON.stringify({ assigneeId: USERS.alice }),
+    });
+    expect(move.status).toBe(200);
+    // bob 的关注行保留，但改派后他不再是可见者：没有关注者投递（链接只会 404）；
+    // 改派的定向投递就是新经办人的 task.assigned（这里新经办人是操作者自己，无）
+    const bobNotesAfterMove = await notificationsFor(USERS.bob);
+    expect(bobNotesAfterMove.map((n) => n.eventType)).toEqual(["task.assigned"]);
+    expect(nudged).toEqual([[USERS.bob]]);
+
+    // 同拍「状态 + 改派回 bob」：bob 的陈旧关注行随重新指派复活，但他同时拿到
+    // 定向 task.assigned——一人一个 PATCH 至多一条，定向优先
+    const combo = await app.request(`/api/tasks/${id}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json", ...alice },
+      body: JSON.stringify({ status: "done", assigneeId: USERS.bob }),
+    });
+    expect(combo.status).toBe(200);
+    const bobNotesAfterCombo = await notificationsFor(USERS.bob);
+    expect(bobNotesAfterCombo.map((n) => n.eventType)).toEqual(["task.assigned", "task.assigned"]);
+    expect(nudged).toEqual([[USERS.bob], [USERS.bob]]);
   });
 });
 

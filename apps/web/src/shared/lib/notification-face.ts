@@ -22,6 +22,7 @@ export const UNREAD_BADGE_CAP = 20;
 /** 铃铛认得的事件类型：文案与深链只在这张表里，生产者随业务域落地时进来。 */
 export const NOTIFIED_EVENT_TYPES: readonly string[] = [
   "task.assigned",
+  "task.status_changed",
   "comment.mentioned",
   "comment.created",
   // 审批扇出与催办（#221）：去处是待办页——裁决就在那里发生。
@@ -76,6 +77,14 @@ function hoursWaiting(payload: Record<string, unknown>): string | null {
   return typeof hours === "number" && Number.isFinite(hours) ? `${String(hours)}h waiting` : null;
 }
 
+/** 状态流转的动词从 to 的事实来；事实缺位用中性的 updated，不硬凑方向 */
+function statusVerb(to: string | null): string {
+  if (to === "done") return "completed";
+  if (to === "cancelled") return "cancelled";
+  if (to === "open") return "reopened";
+  return "updated";
+}
+
 /** 任务详情页的深链：聚合指向任务，带 comment 参数时落到那条评论上。 */
 function taskHref(aggregateId: string | null, commentId: string | null): string | null {
   if (aggregateId === null) return null;
@@ -87,6 +96,13 @@ export function describeNotification(row: NotificationRow): NotificationFace {
     case "task.assigned":
       return {
         title: `${actorOf(row.payload)} assigned you a task`,
+        detail: stringField(row.payload, "taskTitle") ?? "",
+        href: taskHref(row.aggregateId, null),
+      };
+    case "task.status_changed":
+      // 关注扇出（#113）：你关注（而非经办/创建）的任务被人动了状态
+      return {
+        title: `${actorOf(row.payload)} ${statusVerb(stringField(row.payload, "to"))} a task you follow`,
         detail: stringField(row.payload, "taskTitle") ?? "",
         href: taskHref(row.aggregateId, null),
       };

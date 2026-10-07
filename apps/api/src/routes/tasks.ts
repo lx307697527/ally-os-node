@@ -19,8 +19,10 @@ import { isSubjectSigned } from "../esign/service.ts";
  *
  * 可分配面 = 至少持有一个非 customer 角色的用户（老系统「每个可分配成员」；
  * 零角色账号与纯门户账号不可被派任务）。分配动作写站内通知（task.assigned，
- * 通知表的第一个真实生产者；统一通知服务与邮件渠道随 #116 落地）。每次真实
- * 变更在同一事务里写审计（#29 约定：状态变更带 from/to，审计失败则业务失败）。
+ * 通知表的第一个真实生产者；统一通知服务与邮件渠道随 #116 落地）；真实状态
+ * 流转再把 task.status_changed 投递给关注者（#110 关注内核的任务侧消费，
+ * 名单与去重裁决见 PATCH 内注释）。每次真实变更在同一事务里写审计（#29 约
+ * 定：状态变更带 from/to，审计失败则业务失败）。
  * 通知落库、事务提交后，再对被通知者发一次实时「催」（#110 切片 2）——催不
  * 携带数据，铃铛重读 summary；催失败只降级回轮询，实现方保证不 reject。
  */
@@ -269,6 +271,49 @@ export function tasksRoutes(deps: { db: Db; notifyUsers: (userIds: string[]) => 
         const title = body.data.title ?? task.title;
         await notifyAssignee(tx, task.id, title, nextAssignee.id, me.name);
         nudgedTo.push(nextAssignee.id);
+      }
+      // 关注者投递（#110 切片 4 的任务侧，#113 域切片）：真实状态流转对关注者的
+      // 「动静」。名单 = 关注者（含改派后复活的陈旧关注行）− 操作者 − 定向事件
+      // 已覆盖的新经办人（一人一个 PATCH 至多一条，定向优先）− 不在**当前**可见
+      // 者集合的人（关注不改变可见性，投递时按当前可见者收口，链接不指向看
+      // 不到的行）。改派不另设关注者事件：改派把旧经办人移出可见者、创建人是
+      // 操作者，可投递集合结构性为空——不为不可能的收件人立机制；改派的定向
+      // 投递就是新经办人的 task.assigned。
+      if (statusChanged) {
+        const viewerIds = new Set<string>();
+        if (task.createdBy !== null) viewerIds.add(task.createdBy.id);
+        if (nextAssignee !== null) viewerIds.add(nextAssignee.id);
+        const followerRows = await tx
+          .select({ userId: schema.follows.userId })
+          .from(schema.follows)
+          .where(and(eq(schema.follows.subjectType, "task"), eq(schema.follows.subjectId, task.id)));
+        const covered = new Set<string>([me.id]);
+        if (assigneeChanged && nextAssignee !== null && nextAssignee.id !== me.id) {
+          covered.add(nextAssignee.id);
+        }
+        const watcherIds = followerRows
+          .map((row) => row.userId)
+          .filter((userId) => !covered.has(userId) && viewerIds.has(userId));
+        if (watcherIds.length > 0) {
+          const payload = {
+            taskTitle: body.data.title ?? task.title,
+            actorName: me.name,
+            from: task.status,
+            to: body.data.status,
+          };
+          for (const userId of watcherIds) {
+            await tx.insert(schema.notifications).values({
+              userId,
+              eventType: "task.status_changed",
+              aggregateType: "task",
+              aggregateId: task.id,
+              payload,
+            });
+          }
+          for (const userId of watcherIds) {
+            if (!nudgedTo.includes(userId)) nudgedTo.push(userId);
+          }
+        }
       }
     });
     // 提交后再催（#110 切片 2）：铃铛重读 summary，读到的就是已提交的数据

@@ -105,6 +105,35 @@ describe("describeNotification (白名单类型：文案与深链在 TS 不在�
     expect(face.href).toBe(`/tasks/${taskId}?comment=${commentId}`);
   });
 
+  it("task.status_changed：关注对象的状态流转，动词随 to 的事实，事实缺位不硬凑", () => {
+    const base = {
+      aggregateType: "task",
+      aggregateId: taskId,
+      payload: { taskTitle: "Review label copy", actorName: "Alice", from: "open", to: "done" },
+    };
+    expect(describeNotification(row({ eventType: "task.status_changed", ...base }))).toEqual({
+      title: "Alice completed a task you follow",
+      detail: "Review label copy",
+      href: `/tasks/${taskId}`,
+    });
+    const at = (to: string | undefined): string =>
+      describeNotification(
+        row({
+          eventType: "task.status_changed",
+          aggregateType: "task",
+          aggregateId: taskId,
+          payload: {
+            taskTitle: "t",
+            actorName: "Alice",
+            ...(to === undefined ? {} : { to }),
+          },
+        }),
+      ).title;
+    expect(at("cancelled")).toBe("Alice cancelled a task you follow");
+    expect(at("open")).toBe("Alice reopened a task you follow");
+    expect(at(undefined)).toBe("Alice updated a task you follow");
+  });
+
   it("事实缺位不撒谎：没有聚合 id 无处可去，没有摘录用任务名，没有名字用 Someone", () => {
     const noAggregate = describeNotification(row({ eventType: "task.assigned", payload: { taskTitle: "t" } }));
     expect(noAggregate.href).toBeNull();
@@ -182,6 +211,7 @@ describe("describeNotification (白名单类型：文案与深链在 TS 不在�
   it("白名单就是铃铛认得的全部：新生产者必须先进这张表", () => {
     expect(NOTIFIED_EVENT_TYPES).toEqual([
       "task.assigned",
+      "task.status_changed",
       "comment.mentioned",
       "comment.created",
       "approval.pending",
