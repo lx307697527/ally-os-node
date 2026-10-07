@@ -6,6 +6,7 @@ import type { MailMessage } from "@ally/mailer";
 import { createDb, runMigrations, schema } from "@ally/db";
 import { REALTIME_LISTEN_CHANNEL, userChannel } from "@ally/realtime";
 import type { ActionDeps } from "./actions.ts";
+import { executeSendWebhook } from "./actions.ts";
 import { runAutomationRun } from "./runner.ts";
 import { GIVE_UP_AFTER_SECONDS, RESEND_PENDING_AFTER_SECONDS, runAutomationScan } from "./scanner.ts";
 
@@ -64,6 +65,12 @@ describe.skipIf(!databaseUrl)("automation scan/run (#224 slice 1, integration)",
     },
   };
 
+  /** 假 webhook 通道：收到的请求记进 webhookRequests，响应由 webhookRespond 给出 */
+  const webhookRequests: { url: string; init: RequestInit }[] = [];
+  let webhookRespond: () => Response = () => new Response(null, { status: 200 });
+  /** 假 DNS：主机名 → 解析地址；没登记的主机名默认解析到公网地址 */
+  const dnsAnswers = new Map<string, { address: string; family: number }[]>();
+
   const deps: ActionDeps = {
     db,
     publishExecutor: {
@@ -75,6 +82,15 @@ describe.skipIf(!databaseUrl)("automation scan/run (#224 slice 1, integration)",
     logger,
     instanceId: "worker-test",
     mailer,
+    webhookFetcher: (input, init) => {
+      webhookRequests.push({
+        url: typeof input === "string" ? input : input instanceof URL ? input.href : "",
+        init: init ?? {},
+      });
+      return Promise.resolve(webhookRespond());
+    },
+    dnsLookup: (host) =>
+      Promise.resolve(dnsAnswers.get(host) ?? [{ address: "203.0.113.10", family: 4 }]),
   };
   const sendRunJob = (runId: string): Promise<void> => {
     sent.push(runId);
@@ -136,6 +152,9 @@ describe.skipIf(!databaseUrl)("automation scan/run (#224 slice 1, integration)",
     notifyCalls.length = 0;
     outbox.length = 0;
     failSendsOn.clear();
+    webhookRequests.length = 0;
+    webhookRespond = () => new Response(null, { status: 200 });
+    dnsAnswers.clear();
     // 单语句 TRUNCATE：runs → rules、notifications/tasks → auth_user 都有 FK
     await db.execute(
       sql`truncate table ${schema.automationRuns}, ${schema.automationRules}, ${schema.tasks}, ${schema.notifications}, ${schema.auditEvents}, ${schema.authUser} cascade`,
@@ -549,5 +568,163 @@ describe.skipIf(!databaseUrl)("automation scan/run (#224 slice 1, integration)",
     expect(must(finishedRows[0]).status).toBe("succeeded");
     expect(outbox.filter((m) => m.to === "watcher@example.com")).toHaveLength(2);
     expect(outbox.filter((m) => m.to === "assignee@example.com")).toHaveLength(1);
+  });
+
+  it("send_webhook posts the saved JSON payload, defaults method and content-type, and leaves execution facts only in action_results", async () => {
+    await insertRule({
+      name: "审批完成通知外部系统",
+      trigger: { kind: "event", action: "approval.completed" },
+      actions: [
+        {
+          type: "send_webhook",
+          config: {
+            url: "https://hooks.example.com/services/ally/123",
+            headers: { authorization: "Bearer tok_abc123" },
+            body: { event: "approval.completed", approved: true },
+          },
+        },
+      ],
+    });
+    await insertAuditEvent({ action: "approval.completed", detail: {} });
+    await runAutomationScan({ ...deps, sendRunJob });
+    const run = await onlyRun();
+    await runAutomationRun(deps, { runId: run.id });
+
+    const finishedRows = await db.select().from(schema.automationRuns).where(eq(schema.automationRuns.id, run.id));
+    const finished = must(finishedRows[0]);
+    expect(finished.status).toBe("succeeded");
+    expect(finished.actionResults).toEqual([{ type: "send_webhook", status: "succeeded" }]);
+
+    expect(webhookRequests).toHaveLength(1);
+    const request = webhookRequests[0];
+    expect(request === undefined ? null : request.url).toBe("https://hooks.example.com/services/ally/123");
+    expect(request?.init.method).toBe("POST");
+    const headers = new Headers(request?.init.headers);
+    expect(headers.get("authorization")).toBe("Bearer tok_abc123");
+    expect(headers.get("content-type")).toBe("application/json");
+    expect(request?.init.body).toBe(JSON.stringify({ event: "approval.completed", approved: true }));
+    // 重定向拒收（过闸的 url 不能被 3xx 带去没过闸的目标）、超时信号在场
+    expect(request?.init.redirect).toBe("error");
+    expect(request?.init.signal).toBeInstanceOf(AbortSignal);
+
+    // 投递事实只在 action_results：无通知、无铃铛、无审计（表里只有触发的审计事件本身）
+    expect(await db.select().from(schema.notifications)).toHaveLength(0);
+    expect(notifyCalls).toHaveLength(0);
+    expect(await db.select().from(schema.auditEvents)).toHaveLength(1);
+  });
+
+  it("send_webhook treats non-2xx as failure into retry and never leaks the auth header into the recorded error", async () => {
+    await insertRule({
+      name: "对端会 500",
+      trigger: { kind: "event", action: "task.created" },
+      actions: [
+        {
+          type: "send_webhook",
+          config: {
+            url: "https://hooks.example.com/hook",
+            headers: { authorization: "Bearer tok_abc123" },
+            body: { hello: "world" },
+          },
+        },
+      ],
+    });
+    await insertAuditEvent({ action: "task.created", detail: {} });
+    await runAutomationScan({ ...deps, sendRunJob });
+    const run = await onlyRun();
+    webhookRespond = () => new Response('{"message":"upstream exploded"}', { status: 500 });
+
+    await expect(runAutomationRun(deps, { runId: run.id })).rejects.toThrow(/automation action failed/);
+    const after = await onlyRun();
+    expect(after.status).toBe("pending");
+    const results = after.actionResults as { type: string; status: string; error?: string }[];
+    expect(results[0]).toMatchObject({ type: "send_webhook", status: "failed" });
+    // 状态码与对端说明进 error（有界截断），headers 里的密钥绝不进
+    expect(results[0]?.error).toContain("HTTP 500");
+    expect(results[0]?.error).toContain("upstream exploded");
+    expect(JSON.stringify(after.actionResults)).not.toContain("tok_abc123");
+    // 恰好投递一次：失败的动作不重发,重试由 pg-boss 驱动
+    expect(webhookRequests).toHaveLength(1);
+  });
+
+  it("send_webhook refuses at run time when a public-looking host resolves into a private range (DNS gate)", async () => {
+    await insertRule({
+      name: "域名指私网",
+      trigger: { kind: "event", action: "task.created" },
+      actions: [
+        { type: "send_webhook", config: { url: "https://hooks.example.com/hook", body: { a: 1 } } },
+      ],
+    });
+    await insertAuditEvent({ action: "task.created", detail: {} });
+    await runAutomationScan({ ...deps, sendRunJob });
+    const run = await onlyRun();
+    dnsAnswers.set("hooks.example.com", [
+      { address: "169.254.169.254", family: 4 },
+      { address: "203.0.113.10", family: 4 },
+    ]);
+
+    await expect(runAutomationRun(deps, { runId: run.id })).rejects.toThrow(/automation action failed/);
+    const after = await onlyRun();
+    const results = after.actionResults as { status: string; error?: string }[];
+    // 全部解析地址逐个过闸:一条私网答案就是一条私网通路,fail closed
+    expect(results[0]?.error).toContain("blocked address");
+    expect(results[0]?.error).toContain("169.254.169.254");
+    // 一个包都没出网
+    expect(webhookRequests).toHaveLength(0);
+  });
+
+  it("send_webhook is at-least-once: a 5xx after the receiver processed the request means a second delivery on retry", async () => {
+    await insertRule({
+      name: "第一次会 500",
+      trigger: { kind: "event", action: "task.created" },
+      actions: [
+        { type: "send_webhook", config: { url: "https://hooks.example.com/hook", body: { n: 1 } } },
+      ],
+    });
+    await insertAuditEvent({ action: "task.created", detail: {} });
+    await runAutomationScan({ ...deps, sendRunJob });
+    const run = await onlyRun();
+
+    // 第一次投递:对端可能已经处理了请求但回了 500 → 动作失败进重试
+    const statuses = [500, 200];
+    webhookRespond = () => new Response(null, { status: statuses.shift() ?? 200 });
+    await expect(runAutomationRun(deps, { runId: run.id })).rejects.toThrow(/automation action failed/);
+    expect(webhookRequests).toHaveLength(1);
+
+    // 重试成功:接收方一共见到两次投递(已文档化的重复窗口,不装 exactly-once)
+    await runAutomationRun(deps, { runId: run.id });
+    const finishedRows = await db.select().from(schema.automationRuns).where(eq(schema.automationRuns.id, run.id));
+    expect(must(finishedRows[0]).status).toBe("succeeded");
+    expect(webhookRequests).toHaveLength(2);
+  });
+
+  it("send_webhook with a private url never gets a run: the scanner's spec parse skips it (earliest gate, fail closed)", async () => {
+    // 直插数据库绕过 API 的保存闸(手工改库/早于闸的规格):扫描器用同一份
+    // schema 校验 spec,坏规则不产生 run、不拖垮扫描——连 runner 的防呆 parse
+    // 都到不了,三层闸里最外层先关死
+    await insertRule({
+      name: "库里的坏端点",
+      trigger: { kind: "event", action: "task.created" },
+      actions: [{ type: "send_webhook", config: { url: "http://169.254.169.254/latest/meta-data/" } }],
+    });
+    await insertAuditEvent({ action: "task.created", detail: {} });
+    await runAutomationScan({ ...deps, sendRunJob });
+    expect(await db.select().from(schema.automationRuns)).toHaveLength(0);
+    expect(sent).toHaveLength(0);
+    expect(webhookRequests).toHaveLength(0);
+  });
+
+  it("executeSendWebhook re-checks the url itself (defense in depth below the runner's spec parse)", async () => {
+    const action = {
+      type: "send_webhook" as const,
+      config: { url: "http://169.254.169.254/latest/meta-data/", method: "POST" as const },
+    };
+    await expect(
+      executeSendWebhook(
+        deps,
+        { ruleId: "rule-1", ruleName: "r", createdById: null, runId: "run-1" },
+        action,
+      ),
+    ).rejects.toThrow(/not allowed/);
+    expect(webhookRequests).toHaveLength(0);
   });
 });

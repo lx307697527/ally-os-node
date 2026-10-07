@@ -5,7 +5,8 @@ import { z } from "zod";
  *
  * 规则模型借鉴 Odoo：触发（新建、字段变化、进入阶段 → 本切片统一为「审计事件
  * action 精确命中」，域事件由各域写审计时产生）→ 过滤条件（对事件语境的点路径
- * 断言）→ 动作（建任务、发通知、发邮件；其余动作类型随所属域切片进场）。本包零依赖
+ * 断言）→ 动作（建任务、发通知、发邮件、出站 webhook；其余动作类型随所属域
+ * 切片进场）。本包零依赖
  * （只有 zod）：API 的规则 CRUD 用同一份 schema 做保存时校验，worker 的扫描/
  * 执行用同一份 schema 做运行时解析——两端不会长出两套形状。
  *
@@ -117,10 +118,185 @@ export const sendEmailActionSchema = z.object({
 });
 export type SendEmailAction = z.infer<typeof sendEmailActionSchema>;
 
+export const WEBHOOK_METHODS = ["POST", "PUT", "PATCH"] as const;
+export type WebhookMethod = (typeof WEBHOOK_METHODS)[number];
+
+/** RFC 7230 token:冒号、空白、控制字符进不了名字,头部注入从形状上就没门 */
+const WEBHOOK_HEADER_NAME_RE = /^[A-Za-z0-9!#$%&'*+.^_`|~-]{1,128}$/;
+
+/**
+ * 出站 webhook 动作：自动化把一个静态 JSON 负载投到规则作者指定的 https 端点
+ * （通知 Slack/飞书 incoming webhook、触发外部系统流水线）。url 的闸在保存与
+ * 执行两道都落（执行时另加 DNS 解析逐地址复查，见 worker executeSendWebhook）：
+ * 自动化无人值守地发请求，端点绝不能是内网——worker 所在网络里 169.254.169.254
+ * （云元数据）、数据库、内部服务都在私网段上，一个「触发 → webhook」规则就是
+ * 一条把这些服务当靶子的通路，fail closed。
+ */
+export const sendWebhookActionSchema = z.object({
+  type: z.literal("send_webhook"),
+  config: z.object({
+    url: z
+      .string()
+      .trim()
+      .min(1)
+      .max(2048)
+      .refine(
+        (raw) => {
+          let url: URL;
+          try {
+            url = new URL(raw);
+          } catch {
+            return false;
+          }
+          return url.protocol === "https:" && isWebhookHostAllowed(url.hostname);
+        },
+        {
+          message:
+            "url must be an https URL on a public host — loopback, private, link-local, and *.local/*.internal hosts are refused",
+        },
+      ),
+    method: z.enum(WEBHOOK_METHODS).default("POST"),
+    headers: z
+      .record(
+        z.string().regex(WEBHOOK_HEADER_NAME_RE),
+        z
+          .string()
+          .max(1024)
+          .refine((value) => !/[\r\n\0]/.test(value), {
+            message: "header value must not contain CR, LF, or NUL",
+          }),
+      )
+      .refine((headers) => Object.keys(headers).length <= 10, {
+        message: "at most 10 headers",
+      })
+      .optional(),
+    body: z.unknown().optional(),
+  }),
+});
+export type SendWebhookAction = z.infer<typeof sendWebhookActionSchema>;
+
+/** 解析点分 IPv4；不是合法四段地址返回 null */
+function parseIpv4(host: string): [number, number, number, number] | null {
+  const parts = host.split(".");
+  if (parts.length !== 4) return null;
+  const bytes: number[] = [];
+  for (const part of parts) {
+    if (!/^\d{1,3}$/.test(part)) return null;
+    const value = Number(part);
+    if (value > 255) return null;
+    bytes.push(value);
+  }
+  return [bytes[0] ?? 0, bytes[1] ?? 0, bytes[2] ?? 0, bytes[3] ?? 0];
+}
+
+/** 解析 IPv6 字面量（含 :: 缩写与尾嵌 IPv4）为 16 字节；解析不了返回 null */
+function parseIpv6(host: string): Uint8Array | null {
+  let text = host;
+  // 尾嵌 IPv4（如 ::ffff:1.2.3.4）：换成等价的两个 16 位组再走统一解析
+  const lastColon = text.lastIndexOf(":");
+  if (lastColon >= 0 && text.slice(lastColon + 1).includes(".")) {
+    const v4 = parseIpv4(text.slice(lastColon + 1));
+    if (v4 === null) return null;
+    const hi = (v4[0] << 8) | v4[1];
+    const lo = (v4[2] << 8) | v4[3];
+    text = `${text.slice(0, lastColon + 1)}${hi.toString(16)}:${lo.toString(16)}`;
+  }
+  const halves = text.split("::");
+  if (halves.length > 2) return null;
+  const head = halves[0] === "" ? [] : (halves[0] ?? "").split(":");
+  const tail = halves.length === 2 ? (halves[1] === "" ? [] : (halves[1] ?? "").split(":")) : [];
+  const groups = [...head, ...tail];
+  if (groups.length > 8) return null;
+  for (const group of groups) {
+    if (!/^[0-9a-fA-F]{1,4}$/.test(group)) return null;
+  }
+  const fill = 8 - groups.length;
+  if (halves.length === 2 ? fill < 0 : fill !== 0) return null;
+  const words: number[] = [
+    ...head.map((group) => parseInt(group, 16)),
+    ...Array.from({ length: halves.length === 2 ? fill : 0 }, () => 0),
+    ...tail.map((group) => parseInt(group, 16)),
+  ];
+  const bytes = new Uint8Array(16);
+  for (const [index, word] of words.entries()) {
+    bytes[index * 2] = word >> 8;
+    bytes[index * 2 + 1] = word & 0xff;
+  }
+  return bytes;
+}
+
+function isBlockedIpv4(bytes: [number, number, number, number]): boolean {
+  const [a, b] = bytes;
+  // 0/8 本网络、10/8、100.64/10 CGNAT、127/8 回环、169.254/16 链路本地
+  // （含 169.254.169.254 云元数据）、172.16/12、192.168/16、198.18/15 基准测试
+  return (
+    a === 0 ||
+    a === 10 ||
+    a === 127 ||
+    (a === 100 && b >= 64 && b <= 127) ||
+    (a === 169 && b === 254) ||
+    (a === 172 && b >= 16 && b <= 31) ||
+    (a === 192 && b === 168) ||
+    (a === 198 && (b === 18 || b === 19))
+  );
+}
+
+function isBlockedIpv6(bytes: Uint8Array): boolean {
+  const allZero = bytes.every((byte) => byte === 0);
+  // :: 未指定、::1 回环、fc00::/7 ULA、fe80::/10 链路本地
+  if (allZero || (bytes[15] === 1 && allZeroExceptLast(bytes))) return true;
+  const first = bytes[0] ?? 0;
+  if (first === 0xfc || first === 0xfd) return true;
+  if (first === 0xfe && (bytes[1] ?? 0) >= 0x80 && (bytes[1] ?? 0) <= 0xbf) return true;
+  // ::ffff:0:0/96 IPv4 映射地址：内嵌的 v4 才是真实目标
+  const mapped = bytes.slice(0, 10).every((byte) => byte === 0) && bytes[10] === 0xff && bytes[11] === 0xff;
+  if (mapped) {
+    return isBlockedIpv4([bytes[12] ?? 0, bytes[13] ?? 0, bytes[14] ?? 0, bytes[15] ?? 0]);
+  }
+  return false;
+}
+
+function allZeroExceptLast(bytes: Uint8Array): boolean {
+  return bytes.slice(0, 15).every((byte) => byte === 0);
+}
+
+/**
+ * 解析后的地址是否可作出站 webhook 目标：只放行公网。worker 的 DNS 复查逐地址
+ * 过这道闸——域名是公口的，解析出一条私网地址就是一条私网通路。解析不了的
+ * 字符串不是地址，拒绝。
+ */
+export function isWebhookIpAllowed(address: string): boolean {
+  const v4 = parseIpv4(address);
+  if (v4 !== null) return !isBlockedIpv4(v4);
+  const v6 = parseIpv6(address);
+  if (v6 !== null) return !isBlockedIpv6(v6);
+  return false;
+}
+
+/**
+ * URL hostname（WHATWG URL 对 IPv6 字面量保留方括号、对 IPv4 形状做规范化，
+ * 十六进制/八进制变体到不了这里）是否可作出站 webhook 目标：IP 字面量按地址
+ * 闸判，域名挡掉 localhost 家族与 *.local/*.internal 后放行——解析成私网地址
+ * 的公网域名由执行时的 DNS 复查挡，保存面只做无网络判定的形状闸。
+ */
+export function isWebhookHostAllowed(hostname: string): boolean {
+  const host = hostname.replace(/^\[/, "").replace(/\]$/, "").toLowerCase();
+  if (host === "localhost" || host.endsWith(".localhost")) return false;
+  if (host.endsWith(".local") || host.endsWith(".internal")) return false;
+  const v4 = parseIpv4(host);
+  if (v4 !== null) return !isBlockedIpv4(v4);
+  if (host.includes(":")) {
+    const v6 = parseIpv6(host);
+    return v6 !== null && !isBlockedIpv6(v6);
+  }
+  return true;
+}
+
 export const actionSpecSchema = z.discriminatedUnion("type", [
   createTaskActionSchema,
   notifyActionSchema,
   sendEmailActionSchema,
+  sendWebhookActionSchema,
 ]);
 export type ActionSpec = z.infer<typeof actionSpecSchema>;
 

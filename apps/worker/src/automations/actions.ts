@@ -6,8 +6,14 @@ import {
   userChannel,
   type RealtimeBusPayload,
 } from "@ally/realtime";
-import type { ActionResult, CreateTaskAction, NotifyAction, SendEmailAction } from "@ally/automations";
-import { AUTOMATION_ACTOR_PREFIX } from "@ally/automations";
+import type {
+  ActionResult,
+  CreateTaskAction,
+  NotifyAction,
+  SendEmailAction,
+  SendWebhookAction,
+} from "@ally/automations";
+import { AUTOMATION_ACTOR_PREFIX, isWebhookHostAllowed, isWebhookIpAllowed } from "@ally/automations";
 import { escapeHtml, htmlToPlainText, type Mailer } from "@ally/mailer";
 import { inArray } from "drizzle-orm";
 import { schema, type Db } from "@ally/db";
@@ -31,15 +37,8 @@ export interface PublishExecutor {
   query(text: string, values?: unknown[]): Promise<unknown>;
 }
 
-export interface ActionDeps {
+export interface ActionDeps extends ActionServices {
   db: Db;
-  /** pg_notify 总线的发布执行器（与 packages/realtime RealtimeBus.publish 同一条 SQL） */
-  publishExecutor: PublishExecutor;
-  logger: Logger;
-  /** 总线信封的 instanceId（跨进程广播标记来源实例，worker 启动时生成） */
-  instanceId: string;
-  /** 邮件通道（#116 渠道层的 @ally/mailer；send_email 动作的唯一传输） */
-  mailer: Mailer;
 }
 
 /** 经 pg_notify 总线发铃铛「催」；失败不抛（通知行已落库，推送只是加速器） */
@@ -71,6 +70,13 @@ export interface ActionServices {
   instanceId: string;
   /** 邮件通道（@ally/mailer；未配 Resend key 时是日志模式，动作照样「成功」） */
   mailer: Mailer;
+  /** 出站 webhook 的 fetch 接缝（send_webhook 动作；测试注入假实现，默认全局 fetch） */
+  webhookFetcher: typeof fetch;
+  /**
+   * DNS 解析接缝（send_webhook 的 SSRF 闸第二道：把目标主机名解析成全部地址
+   * 逐个过私网检查。默认 node:dns lookup(all)；测试注入假实现）。
+   */
+  dnsLookup: (host: string) => Promise<{ address: string; family: number }[]>;
 }
 
 export interface ActionContext {
@@ -214,4 +220,108 @@ export async function executeSendEmail(
     await services.mailer.send({ to, subject: config.subject, html, text });
   }
   return { type: "send_email", status: "succeeded" };
+}
+
+/** 出站 webhook 的整体超时：挂死的端点不能拴住 worker（动作在 runner 的事务里跑，行锁在等它） */
+export const WEBHOOK_TIMEOUT_MS = 10_000;
+/** 失败时从响应体取错误说明的字节上界（截断后进 action_results 的 error，不整读响应） */
+const WEBHOOK_MAX_RESPONSE_BYTES = 2048;
+/** 进 error 的说明再截到字符级（与 mailer 的 detail.slice(0, 200) 同裁） */
+const WEBHOOK_ERROR_DETAIL_CHARS = 200;
+
+/** 有界读响应体：读到上界即停并取消流——任意第三方端点不能靠超大响应耗内存 */
+async function readResponseHead(response: Response): Promise<string> {
+  const reader = response.body?.getReader();
+  if (reader === undefined) return "";
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  while (total < WEBHOOK_MAX_RESPONSE_BYTES) {
+    const { done, value } = (await reader.read()) as { done: boolean; value?: Uint8Array };
+    if (done || value === undefined) break;
+    chunks.push(value);
+    total += value.byteLength;
+  }
+  await reader.cancel().catch(() => undefined);
+  const merged = new Uint8Array(Math.min(total, WEBHOOK_MAX_RESPONSE_BYTES));
+  let offset = 0;
+  for (const chunk of chunks) {
+    if (offset >= merged.byteLength) break;
+    merged.set(chunk.subarray(0, merged.byteLength - offset), offset);
+    offset += Math.min(chunk.byteLength, merged.byteLength - offset);
+  }
+  return new TextDecoder().decode(merged).replace(/\s+/g, " ").trim();
+}
+
+/**
+ * send_webhook 动作（#224 切片 5）：把规则作者保存时点死的静态 JSON 负载投到
+ * https 端点（通知 Slack/飞书 incoming webhook、触发外部流水线）。payload 不做
+ * 模板插值——语境数据进负载是条件积木/模板切片的事，本动作只忠实投递作者写的
+ * 内容；接收方区分不了来源是作者的设计（作者要带就自己在 headers/body 里带）。
+ *
+ * SSRF 三道闸，全部 fail closed：
+ * 1. 保存时（schema）：https + 公网形状（IP 字面量过私网段检查，域名挡
+ *    localhost/*.local/*.internal）；
+ * 2. 执行时复查（本函数）：spec 可能早于闸的收紧、可能被手工改库——原样再判
+ *    一遍 url；
+ * 3. DNS 复查（本函数）：公网域名解析出私网地址（含 169.254.169.254 云元数据、
+ *    RFC1918、回环）同样拒绝——「公口域名」不等于「公网目标」。已知残余：
+ *    DNS rebinding（两次解析返回不同地址）不在检查范围，接出口代理时收口。
+ *
+ * 传输裁决：redirect: "error"（重定向能把过闸的 url 带去没过闸的目标）、
+ * AbortSignal.timeout 防挂死、非 2xx = 失败进重试、失败说明只取有界头部字节
+ * （错误消息进 action_results，可被规则读者看到——headers 里的密钥绝不进消息）。
+ *
+ * 投递语义与 send_email 同裁 at-least-once：对端已处理但响应 5xx/超时 = 重试
+ * 会再投一次（重复窗口 = 第一个成功响应之前的每次投递）。不写审计、不进通知
+ * 表——执行事实在 automation_runs 的 action_results。
+ */
+export async function executeSendWebhook(
+  services: ActionServices,
+  ctx: ActionContext,
+  action: SendWebhookAction,
+): Promise<ActionResult> {
+  const config = action.config;
+  let url: URL;
+  try {
+    url = new URL(config.url);
+  } catch {
+    throw new Error("send_webhook url is not a valid URL");
+  }
+  if (url.protocol !== "https:" || !isWebhookHostAllowed(url.hostname)) {
+    throw new Error(`send_webhook url is not allowed: ${url.protocol}//${url.hostname}`);
+  }
+  const bareHost = url.hostname.replace(/^\[/, "").replace(/\]$/, "");
+  const addresses = await services.dnsLookup(bareHost);
+  const blocked = addresses.filter((entry) => !isWebhookIpAllowed(entry.address));
+  if (blocked.length > 0) {
+    // 地址本身可以进错误消息（运营需要知道是哪一段私网），路径与查询不带
+    throw new Error(
+      `send_webhook target resolves to a blocked address: ${blocked.map((entry) => entry.address).join(", ")}`,
+    );
+  }
+  const headers = new Headers(config.headers ?? {});
+  let body: string | undefined;
+  if (config.body !== undefined) {
+    body = JSON.stringify(config.body);
+    const hasContentType = [...headers.keys()].some((name) => name.toLowerCase() === "content-type");
+    if (!hasContentType) headers.set("content-type", "application/json");
+  }
+  services.logger.info(
+    { ruleId: ctx.ruleId, runId: ctx.runId, host: url.hostname, method: config.method },
+    "automation webhook send",
+  );
+  const response = await services.webhookFetcher(url, {
+    method: config.method,
+    headers,
+    ...(body !== undefined ? { body } : {}),
+    redirect: "error",
+    signal: AbortSignal.timeout(WEBHOOK_TIMEOUT_MS),
+  });
+  if (!response.ok) {
+    const detail = await readResponseHead(response);
+    throw new Error(`send_webhook failed: HTTP ${response.status}${detail === "" ? "" : ` ${detail.slice(0, WEBHOOK_ERROR_DETAIL_CHARS)}`}`);
+  }
+  // 成功不读响应体:2xx 状态即投递事实,流直接取消释放连接
+  await response.body?.cancel().catch(() => undefined);
+  return { type: "send_webhook", status: "succeeded" };
 }
