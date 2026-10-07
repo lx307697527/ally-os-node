@@ -7,6 +7,12 @@ import {
   StripeGatewayError,
   verifyStripeSignature,
 } from "./stripe.ts";
+import {
+  computeSurchargeCents,
+  PRINCIPAL_AMOUNT_METADATA_KEY,
+  splitSurchargedCapture,
+  SURCHARGE_AMOUNT_METADATA_KEY,
+} from "./surcharge.ts";
 
 /**
  * Stripe 渠道内核的单元面（#193）：验签、事件归一、checkout 网关。全部纯函数 +
@@ -85,6 +91,80 @@ describe("verifyStripeSignature (#193)", () => {
     expect(
       verifyStripeSignature({ secret: SECRET, header: `t=${String(NOW)}`, rawBody: body, nowSeconds: NOW }),
     ).toEqual({ ok: false, reason: "malformed_header" });
+  });
+});
+
+describe("computeSurchargeCents (#193 surcharge)", () => {
+  it("computes 3.9% of the principal in whole cents via basis points", () => {
+    expect(computeSurchargeCents(150000, 3.9)).toBe(5850); // $1,500 → $58.50
+    expect(computeSurchargeCents(100000, 3.9)).toBe(3900);
+  });
+
+  it("rounds half up to whole cents and quantizes the rate to basis points", () => {
+    expect(computeSurchargeCents(12345, 3.9)).toBe(481); // 481.455 → 481
+    expect(computeSurchargeCents(1, 3.9)).toBe(0); // sub-cent fee rounds away to "no surcharge"
+    expect(computeSurchargeCents(100000, 4.25)).toBe(4250); // rate quantized to 425 bp（第三位小数不是定义精度）
+  });
+
+  it("treats the 0% kill switch as no fee at all", () => {
+    expect(computeSurchargeCents(150000, 0)).toBe(0);
+  });
+});
+
+describe("splitSurchargedCapture (#193 surcharge)", () => {
+  // 老系统 surcharge_split_test 的同名案例，金额换到整数分
+  it("splits the gross into principal and surcharge using session metadata", () => {
+    expect(
+      splitSurchargedCapture(103900, {
+        invoice_id: "inv",
+        [PRINCIPAL_AMOUNT_METADATA_KEY]: "100000",
+        [SURCHARGE_AMOUNT_METADATA_KEY]: "3900",
+      }),
+    ).toEqual({ principalCents: 100000, surchargeCents: 3900 });
+  });
+
+  it("treats a capture with no surcharge metadata exactly as before (regression anchor)", () => {
+    // 本切片上线前创建的所有 session 走这条路：gross 就是 principal，没有费
+    expect(splitSurchargedCapture(100000, { invoice_id: "inv" })).toEqual({
+      principalCents: 100000,
+      surchargeCents: null,
+    });
+    expect(splitSurchargedCapture(100000, {})).toEqual({ principalCents: 100000, surchargeCents: null });
+  });
+
+  it("refuses to bank a capture whose split does not sum to the amount received", () => {
+    // 费率行可被管理员改：报出的价与实扣额可能真的不一致——一个数字是错的而
+    // 这里无法分辨是哪个，什么都不入账
+    expect(
+      splitSurchargedCapture(103900, {
+        [PRINCIPAL_AMOUNT_METADATA_KEY]: "100000",
+        [SURCHARGE_AMOUNT_METADATA_KEY]: "3000",
+      }),
+    ).toBeNull();
+  });
+
+  it("refuses a half-declared split (deriving the missing half would prove nothing)", () => {
+    expect(splitSurchargedCapture(103900, { [SURCHARGE_AMOUNT_METADATA_KEY]: "3900" })).toBeNull();
+    expect(splitSurchargedCapture(103900, { [PRINCIPAL_AMOUNT_METADATA_KEY]: "100000" })).toBeNull();
+  });
+
+  it("refuses a surcharge that is not a positive whole number of cents", () => {
+    for (const bad of ["0", "-100", "3900.5", "", "lots", null]) {
+      expect(
+        splitSurchargedCapture(103900, {
+          [PRINCIPAL_AMOUNT_METADATA_KEY]: "100000",
+          [SURCHARGE_AMOUNT_METADATA_KEY]: bad,
+        }),
+      ).toBeNull();
+    }
+    for (const bad of ["0", "-100", "100000.5", "", "lots", null]) {
+      expect(
+        splitSurchargedCapture(103900, {
+          [PRINCIPAL_AMOUNT_METADATA_KEY]: bad,
+          [SURCHARGE_AMOUNT_METADATA_KEY]: "3900",
+        }),
+      ).toBeNull();
+    }
   });
 });
 
@@ -168,6 +248,44 @@ describe("normalizeStripeEvent (#193)", () => {
     expect(absent).toMatchObject({ kind: "payment", invoiceId: null, invoiceIdInvalid: false });
   });
 
+  it("books the principal of a surcharged capture and carries the fee beside it", () => {
+    // Stripe 线格式：metadata 值是字符串
+    const event = normalizeStripeEvent(
+      paidEvent({
+        id: "cs_1",
+        payment_intent: "pi_x",
+        amount_total: 155850,
+        amount_received: 155850,
+        metadata: {
+          invoice_id: invoiceId,
+          principal_amount_cents: "150000",
+          surcharge_amount_cents: "5850",
+        },
+      }),
+    );
+    expect(event).toMatchObject({
+      kind: "payment",
+      amountCents: 150000,
+      surchargeCents: 5850,
+      invoiceId,
+    });
+  });
+
+  it("refuses a surcharged event whose split does not reconcile (502, redeliver)", () => {
+    const mismatched = normalizeStripeEvent(
+      paidEvent({
+        id: "cs_1",
+        amount_total: 155000,
+        metadata: { principal_amount_cents: "150000", surcharge_amount_cents: "5850" },
+      }),
+    );
+    expect(mismatched.kind).toBe("unparsable");
+    const halfDeclared = normalizeStripeEvent(
+      paidEvent({ id: "cs_1", amount_total: 155850, metadata: { surcharge_amount_cents: "5850" } }),
+    );
+    expect(halfDeclared.kind).toBe("unparsable");
+  });
+
   it("clamps a future event timestamp down to now (received_at never lies ahead)", () => {
     vi.useFakeTimers({ now: 1_760_000_500_000 }); // 事件「时刻」在 fake now 之后 500 秒——钟差场景
     try {
@@ -215,6 +333,31 @@ describe("createStripeGateway (#193)", () => {
     expect(form.get("line_items[0][price_data][currency]")).toBe("usd");
     expect(form.get("metadata[invoice_id]")).toBe(baseInput.invoiceId);
     expect(form.get("client_reference_id")).toBe(baseInput.invoiceId);
+  });
+
+  it("charges principal + surcharge and rides the split on session metadata", async () => {
+    const { fetcher, calls } = fetcherResponding(200, { id: "cs_sur", url: "https://checkout.stripe.com/c/pay/cs_sur" });
+    const gateway = createStripeGateway({ secretKey: "sk_test_x", fetcher });
+    await gateway.createCheckoutSession({ ...baseInput, surchargeCents: 5850 });
+    const request = calls[0];
+    if (request === undefined) throw new Error("gateway made no request");
+    const form = new URLSearchParams(await request.text());
+    // 客户被实扣 principal + fee；拆分进 metadata 供 webhook 对账
+    expect(form.get("line_items[0][price_data][unit_amount]")).toBe("155850");
+    expect(form.get("metadata[principal_amount_cents]")).toBe("150000");
+    expect(form.get("metadata[surcharge_amount_cents]")).toBe("5850");
+  });
+
+  it("omits the surcharge keys for an ordinary session (0 = no surcharge, not a zero fee)", async () => {
+    const { fetcher, calls } = fetcherResponding(200, { id: "cs_plain", url: "https://checkout.stripe.com/c/pay/cs_plain" });
+    const gateway = createStripeGateway({ secretKey: "sk_test_x", fetcher });
+    await gateway.createCheckoutSession(baseInput);
+    const request = calls[0];
+    if (request === undefined) throw new Error("gateway made no request");
+    const form = new URLSearchParams(await request.text());
+    expect(form.get("line_items[0][price_data][unit_amount]")).toBe("150000");
+    expect(form.get("metadata[principal_amount_cents]")).toBeNull();
+    expect(form.get("metadata[surcharge_amount_cents]")).toBeNull();
   });
 
   it("throws a gateway error on a non-2xx (details stay in the log, not the type)", async () => {

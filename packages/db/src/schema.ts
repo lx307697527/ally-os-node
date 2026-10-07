@@ -2,6 +2,7 @@ import { desc, sql } from "drizzle-orm";
 import {
   bigint,
   boolean,
+  check,
   index,
   integer,
   jsonb,
@@ -1354,6 +1355,14 @@ export const invoiceLines = pgTable(
 //    provider 重试」同一去向）。
 // 3. **金额整数分**（发票同裁），method 用 R-12-1 的三种付款方式（不收支票），
 //    currency 从发票行原样抄录（收款行自描述，#181 QuickBooks 推送的路标）。
+// 4. **amount_cents 保持「这笔款结清多少」的语义，附加费单列**（R-12-2/3，
+//    #193 切片；老系统 FEAT-581 同一裁决）：发票面金额不变，刷卡/PayPal 的
+//    手续费在 checkout 加收、结账前向客户披露，绝不写进发票行——amount_cents
+//    的 SUM 就是 paid 派生与 #241 发货门槛的唯一口径，所有读法无需学会扣费。
+//    surcharge_cents 可空：NULL = 无附加费；CHECK 拒绝 0——「没有附加费」与
+//    「有人算了费但一文没算到」是两个陈述，后者不允许存在（写面只在这两态里
+//    选一）。附加费不参与 paid 派生，也结构性不进退款边界（#240：费沉没在
+//    收款时点，老系统 ADR-008 R50 同读法）。
 //
 // source 幂等与发票同构：(source_type, source_key) 唯一索引，webhook 重放在
 // 结构上只可能有一行（#193 的 webhook 层把 PaymentExistsError 当「已记账成功」，
@@ -1373,6 +1382,8 @@ export const payments = pgTable(
     invoiceId: uuid("invoice_id").notNull().references(() => invoices.id),
     method: paymentMethod("method").notNull(),
     amountCents: integer("amount_cents").notNull(),
+    // 附加费（R-12-2/3）：> 0 才有行值，见上第 4 条
+    surchargeCents: integer("surcharge_cents"),
     currency: text("currency").notNull().default("USD"),
     sourceType: text("source_type"),
     sourceKey: text("source_key"),
@@ -1391,5 +1402,7 @@ export const payments = pgTable(
     index("payments_invoice_id_idx").on(t.invoiceId),
     // webhook 幂等（见上）；手工行 (null, null) 不受约束
     uniqueIndex("payments_source_idx").on(t.sourceType, t.sourceKey),
+    // 「算了 0」不是「没有」：两态必须只能落其一（表注释第 4 条；NULL 直通 CHECK）
+    check("payments_surcharge_positive", sql`${t.surchargeCents} > 0`),
   ],
 );

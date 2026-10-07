@@ -227,9 +227,54 @@ null,detail 带 `eventType`)一个 commit——「钱记了、审计没了」的
 ### 门户与渠道的分工(现状)
 
 客户门户(M1 #186)还没有登录身份与发票归属映射(发票 → 客户要等订单域 #231
-给出 subject 锚点),「支付他人发票被拒」的归属门随门户面进场;本切片把同一
-服务路径先开给财务(invoices.manage)——财务确认后把链接发给客户是当下就成立
+给出 subject 锚点),「支付他人发票被拒」的归属门随门户面进场;本切片
+把同一条服务路径先开给财务(invoices.manage)——财务确认后把链接发给客户是当下就成立
 的收款动作。门户将来复用同一 `StripeGateway`,不新增第二套建会话的路径。
+
+## 已落地:附加费拆分(R-12-2/3,#193 切片)
+
+设计权威:#232 §10 参数表「信用卡与 PayPal 附加费 3.9% ⚠(管理员可调)」+ §4.8
+风险登记(3.9% 可能超卡组织 3% 规则与个别州上限,业主知情维持,种子行
+`risk_note` 同文)。老系统对照 FEAT-581(supabase/functions/stripe-webhook 的
+splitSurchargedCapture + billing.card_payment_policy):对账纪律原样带过来,
+费率存储换规则注册表(#233 的 registry_rules,不再单设 policy 表),告警分流
+(Sentry/Slack)刻意不带——失败付款站内提醒随通知域进场。
+
+### 三个裁决
+
+1. **发票面金额不变**:费在 checkout 加收、结账前向客户披露,绝不写进发票行。
+   `payments.amount_cents` 保持「这笔款结清多少」的唯一语义,附加费单列
+   `surcharge_cents`(0033,expand-only;NULL = 无附加费,CHECK 拒 0——「没有」
+   与「算了 0」两态不可并存)。paid 派生、#241 发货门槛、#181 QuickBooks 全部
+   只读 amount_cents,没有一个读法需要学会扣费(老系统 migration 原话:五个
+   投影都得学会减费是 FEAT-550 形状的坑)。
+2. **拆分只能在 session 创建时算好,搭 metadata 回来**:Stripe 事件只报一个
+   总数,principal/fee 拆分是我们自己的算术。webhook 端四种命名拒绝
+   (billing/surcharge.ts,老系统同名测试全部随行):无拆分键 = 存量普通会话
+   (gross 即 principal,回归锚点);拆分 ≠ 实扣额、半申报、非正整数 → 502
+   拿不准的钱不确认——「两个数字必有一个是错的而这里无法分辨」。
+3. **费率先量化到基点再整数运算**:`computeSurchargeCents` = round(principal ×
+   bp / 10000),两位小数的百分比是费率的定义精度,中途不出浮点金额。
+
+### 费率面
+
+- `payments.card_surcharge_pct`(0021 种子 3.9%,param,管理员可调,⚠);
+  PayPal 渠道进场时读自己的 `payments.paypal_surcharge_pct`,不共用常量。
+- 消费方 zod 收口 0–5%(surchargeRateSchema):机械护栏拦配置事故,不是业务
+  裁决——真要超 5% 先过配置工作室,再放宽消费方。读不出(未种/待填/出界)
+  → checkout 409 `surcharge_rule_unusable` fail closed(numbering_not_configured
+  同一先例:修复动作是去配置工作室,不是 500 的配置事故)。
+- **0% = 管理员关闸**:session 与存量无附加费会话完全同形(不写拆分键)——
+  「关掉」由「会话形状」承载,webhook 无需知道开关存在。
+
+### 端点与契约变化
+
+| 面 | 变化 |
+| --- | --- |
+| `POST /api/invoices/:id/stripe-checkout` | 响应 `amountCents` 改为实扣 gross,另带 `principalCents`/`surchargeCents`;审计 `invoice.payment_link_created` 同构(实扣额 + 拆分快照) |
+| `POST /api/webhooks/stripe` | 拆分对账:metadata 两键齐全且 principal+surcharge = 实扣额才入账,否则 502 |
+| `GET /api/invoices/:id/payments` | 台账行带 `surchargeCents`(null = 无附加费) |
+| 手工记账 `POST /api/invoices/:id/payments` | **不变**:电汇/ACH 无费;附加费无手工入口(它来自签名 metadata 的对账,不是人填的字段) |
 
 ## 剩余(#192 保持 open,Part of #192)
 
@@ -237,11 +282,10 @@ null,detail 带 `eventType`)一个 commit——「钱记了、审计没了」的
    50%–100%,低于 50% 走财务审批 R-08-2——审批线 #221 已可表达)、每批尾款
    (完工 + 实际产量 + 运营确认 R-11-6;结算量 = min(实际, 报价×110%),少产
    超 10% 拦开票 R-11-4)——调 `createDraftInvoice` 传 source 幂等键;
-2. Stripe webhook 已落地(#193:checkout 链接 + 验签消费 + 幂等记账);剩
-   PayPal 渠道(同一接缝,sourceType paypal)、附加费规则(R-12-2/3,规则注册表
-   #233 已就绪,session 金额带 principal/surcharge 拆分——老系统 splitSurchargedCapture
-   的教训带过去)、失败付款/银行借记拒付的站内提醒(老系统 Sentry/Slack 分流在新
-   系统走通知域);
+2. Stripe webhook 已落地(#193:checkout 链接 + 验签消费 + 幂等记账 + 附加费
+   R-12-2/3 拆分对账);剩 PayPal 渠道(同一接缝,sourceType paypal,读
+   `payments.paypal_surcharge_pct`)、失败付款/银行借记拒付的站内提醒(老系统
+   Sentry/Slack 分流在新系统走通知域;附加费对账拒绝的可见性同批进场);
 3. 到期前提醒(R-12-7,渠道层 + due 扫描)、收款状态回写订单/批次(#241 发货
    门槛,读 `computePaymentStatus`)、QuickBooks 推送(#181,含银行流水认领)、
    第一笔款到账转正式客户(R-02-5)等收款触发业务;

@@ -17,9 +17,12 @@ import { normalizeStripeEvent, stripeMisconfigured, verifyStripeSignature } from
  * - 200 `{ received: true }` —— 记账成功 / 幂等重放（已记账）/ 无关事件 / 无锚点
  *   入账（metadata 缺席：不是发票支付，认领面随 #181 进场）；
  * - 502 —— 钱到了但这边记不了：票未确认（not_issued）/ 已作废（invoice_voided）/
- *   找不到（invoice_not_found）/ 事件读不出可信金额。**绝不 2xx 确认记不了的钱**
- *   ——确认一次，这笔钱就永远收不回来了；重投等财务确认（R-12-6 是人的闸门，
- *   webhook 靠 provider 重试跨过它，billing/payments.ts 文件头同文）。
+ *   找不到（invoice_not_found）/ 事件读不出可信金额 / surcharge 拆分对不上
+ *   （R-12-2/3：建会话时报的 principal+fee 与实扣额不一致，两个数字必有一个是
+ *   错的而这里无法分辨——billing/surcharge.ts 文件头的四种命名拒绝）。
+ *   **绝不 2xx 确认记不了的钱**——确认一次，这笔钱就永远收不回来了；重投等
+ *   财务确认（R-12-6 是人的闸门，webhook 靠 provider 重试跨过它，
+ *   billing/payments.ts 文件头同文）。
  *
  * 幂等：source = ("stripe", externalId)（payment_intent ?? 对象 id）——重放/双发
  * （completed + succeeded 对同一笔钱）撞 payments_source_idx，PaymentExistsError
@@ -86,7 +89,10 @@ export function stripeWebhookRoutes(deps: { db: Db; logger: Logger; stripe: Stri
     try {
       const recorded = await deps.db.transaction(async (tx) => {
         const booked = await recordPayment(tx, invoiceId, {
+          // amountCents = 结清额（principal）；附加费是拆分出的费成分（R-12-2/3），
+          // 不参与 paid 派生——支付态「结清」的口径不因手续费漂移
           amountCents: event.amountCents,
+          ...(event.surchargeCents !== null ? { surchargeCents: event.surchargeCents } : {}),
           method: "card",
           receivedAt: event.receivedAt,
           note: `Stripe ${event.externalId}`,
@@ -102,6 +108,7 @@ export function stripeWebhookRoutes(deps: { db: Db; logger: Logger; stripe: Stri
               invoiceId,
               invoiceNumber: booked.number,
               amountCents: event.amountCents,
+              ...(event.surchargeCents !== null ? { surchargeCents: event.surchargeCents } : {}),
               method: "card",
               paymentStatus: booked.paymentStatus,
               paidCents: booked.paidCents,
@@ -119,7 +126,7 @@ export function stripeWebhookRoutes(deps: { db: Db; logger: Logger; stripe: Stri
         return c.json({ error: "invoice_not_found" }, 502);
       }
       deps.logger.info(
-        { invoiceId, invoiceNumber: recorded.number, amountCents: event.amountCents, paymentStatus: recorded.paymentStatus, externalId: event.externalId },
+        { invoiceId, invoiceNumber: recorded.number, amountCents: event.amountCents, surchargeCents: event.surchargeCents, paymentStatus: recorded.paymentStatus, externalId: event.externalId },
         "stripe webhook payment recorded",
       );
       return c.json({ received: true, invoiceNumber: recorded.number, paymentStatus: recorded.paymentStatus });

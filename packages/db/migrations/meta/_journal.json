@@ -232,6 +232,13 @@
       "when": 1791389754801,
       "tag": "0032_tearful_spirit",
       "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1791400526801,
+      "tag": "0033_great_giant_girl",
+      "breakpoints": true
     }
   ]
 }

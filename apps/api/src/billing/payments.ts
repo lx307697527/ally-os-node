@@ -47,13 +47,16 @@ export function computePaymentStatus(totalCents: number, paidCents: number): Inv
   return "unpaid";
 }
 
-/** 记账输入：金额整数分、方式词表、到账时刻（缺省 = 记账时刻）；source 幂等键 */
+/** 记账输入：金额整数分、方式词表、到账时刻（缺省 = 记账时刻）；source 幂等键。
+ * amountCents 恒为结清额（principal，R-12-2/3 的发票面不变裁决）；附加费走
+ * surchargeCents（> 0 整数分，webhook 拆分对账后的费成分；手工记账不收费） */
 export interface RecordPaymentInput {
   amountCents: number;
   method: PaymentMethod;
   receivedAt: Date;
   note: string | null;
   source?: { type: string; key: string };
+  surchargeCents?: number;
   recordedById: string | null;
 }
 
@@ -122,6 +125,7 @@ export async function recordPayment(
         invoiceId,
         method: input.method,
         amountCents: input.amountCents,
+        surchargeCents: input.surchargeCents ?? null,
         currency: invoice.currency,
         sourceType: input.source?.type ?? null,
         sourceKey: input.source?.key ?? null,
@@ -255,6 +259,7 @@ export async function listPaymentsForInvoice(
         id: string;
         method: string;
         amountCents: number;
+        surchargeCents: number | null;
         currency: string;
         receivedAt: Date;
         note: string | null;
@@ -278,6 +283,7 @@ export async function listPaymentsForInvoice(
       id: schema.payments.id,
       method: schema.payments.method,
       amountCents: schema.payments.amountCents,
+      surchargeCents: schema.payments.surchargeCents,
       currency: schema.payments.currency,
       receivedAt: schema.payments.receivedAt,
       note: schema.payments.note,
