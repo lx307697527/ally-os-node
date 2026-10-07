@@ -5,7 +5,7 @@ import { z } from "zod";
  *
  * 规则模型借鉴 Odoo：触发（新建、字段变化、进入阶段 → 本切片统一为「审计事件
  * action 精确命中」，域事件由各域写审计时产生）→ 过滤条件（对事件语境的点路径
- * 断言）→ 动作（建任务、发通知、发邮件、出站 webhook；其余动作类型随所属域
+ * 断言）→ 动作（建任务、发通知、发邮件、出站 webhook、改字段；其余动作类型随所属域
  * 切片进场）。本包零依赖
  * （只有 zod）：API 的规则 CRUD 用同一份 schema 做保存时校验，worker 的扫描/
  * 执行用同一份 schema 做运行时解析——两端不会长出两套形状。
@@ -292,11 +292,62 @@ export function isWebhookHostAllowed(hostname: string): boolean {
   return true;
 }
 
+/**
+ * 改字段动作（#224 切片 6）：把触发语境指向的那条记录上的一个字段改成规则作者
+ * 保存时点死的值。目标永远是最多一个行（触发语境的 target），不是查询——自动
+ * 化批量改写是另一档危险，本动作不做。值是静态 JSON（无模板插值，与
+ * send_webhook 的 payload 同裁）。
+ *
+ * 「哪张表的哪些字段容许自动化改」是属主域的裁决，与 due 锚点同一裁法：worker
+ * 侧 field-registry 声明式白名单（第一个成员 task.status），本包只收形状——保存
+ * 面验形状、运行时验注册：未注册的 subjectType/field 存得进但执行必败并告警，
+ * fail closed（docs/automations.md 的 due 未注册锚点同一条裁决）。
+ */
+export const updateFieldActionSchema = z.object({
+  type: z.literal("update_field"),
+  config: z
+    .object({
+      subjectType: z.string().trim().min(1).max(100),
+      field: z.string().trim().min(1).max(100),
+      /** 目标值：保存时点死的静态 JSON；显式 null 允许（是否可空由域裁决） */
+      value: z.unknown().optional(),
+    })
+    .refine((config) => "value" in config, { message: "value is required" }),
+});
+export type UpdateFieldAction = z.infer<typeof updateFieldActionSchema>;
+
+/**
+ * 从触发语境的 target 解析出 subject 行 id：event 触发的审计 target 是裸行 id，
+ * due 触发的合成 target（dueEventContext）是 `subjectType:subjectId`。target 带
+ * 前缀而前缀对不上配置的 subjectType = 规则作者配错了对象，拒绝——改错行比不
+ * 改更糟，这里宁可 fail loud。
+ */
+export function subjectIdFromTarget(
+  target: string | null,
+  subjectType: string,
+): { ok: true; subjectId: string } | { ok: false; reason: string } {
+  if (target === null || target === "") {
+    return { ok: false, reason: "trigger event has no target" };
+  }
+  const prefix = `${subjectType}:`;
+  if (target.startsWith(prefix)) {
+    const subjectId = target.slice(prefix.length);
+    return subjectId === ""
+      ? { ok: false, reason: `target prefix ${subjectType}: has no id after it` }
+      : { ok: true, subjectId };
+  }
+  if (target.includes(":")) {
+    return { ok: false, reason: `target belongs to a different subject than ${subjectType}` };
+  }
+  return { ok: true, subjectId: target };
+}
+
 export const actionSpecSchema = z.discriminatedUnion("type", [
   createTaskActionSchema,
   notifyActionSchema,
   sendEmailActionSchema,
   sendWebhookActionSchema,
+  updateFieldActionSchema,
 ]);
 export type ActionSpec = z.infer<typeof actionSpecSchema>;
 

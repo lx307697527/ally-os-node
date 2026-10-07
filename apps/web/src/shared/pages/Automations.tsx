@@ -199,6 +199,21 @@ function ActionCard({ action }: { action: unknown }) {
       </div>
     );
   }
+  if (record.type === "update_field") {
+    const subjectType = typeof config.subjectType === "string" ? config.subjectType : "";
+    const field = typeof config.field === "string" ? config.field : "";
+    return (
+      <div className="rounded-control border border-line p-3" data-testid="automations-action-update-field">
+        <Paragraph className="font-medium">
+          Update field — <span className="font-mono">{subjectType}.{field}</span>
+        </Paragraph>
+        <Paragraph className="mt-1 text-ui-sm text-ink-soft">
+          Set to {jsonShort(config.value)} on the trigger&apos;s own row — only registered fields
+          are writable; signed records are locked.
+        </Paragraph>
+      </div>
+    );
+  }
   return (
     <div className="rounded-control border border-line p-3" data-testid="automations-action-unknown">
       <Paragraph className="text-ui-sm text-ink-soft">
@@ -528,6 +543,7 @@ function SpecEditor({ draft, onChange, prefix }: SpecEditorProps): ReactElement 
                     else if (type === "notify") updateAction(index, { type: "notify", userIdsText: "", title: "", body: "" });
                     else if (type === "send_email") updateAction(index, { type: "send_email", userIdsText: "", subject: "", body: "" });
                     else if (type === "send_webhook") updateAction(index, { type: "send_webhook", url: "", method: "POST", headersText: "", bodyText: "" });
+                    else if (type === "update_field") updateAction(index, { type: "update_field", subjectType: "", field: "", valueText: "" });
                     else updateAction(index, { type: "json", json: "" });
                   }}
                 >
@@ -535,6 +551,7 @@ function SpecEditor({ draft, onChange, prefix }: SpecEditorProps): ReactElement 
                   <option value="notify">Notify (in-app bell)</option>
                   <option value="send_email">Send email</option>
                   <option value="send_webhook">Webhook (outbound)</option>
+                  <option value="update_field">Update a field</option>
                   <option value="json">Raw JSON — a type this build does not draw</option>
                 </select>
               </label>
@@ -739,6 +756,52 @@ function SpecEditor({ draft, onChange, prefix }: SpecEditorProps): ReactElement 
                     value={action.bodyText}
                     onChange={(e) => {
                       updateAction(index, { ...action, bodyText: e.target.value });
+                    }}
+                  />
+                </label>
+              </div>
+            ) : null}
+            {action.type === "update_field" ? (
+              <div className="mt-2 grid gap-2">
+                <Paragraph className="text-ui-sm text-ink-soft">
+                  Changes one field on the record this rule fired for (the trigger&apos;s own row —
+                  never a query). Only fields the owning domain registered are writable: an
+                  unregistered subject type or field saves fine but fails loudly at run time with an
+                  alert. A record under an electronic signature is locked — the update is refused.
+                  Setting a value the field already has is a quiet success: no row write, no audit
+                  entry.
+                </Paragraph>
+                <label className="text-ui-sm text-ink">
+                  Subject type (e.g. task)
+                  <Input
+                    className="mt-1 block w-full font-mono"
+                    data-testid={`automations-${prefix}-action-field-subject`}
+                    value={action.subjectType}
+                    onChange={(e) => {
+                      updateAction(index, { ...action, subjectType: e.target.value });
+                    }}
+                  />
+                </label>
+                <label className="text-ui-sm text-ink">
+                  Field (e.g. status)
+                  <Input
+                    className="mt-1 block w-full font-mono"
+                    data-testid={`automations-${prefix}-action-field-name`}
+                    value={action.field}
+                    onChange={(e) => {
+                      updateAction(index, { ...action, field: e.target.value });
+                    }}
+                  />
+                </label>
+                <label className="text-ui-sm text-ink">
+                  Value — JSON (exactly as saved, no templating; null allowed)
+                  <textarea
+                    className="mt-1 block w-full rounded-control border border-line bg-card p-[var(--pad-control)] font-mono text-ui text-ink"
+                    rows={3}
+                    data-testid={`automations-${prefix}-action-field-value`}
+                    value={action.valueText}
+                    onChange={(e) => {
+                      updateAction(index, { ...action, valueText: e.target.value });
                     }}
                   />
                 </label>

@@ -727,4 +727,193 @@ describe.skipIf(!databaseUrl)("automation scan/run (#224 slice 1, integration)",
     ).rejects.toThrow(/not allowed/);
     expect(webhookRequests).toHaveLength(0);
   });
+
+  // ── update_field(#224 切片 6)──────────────────────────────────────────────
+
+  async function insertTask(values: { status?: "open" | "done" | "cancelled" }): Promise<string> {
+    const inserted = await db
+      .insert(schema.tasks)
+      .values({ title: "被规则盯上的任务", createdById: USERS.creator, status: values.status ?? "open" })
+      .returning({ id: schema.tasks.id });
+    return must(inserted[0]).id;
+  }
+
+  async function insertTaskCreatedEvent(taskId: string): Promise<string> {
+    const inserted = await db
+      .insert(schema.auditEvents)
+      .values({ action: "task.created", target: taskId, detail: {} })
+      .returning({ id: schema.auditEvents.id });
+    return must(inserted[0]).id;
+  }
+
+  const statusChangedAudits = () =>
+    db.select().from(schema.auditEvents).where(eq(schema.auditEvents.action, "task.status_changed"));
+
+  it("update_field changes the trigger row's status and signs the audit trail with the run", async () => {
+    const taskId = await insertTask({ status: "open" });
+    await insertRule({
+      name: "建单即完成（演示）",
+      trigger: { kind: "event", action: "task.created" },
+      actions: [{ type: "update_field", config: { subjectType: "task", field: "status", value: "done" } }],
+    });
+    await insertTaskCreatedEvent(taskId);
+
+    await runAutomationScan({ ...deps, sendRunJob });
+    const run = await onlyRun();
+    await runAutomationRun(deps, { runId: run.id });
+    const finished = await onlyRun();
+    expect(finished.status).toBe("succeeded");
+    expect(finished.actionResults).toEqual([
+      { type: "update_field", status: "succeeded", ref: taskId },
+    ]);
+
+    const tasks = await db.select().from(schema.tasks);
+    const task = must(tasks[0]);
+    expect(task.status).toBe("done");
+
+    // 行上的变更痕迹与人手 PATCH 同词表:task.status_changed from/to,actor 带
+    // automation 前缀(扫描器跳过——规则触发规则没有这条通路),detail 署名规则
+    const audits = await statusChangedAudits();
+    expect(audits).toHaveLength(1);
+    const audit = must(audits[0]);
+    expect(audit.target).toBe(taskId);
+    expect(audit.actor).toBe(`automation:${run.id}`);
+    expect(audit.detail).toMatchObject({
+      from: "open",
+      to: "done",
+      via: "automation",
+      ruleName: "建单即完成（演示）",
+    });
+  });
+
+  it("update_field treats an already-applied value as a no-op success: no row write, no audit spam", async () => {
+    const taskId = await insertTask({ status: "done" });
+    await insertRule({
+      name: "关已关的",
+      trigger: { kind: "event", action: "task.created" },
+      actions: [{ type: "update_field", config: { subjectType: "task", field: "status", value: "done" } }],
+    });
+    await insertTaskCreatedEvent(taskId);
+
+    await runAutomationScan({ ...deps, sendRunJob });
+    const run = await onlyRun();
+    await runAutomationRun(deps, { runId: run.id });
+    const finished = await onlyRun();
+    expect(finished.status).toBe("succeeded");
+    // 成功,但行没动、审计没写(反复命中的规则不能把审计流刷成自己的转发日志)
+    expect((await db.select().from(schema.tasks))[0]?.status).toBe("done");
+    expect(await statusChangedAudits()).toHaveLength(0);
+    expect(finished.actionResults).toEqual([
+      { type: "update_field", status: "succeeded", ref: taskId },
+    ]);
+  });
+
+  it("update_field refuses to touch a signed record (same lock as the human PATCH path)", async () => {
+    const taskId = await insertTask({ status: "open" });
+    await insertRule({
+      name: "改签过的单",
+      trigger: { kind: "event", action: "task.created" },
+      actions: [{ type: "update_field", config: { subjectType: "task", field: "status", value: "done" } }],
+    });
+    await insertTaskCreatedEvent(taskId);
+    await db.insert(schema.esignSignatures).values({
+      subjectType: "task",
+      subjectId: taskId,
+      signerId: USERS.creator,
+      meaning: "approved",
+      recordVersion: "1",
+      recordHash: "hash",
+      signedAt: new Date(),
+      clientToken: "tok-signed-1",
+    });
+
+    await runAutomationScan({ ...deps, sendRunJob });
+    const run = await onlyRun();
+    await expect(runAutomationRun(deps, { runId: run.id })).rejects.toThrow(/automation action failed/);
+    const after = await onlyRun();
+    const results = after.actionResults as { status: string; error?: string }[];
+    expect(results[0]?.error).toContain("is signed");
+    expect((await db.select().from(schema.tasks))[0]?.status).toBe("open");
+    expect(await statusChangedAudits()).toHaveLength(0);
+  });
+
+  it("update_field fails loud on every misconfiguration instead of silently skipping", async () => {
+    // 每道闸一个用例:target 的形态决定哪道闸先开口,逐例断言错误消息原样可读
+    const cases: {
+      name: string;
+      config: { subjectType: string; field: string; value: unknown };
+      target: "existing-task" | "missing-row" | "foreign-prefix" | "absent";
+      error: RegExp;
+    }[] = [
+      {
+        name: "unregistered subject type",
+        config: { subjectType: "appointment", field: "status", value: "done" },
+        target: "existing-task",
+        error: /subject type is not registered: appointment/,
+      },
+      {
+        name: "unregistered field",
+        config: { subjectType: "task", field: "assigneeId", value: USERS.assignee },
+        target: "existing-task",
+        error: /field is not registered for task: assigneeId/,
+      },
+      {
+        name: "value outside the domain's word list",
+        config: { subjectType: "task", field: "status", value: "archived" },
+        target: "existing-task",
+        error: /must be one of: open, done, cancelled/,
+      },
+      {
+        name: "target row does not exist",
+        config: { subjectType: "task", field: "status", value: "done" },
+        target: "missing-row",
+        error: /target row does not exist: task/,
+      },
+      {
+        name: "target belongs to a different subject (due-style prefix mismatch)",
+        config: { subjectType: "task", field: "status", value: "done" },
+        target: "foreign-prefix",
+        error: /different subject than task/,
+      },
+      {
+        name: "trigger event carries no target",
+        config: { subjectType: "task", field: "status", value: "done" },
+        target: "absent",
+        error: /trigger event has no target/,
+      },
+    ];
+    for (const testCase of cases) {
+      await db.execute(
+        sql`truncate table ${schema.automationRuns}, ${schema.automationRules}, ${schema.tasks}, ${schema.auditEvents} cascade`,
+      );
+      await insertRule({
+        name: `坏配置:${testCase.name}`,
+        trigger: { kind: "event", action: "task.created" },
+        actions: [{ type: "update_field", config: testCase.config }],
+      });
+      const target =
+        testCase.target === "existing-task"
+          ? await insertTask({})
+          : testCase.target === "missing-row"
+            ? randomUUID()
+            : testCase.target === "foreign-prefix"
+              ? "appointment:abc"
+              : undefined;
+      await db
+        .insert(schema.auditEvents)
+        .values({
+          action: "task.created",
+          ...(target !== undefined ? { target } : {}),
+          detail: {},
+        })
+        .returning({ id: schema.auditEvents.id });
+      await runAutomationScan({ ...deps, sendRunJob });
+      const run = await onlyRun();
+      await expect(runAutomationRun(deps, { runId: run.id })).rejects.toThrow(/automation action failed/);
+      const after = await onlyRun();
+      const results = after.actionResults as { status: string; error?: string }[];
+      expect(results[0]?.status, testCase.name).toBe("failed");
+      expect(results[0]?.error ?? "", testCase.name).toMatch(testCase.error);
+    }
+  });
 });

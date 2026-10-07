@@ -440,6 +440,7 @@ export type ActionDraft =
   | { type: "notify"; userIdsText: string; title: string; body: string }
   | { type: "send_email"; userIdsText: string; subject: string; body: string }
   | { type: "send_webhook"; url: string; method: string; headersText: string; bodyText: string }
+  | { type: "update_field"; subjectType: string; field: string; valueText: string }
   | { type: "json"; json: string };
 
 export const CONDITION_OPS = ["eq", "ne", "in", "exists"] as const;
@@ -527,6 +528,14 @@ function actionToDraft(raw: unknown): ActionDraft {
         .map(([name, value]) => `${name}: ${value}`)
         .join("\n"),
       bodyText: "body" in config && config.body !== undefined ? jsonText(config.body) : "",
+    };
+  }
+  if (raw.type === "update_field") {
+    return {
+      type: "update_field",
+      subjectType: typeof config.subjectType === "string" ? config.subjectType : "",
+      field: typeof config.field === "string" ? config.field : "",
+      valueText: "value" in config && config.value !== undefined ? jsonText(config.value) : "",
     };
   }
   // A type this build has no editor for keeps its JSON verbatim.
@@ -717,6 +726,25 @@ export function buildActions(drafts: ActionDraft[]): BuildResult<unknown[]> {
           ...(hasBody ? { body } : {}),
         },
       });
+    } else if (draft.type === "update_field") {
+      const subjectType = draft.subjectType.trim();
+      const field = draft.field.trim();
+      if (subjectType === "") {
+        return { ok: false, error: "Every update-field action needs a subject type (e.g. task)." };
+      }
+      if (field === "") {
+        return { ok: false, error: "Every update-field action needs a field name (e.g. status)." };
+      }
+      let value: unknown;
+      try {
+        value = JSON.parse(draft.valueText);
+      } catch {
+        return {
+          ok: false,
+          error: "The update-field value must be valid JSON (null is allowed; an empty box is not a value).",
+        };
+      }
+      built.push({ type: "update_field", config: { subjectType, field, value } });
     } else {
       let parsed: unknown;
       try {

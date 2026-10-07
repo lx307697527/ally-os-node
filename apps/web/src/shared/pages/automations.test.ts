@@ -107,6 +107,24 @@ describe("automations page rulings (#224)", () => {
     expect(client).toContain("needs an https URL on a public host");
   });
 
+  it("update_field 编辑面把改写裁决说在前头:只改触发行、白名单外存得了跑必败、签名锁定、no-op 不写审计", () => {
+    // 类型进选择器,编辑器/展示各有结构化分支
+    expect(page).toContain('<option value="update_field">Update a field</option>');
+    expect(page).toContain('data-testid="automations-action-update-field"');
+    expect(page).toContain("automations-${prefix}-action-field-subject");
+    expect(page).toContain("automations-${prefix}-action-field-name");
+    expect(page).toContain("automations-${prefix}-action-field-value");
+    // 目标是触发语境自己的行,不是查询;未注册的 subject/字段存得进、执行必败告警
+    expect(collapsedPage).toContain("the trigger&apos;s own row");
+    expect(collapsedPage).toContain("never a query");
+    expect(collapsedPage).toContain("an unregistered subject type or field saves fine but fails loudly at run time");
+    // 签名锁定的记录拒改(#219 与人手 PATCH 同一道锁);no-op 不动行不写审计
+    expect(collapsedPage).toContain("A record under an electronic signature is locked");
+    expect(collapsedPage).toContain("no row write, no audit entry");
+    // 值是保存时点死的静态 JSON,client 侧只挡明显坏形
+    expect(client).toContain("an empty box is not a value");
+  });
+
   it("写失败按内核 reason 说话,编辑区分「无实效变化」与「真变更」", () => {
     expect(collapsedPage).toContain("No effective change — version");
     expect(collapsedPage).toContain("is live now, the ledger has the change");

@@ -318,4 +318,34 @@ describe.skipIf(!databaseUrl)("automation due scan (#224 slice 2, integration)",
     expect(run.status).toBe("pending");
     expect(run.sourceEventId).toBe(fixtureRowId);
   });
+
+  it("update_field rides a due trigger too: overdue task auto-cancels with the due-style target", async () => {
+    const taskId = await insertTask({ title: "拖了 1 小时的任务", status: "open", dueAt: dueAtFiringAfter(60) });
+    await insertRule({
+      name: "到期后 1 小时未办即取消",
+      trigger: { kind: "due", subjectType: "task", anchorField: "dueAt", direction: "after", offsetMinutes: 60 },
+      actions: [
+        { type: "update_field", config: { subjectType: "task", field: "status", value: "cancelled" } },
+      ],
+    });
+
+    await runAutomationDueScan({ ...deps, sendRunJob });
+    const run = await onlyRun();
+    expect(run.status).toBe("pending");
+    expect(run.sourceEventId).toBe(taskId);
+
+    await runAutomationRun(deps, { runId: run.id });
+    const rows = await db.select().from(schema.automationRuns).where(eq(schema.automationRuns.id, run.id));
+    expect(must(rows[0]).status).toBe("succeeded");
+    const tasks = await db.select().from(schema.tasks).where(eq(schema.tasks.id, taskId));
+    expect(must(tasks[0]).status).toBe("cancelled");
+    // 合成 target（task:<id>）由 trigger 重建,subjectIdFromTarget 认它;行上的
+    // 痕迹照旧走域词表的审计(automation actor)
+    const audits = await db
+      .select()
+      .from(schema.auditEvents)
+      .where(eq(schema.auditEvents.action, "task.status_changed"));
+    expect(audits).toHaveLength(1);
+    expect(must(audits[0]).target).toBe(taskId);
+  });
 });

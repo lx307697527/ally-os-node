@@ -6,6 +6,7 @@ import {
   eventMatchesTrigger,
   resolvePath,
   ruleSpecSchema,
+  subjectIdFromTarget,
 } from "./index.ts";
 
 const ctx = {
@@ -371,5 +372,75 @@ describe("ruleSpecSchema", () => {
 describe("AUTOMATION_ACTOR_PREFIX", () => {
   it("is the loop-guard marker the scanner filters on", () => {
     expect(`${AUTOMATION_ACTOR_PREFIX}run-1`.startsWith(AUTOMATION_ACTOR_PREFIX)).toBe(true);
+  });
+});
+
+describe("update_field action schema", () => {
+  const parse = (action: unknown) =>
+    ruleSpecSchema.safeParse({
+      trigger: { kind: "event", action: "x" },
+      actions: [action],
+    });
+
+  it("accepts a well-formed action with any JSON value (null included)", () => {
+    expect(
+      parse({ type: "update_field", config: { subjectType: "task", field: "status", value: "done" } })
+        .success,
+    ).toBe(true);
+    expect(
+      parse({ type: "update_field", config: { subjectType: "task", field: "dueAt", value: null } })
+        .success,
+    ).toBe(true);
+    expect(
+      parse({
+        type: "update_field",
+        config: { subjectType: "task", field: "flags", value: { nested: [1, "two"] } },
+      }).success,
+    ).toBe(true);
+  });
+
+  it("requires subjectType, field, and an explicit value (missing value key is refused, null is not)", () => {
+    expect(parse({ type: "update_field", config: { field: "status", value: "done" } }).success).toBe(
+      false,
+    );
+    expect(parse({ type: "update_field", config: { subjectType: "task", value: "done" } }).success).toBe(
+      false,
+    );
+    // value 键缺席 = 作者忘了写目标值,不是「清空」——显式 null 才是
+    expect(parse({ type: "update_field", config: { subjectType: "task", field: "status" } }).success).toBe(
+      false,
+    );
+    expect(parse({ type: "update_field", config: { subjectType: "", field: "status", value: 1 } }).success).toBe(
+      false,
+    );
+    expect(parse({ type: "update_field", config: { subjectType: "task", field: "", value: 1 } }).success).toBe(
+      false,
+    );
+  });
+});
+
+describe("subjectIdFromTarget", () => {
+  it("resolves a bare audit target as the subject id of the configured type", () => {
+    expect(subjectIdFromTarget("018f3c7e-1", "task")).toEqual({ ok: true, subjectId: "018f3c7e-1" });
+  });
+
+  it("strips the matching due-style prefix", () => {
+    expect(subjectIdFromTarget("task:abc-123", "task")).toEqual({ ok: true, subjectId: "abc-123" });
+  });
+
+  it("refuses a different subject's prefix — the rule author aimed update_field at the wrong object", () => {
+    expect(subjectIdFromTarget("appointment:abc-123", "task")).toEqual({
+      ok: false,
+      reason: "target belongs to a different subject than task",
+    });
+  });
+
+  it("refuses a prefix with no id after it", () => {
+    expect(subjectIdFromTarget("task:", "task").ok).toBe(false);
+  });
+
+  it("refuses a missing or empty target", () => {
+    expect(subjectIdFromTarget(null, "task").ok).toBe(false);
+    expect(subjectIdFromTarget("", "task").ok).toBe(false);
   });
 });
