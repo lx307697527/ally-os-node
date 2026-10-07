@@ -1,6 +1,7 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import type { Logger } from "pino";
 import { z } from "zod";
+import { splitSurchargedCapture } from "./surcharge.ts";
 
 /**
  * Stripe 收款渠道（#193）。#232 §10「Stripe / PayPal 以 webhook 为准，幂等记账
@@ -10,8 +11,9 @@ import { z } from "zod";
  * 老系统对照 `supabase/functions/stripe-webhook`（FEAT-003/005 系）：验签在解析
  * 之前、fail closed 401、配置缺失答 500 misconfigured（FEAT-063：那是部署问题，
  * 不是认证失败）、300 秒重放窗（Stripe SDK 默认值，与其他签名回调轨道同一数字）。
- * 本模块继承这套骨架，弃掉它的 Sentry/Slack 告警分流与 surcharge 拆分（附加费
- * R-12-2/3 随规则注册表的消费切片进场，见 #192 剩余清单）。
+ * 本模块继承这套骨架，弃掉它的 Sentry/Slack 告警分流（失败付款的站内提醒随通知
+ * 域进场）；surcharge 拆分以 R-12-2/3 的规则注册表裁法重做（billing/surcharge.ts，
+ * 老系统 FEAT-581 的对账纪律随行）。
  *
  * 三个不变式：
  * 1. **先验签后解析**——HMAC 只对原始字节有意义，先 JSON.parse 就给了攻击者一个
@@ -31,7 +33,11 @@ export type Fetcher = typeof fetch;
 export interface CheckoutSessionInput {
   invoiceId: string;
   invoiceNumber: string;
+  /** 结算额（principal）：发票行实时合计，与收款台账 amount_cents 同一语义 */
   amountCents: number;
+  /** 附加费（R-12-2/3，billing/surcharge.ts）：checkout 加收、不进发票面；
+   * 缺省或 0 = 无附加费的普通 session（0 与「没有」不可并存，表注释同文） */
+  surchargeCents?: number;
   /** 发票行抄录的币种（当前唯一合法值 USD）；适配器转小写给 Stripe API */
   currency: string;
   successUrl: string;
@@ -74,6 +80,10 @@ export function createStripeGateway(deps: { secretKey: string; fetcher?: Fetcher
   const fetcher = deps.fetcher ?? fetch;
   return {
     async createCheckoutSession(input: CheckoutSessionInput): Promise<CreatedCheckoutSession> {
+      // 实扣额 = principal + 附加费；拆分搭 metadata 回来——事件里只有一个总数，
+      // webhook 端的对账全靠这两个键（billing/surcharge.ts 文件头）。surcharge
+      // 为 0 时不写拆分键：session 与「本切片上线前」的存量会话完全同形
+      const surchargeCents = input.surchargeCents ?? 0;
       const response = await fetcher(STRIPE_CHECKOUT_SESSIONS_URL, {
         method: "POST",
         headers: {
@@ -87,9 +97,15 @@ export function createStripeGateway(deps: { secretKey: string; fetcher?: Fetcher
           client_reference_id: input.invoiceId,
           "metadata[invoice_id]": input.invoiceId,
           "metadata[invoice_number]": input.invoiceNumber,
+          ...(surchargeCents > 0
+            ? {
+                "metadata[principal_amount_cents]": String(input.amountCents),
+                "metadata[surcharge_amount_cents]": String(surchargeCents),
+              }
+            : {}),
           "line_items[0][quantity]": "1",
           "line_items[0][price_data][currency]": input.currency.toLowerCase(),
-          "line_items[0][price_data][unit_amount]": String(input.amountCents),
+          "line_items[0][price_data][unit_amount]": String(input.amountCents + surchargeCents),
           "line_items[0][price_data][product_data][name]": `Invoice ${input.invoiceNumber}`,
         }),
       });
@@ -226,13 +242,17 @@ const stripeEventSchema = z.object({
 export type StripeEvent = z.infer<typeof stripeEventSchema>;
 
 /** 归一结果：payment = 有钱可记；ignored = 与记账无关（含失败/退款类事件）；
- * unparsable = 是钱的事件但读不出可信的金额——拿不准的钱不确认（502 让 Stripe 重投） */
+ * unparsable = 是钱的事件但读不出可信的账——金额读不出、或 surcharge 拆分对不上
+ * （拿不准的钱不确认，502 让 Stripe 重投） */
 export type NormalizedStripeEvent =
   | {
       kind: "payment";
       /** 幂等键：payment_intent 优先，缺省回退事件对象自身 id（银行借记场景） */
       externalId: string;
+      /** 结清额（principal）：surcharge 拆分后的入账金额，进收款台账 amount_cents */
       amountCents: number;
+      /** 附加费成分（R-12-2/3）；null = 无附加费 session（回归锚点：拆分键缺席） */
+      surchargeCents: number | null;
       /** 我们创建的 session 才带 metadata.invoice_id；缺 = 不是发票支付（无锚点） */
       invoiceId: string | null;
       invoiceIdInvalid: boolean;
@@ -261,7 +281,8 @@ function normalizeInvoiceId(metadata: Record<string, unknown>): { invoiceId: str
 /**
  * 金额读法：`amount_received ?? amount_total`——received 是银行事实，total 是
  * session 意向；卡支付两者相等，异步借记结算时只有 received 可信。都缺或非负
- * 整数校验不过 = 读不出可信金额（unparsable，502）。
+ * 整数校验不过 = 读不出可信金额（unparsable，502）。读到的是**总额（gross）**，
+ * surcharge 拆分在下一步。
  */
 function normalizeAmountCents(object: Record<string, unknown>): number | null {
   const candidates = [object.amount_received, object.amount_total];
@@ -271,6 +292,12 @@ function normalizeAmountCents(object: Record<string, unknown>): number | null {
     }
   }
   return null;
+}
+
+function normalizeMetadata(object: Record<string, unknown>): Record<string, unknown> {
+  return typeof object.metadata === "object" && object.metadata !== null
+    ? (object.metadata as Record<string, unknown>)
+    : {};
 }
 
 export function normalizeStripeEvent(parsed: unknown): NormalizedStripeEvent {
@@ -285,8 +312,8 @@ export function normalizeStripeEvent(parsed: unknown): NormalizedStripeEvent {
     return { kind: "ignored" };
   }
   const object = event.data.object;
-  const amountCents = normalizeAmountCents(object);
-  if (amountCents === null) {
+  const grossCents = normalizeAmountCents(object);
+  if (grossCents === null) {
     return { kind: "unparsable", reason: "paid event without a trustworthy integer amount" };
   }
   // externalId = payment_intent ?? object.id（事件对象自身：cs_… / pi_…）。信封的
@@ -303,18 +330,22 @@ export function normalizeStripeEvent(parsed: unknown): NormalizedStripeEvent {
   if (externalId === null) {
     return { kind: "unparsable", reason: "paid event without an external id" };
   }
-  const { invoiceId, invalid } = normalizeInvoiceId(
-    typeof object.metadata === "object" && object.metadata !== null
-      ? (object.metadata as Record<string, unknown>)
-      : {},
-  );
+  const metadata = normalizeMetadata(object);
+  // surcharge 对账（billing/surcharge.ts 四种命名拒绝）：拆不开的钱连「结清多少、
+  // 费是多少」都说不清，锚不锚都一样不确认——无锚点 + 拆分成立时才走「留认领」
+  const split = splitSurchargedCapture(grossCents, metadata);
+  if (split === null) {
+    return { kind: "unparsable", reason: "surcharge split does not reconcile with the amount received" };
+  }
+  const { invoiceId, invalid } = normalizeInvoiceId(metadata);
   // received_at 的「不未来」不变式在这里收口：Stripe 与本机的钟差（未来的事件
   // 时刻）夹到 now，不把偏差写进台账
   const receivedAt = new Date(Math.min(event.created * 1000, Date.now()));
   return {
     kind: "payment",
     externalId,
-    amountCents,
+    amountCents: split.principalCents,
+    surchargeCents: split.surchargeCents,
     invoiceId,
     invoiceIdInvalid: invalid,
     receivedAt,

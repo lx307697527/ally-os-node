@@ -51,6 +51,7 @@ interface RecordedCall {
   invoiceId: string;
   invoiceNumber: string;
   amountCents: number;
+  surchargeCents?: number;
   currency: string;
   successUrl: string;
   cancelUrl: string;
@@ -87,9 +88,12 @@ function stripeSignature(body: string, secret = WEBHOOK_SECRET, atSeconds = Math
 
 function checkoutCompletedEvent(input: {
   invoiceId: string;
+  /** Stripe 报的总额（gross）：有拆分 metadata 时 = principal + surcharge */
   amountCents: number;
   paymentIntent?: string;
   sessionId?: string;
+  /** surcharged session 的拆分键（Stripe metadata 是字符串线格式）；缺省 = 普通会话 */
+  split?: { principalCents: number; surchargeCents: number };
 }): string {
   return JSON.stringify({
     id: `evt_${randomUUID()}`,
@@ -102,7 +106,15 @@ function checkoutCompletedEvent(input: {
         amount_total: input.amountCents,
         amount_received: input.amountCents,
         currency: "usd",
-        metadata: { invoice_id: input.invoiceId },
+        metadata: {
+          invoice_id: input.invoiceId,
+          ...(input.split !== undefined
+            ? {
+                principal_amount_cents: String(input.split.principalCents),
+                surcharge_amount_cents: String(input.split.surchargeCents),
+              }
+            : {}),
+        },
       },
     },
   });
@@ -303,22 +315,33 @@ describe.skipIf(!databaseUrl)("stripe checkout & webhook (#193, integration)", (
   }
 
   describe("checkout link (finance face)", () => {
-    it("creates a session for an issued invoice with the server-computed amount", async () => {
-      const invoice = await seedIssuedInvoice();
+    it("creates a session for an issued invoice with the R-12-2/3 surcharge disclosed", async () => {
+      const invoice = await seedIssuedInvoice(); // principal 150000，种子费率 3.9%
       const res = await app.request(`/api/invoices/${invoice.id}/stripe-checkout`, {
         method: "POST",
         headers: fin,
       });
       expect(res.status).toBe(201);
-      const body = (await res.json()) as { sessionId: string; url: string; amountCents: number; currency: string };
-      expect(body.amountCents).toBe(150000);
+      const body = (await res.json()) as {
+        sessionId: string;
+        url: string;
+        amountCents: number;
+        principalCents: number;
+        surchargeCents: number;
+        currency: string;
+      };
+      // 客户被实扣 gross = principal + 3.9%；发票面金额不变，拆分给披露面
+      expect(body.amountCents).toBe(155850);
+      expect(body.principalCents).toBe(150000);
+      expect(body.surchargeCents).toBe(5850);
       expect(body.currency).toBe("USD");
       expect(body.url).toContain("checkout.stripe.com");
 
-      // 金额与锚点都是服务端出的：网关收到的入参里没有客户端可塞的金额口子
+      // principal 与锚点都是服务端出的：网关收到的入参里没有客户端可塞的金额口子
       const call = gateway.state.calls[0];
       if (call === undefined) throw new Error("gateway not called");
       expect(call.amountCents).toBe(150000);
+      expect(call.surchargeCents).toBe(5850);
       expect(call.currency).toBe("USD");
       expect(call.invoiceId).toBe(invoice.id);
       expect(call.successUrl).toBe(
@@ -326,7 +349,58 @@ describe.skipIf(!databaseUrl)("stripe checkout & webhook (#193, integration)", (
       );
       expect(call.cancelUrl).toBe(`${WEB_APP_URL}/portal/invoices/${invoice.id}?stripe=cancel`);
 
-      expect(await auditCount("invoice.payment_link_created")).toBe(1);
+      const audits = await db
+        .select({ detail: schema.auditEvents.detail })
+        .from(schema.auditEvents)
+        .where(eq(schema.auditEvents.action, "invoice.payment_link_created"));
+      expect(audits).toHaveLength(1);
+      // 审计按实扣额记，拆分随行——「给谁发过链接、按多少钱发的」可查
+      expect(audits[0]?.detail).toMatchObject({
+        amountCents: 155850,
+        principalCents: 150000,
+        surchargeCents: 5850,
+      });
+    });
+
+    it("treats a 0% rate as the kill switch: an ordinary session with no surcharge", async () => {
+      const ruleKey = "payments.card_surcharge_pct";
+      try {
+        await db.update(schema.registryRules).set({ value: 0 }).where(eq(schema.registryRules.key, ruleKey));
+        const invoice = await seedIssuedInvoice();
+        const res = await app.request(`/api/invoices/${invoice.id}/stripe-checkout`, {
+          method: "POST",
+          headers: fin,
+        });
+        expect(res.status).toBe(201);
+        const body = (await res.json()) as { amountCents: number; surchargeCents: number };
+        expect(body.amountCents).toBe(150000); // gross = principal
+        expect(body.surchargeCents).toBe(0);
+        const call = gateway.state.calls[0];
+        if (call === undefined) throw new Error("gateway not called");
+        expect(call.surchargeCents).toBeUndefined(); // 普通会话：没有拆分可传
+      } finally {
+        await db.update(schema.registryRules).set({ value: 3.9 }).where(eq(schema.registryRules.key, ruleKey));
+      }
+    });
+
+    it("refuses to create sessions while the surcharge rule is unusable (fail closed)", async () => {
+      const ruleKey = "payments.card_surcharge_pct";
+      try {
+        // 待填（null）与出消费方边界（6% > 5% 护栏）都收不了钱
+        for (const broken of [null, 6]) {
+          await db.update(schema.registryRules).set({ value: broken }).where(eq(schema.registryRules.key, ruleKey));
+          const invoice = await seedIssuedInvoice();
+          const res = await app.request(`/api/invoices/${invoice.id}/stripe-checkout`, {
+            method: "POST",
+            headers: fin,
+          });
+          expect(res.status).toBe(409);
+          expect(((await res.json()) as { error: string }).error).toBe("surcharge_rule_unusable");
+        }
+        expect(gateway.state.calls).toHaveLength(0); // 一次会话都没建
+      } finally {
+        await db.update(schema.registryRules).set({ value: 3.9 }).where(eq(schema.registryRules.key, ruleKey));
+      }
     });
 
     it("refuses drafts, voided and zero-total invoices; enforces invoices.manage", async () => {
@@ -402,6 +476,67 @@ describe.skipIf(!databaseUrl)("stripe checkout & webhook (#193, integration)", (
       expect(audits).toHaveLength(1);
       expect(audits[0]?.actor).toBeNull();
       expect(audits[0]?.detail).toMatchObject({ sourceType: "stripe", invoiceId: invoice.id, amountCents: 150000 });
+    });
+
+    it("books a surcharged capture as principal + fee; the fee never touches the invoice face", async () => {
+      const invoice = await seedIssuedInvoice(); // principal 150000
+      const body = checkoutCompletedEvent({
+        invoiceId: invoice.id,
+        amountCents: 155850, // Stripe 实扣 gross
+        split: { principalCents: 150000, surchargeCents: 5850 },
+      });
+      const res = await deliverWebhook(body);
+      expect(res.status).toBe(200);
+      expect(res.json).toMatchObject({ received: true, invoiceNumber: invoice.number, paymentStatus: "paid" });
+
+      const rows = await db.select().from(schema.payments);
+      expect(rows).toHaveLength(1);
+      const row = rows[0];
+      if (row === undefined) throw new Error("payment row missing");
+      expect(row.amountCents).toBe(150000); // 结清额进台账，paid 派生的唯一口径
+      expect(row.surchargeCents).toBe(5850); // 费在旁边，不参与 SUM
+      expect(row.method).toBe("card");
+
+      const audits = await db
+        .select({ detail: schema.auditEvents.detail })
+        .from(schema.auditEvents)
+        .where(eq(schema.auditEvents.action, "payment.recorded"));
+      expect(audits).toHaveLength(1);
+      expect(audits[0]?.detail).toMatchObject({ amountCents: 150000, surchargeCents: 5850 });
+    });
+
+    it("refuses to bank a surcharged capture that does not reconcile (502, zero side effects)", async () => {
+      // 建会话后费率被改过 / metadata 被动过：报出的拆分与实扣额对不上——
+      // 一个数字是错的而这里无法分辨，什么都不入账，502 让 Stripe 重投
+      const invoice = await seedIssuedInvoice();
+      const mismatched = await deliverWebhook(
+        checkoutCompletedEvent({
+          invoiceId: invoice.id,
+          amountCents: 155000,
+          split: { principalCents: 150000, surchargeCents: 5850 },
+        }),
+      );
+      expect(mismatched.status).toBe(502);
+      const halfDeclared = await deliverWebhook(
+        JSON.stringify({
+          id: `evt_${randomUUID()}`,
+          type: "checkout.session.completed",
+          created: Math.floor(Date.now() / 1000) - 60,
+          data: {
+            object: {
+              id: `cs_${randomUUID()}`,
+              payment_intent: `pi_${randomUUID()}`,
+              amount_total: 155850,
+              amount_received: 155850,
+              metadata: { invoice_id: invoice.id, surcharge_amount_cents: "5850" },
+            },
+          },
+        }),
+      );
+      expect(halfDeclared.status).toBe(502);
+
+      expect(await paymentRowCount()).toBe(0);
+      expect(await auditCount("payment.recorded")).toBe(0);
     });
 
     it("is idempotent across replays and completed+succeeded double sends", async () => {
