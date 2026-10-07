@@ -81,12 +81,22 @@ new system has no outbox yet. When the first business domain needs a bell entry:
 add the fan-out (pg-boss job or inline insert), add `outbox_id` + the unique index
 (expand-only migration), extend `describeNotification` + its whitelist test.
 
-The three producers so far (`task.assigned` in routes/tasks.ts, `comment.mentioned`
-and the follower fan-out `comment.created` in routes/comments.ts — the latter
-delivered to the subject's followers (#110 slice 4), minus the author, minus the
+The four producers so far (`task.assigned` and the follower fan-out
+`task.status_changed` in routes/tasks.ts, `comment.mentioned` and the follower
+fan-out `comment.created` in routes/comments.ts — the latter delivered to the
+subject's followers (#110 slice 4), minus the author, minus the
 already-mentioned, and only while the follower is still a viewer) insert inline
 inside the business transaction and then call
 `deps.notifyUsers(userIds)` after it commits — the realtime nudge (see docs/realtime.md,
 `user:` channels). New producers follow the same two-step shape; `notifyUsers` is
 contracted to never reject, so a realtime outage degrades to the poll, never fails the
 business request.
+
+Task-domain ruling (#113, 2026-10-07): the follower fan-out exists for the
+status transition (`task.status_changed`, facts `taskTitle`/`actorName`/`from`/`to`);
+**reassignment has no follower event, by structure** — a reassignment removes the
+old assignee from the viewer set and the creator is the actor, so the deliverable
+follower set is empty (a re-assignee who follows via a stale row is covered by the
+directed `task.assigned`, and one person gets at most one notification per PATCH,
+directed beats fan-out). Title/description edits fan out to no one — the activity
+stream (audit) is their surface, same ruling as comment edits.
