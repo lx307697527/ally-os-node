@@ -7,6 +7,7 @@ import {
   jsonb,
   pgEnum,
   pgTable,
+  numeric,
   primaryKey,
   text,
   timestamp,
@@ -1140,4 +1141,100 @@ export const registryRules = pgTable(
     // 键唯一：消费方按字面量取值，重键 = 两个真相源，建索引当场挡住
     uniqueIndex("registry_rules_key_idx").on(t.key),
   ],
+);
+
+// ── 发票内核（#192 切片 1：草稿状态机 + 整数分金额 + 触发点幂等）─────────────────
+// #232 §10「所有发票由系统出草稿，财务确认后才发出」（R-12-6）。老系统对照
+// billing.invoices（20260724143856）：类型/状态两个 frozen 枚举、numeric(14,2)
+// 金额、order_id/account_id 硬外键。本内核的三处迁移裁决：
+//
+// 1. 金额一律整数分（#192 要点），行合计 line_total_cents 是 SQL 生成列
+//    （quantity × unit_price_cents 经 PG numeric round，half away from zero——
+//    金额非负，即四舍五入）；发票合计不落列，读面实时 SUM——老系统 amount_due
+//    快照与行漂移一类的 bug（bug554「行与预期态不一致」家族）在本表结构上
+//    不可能存在：行是唯一真相，draft 阶段随便改，发出后行锁定，合计恒定。
+// 2. 业务锚点多态（subject_type/subject_id，tasks.subject 同裁）：触发点
+//    （打样确认/报价接受/批次完工）的属主域在 phase-2+ 逐个进场，text 列
+//    不用枚举，新触发点注册不动数据库；手工建票（财务过渡面）两列皆 null。
+// 3. 触发点幂等（#192 验收第 6 条「同一触发事件不会重复生成草稿」）：
+//    (source_type, source_key) 唯一索引，键由属主域给（如
+//    ("quote_accepted", "<quoteId>")）——重复投递在结构上不可能，不靠
+//    「先查后插」。两列 null 的手工票不受约束（PG NULLS DISTINCT）。
+//
+// 状态机刻意只有三态：draft → issued（财务确认，R-12-6「确认后发出」）、
+// draft → void（作废）。paid/partially_paid 随收款切片（#193 webhook 面）
+// expand 进场；issued 行不可再改——更正/贷项（红冲）是 #192 后续切片的
+// 新动词，不改写已发出的行。收件人通知（到期提醒 R-12-7）随客户门户与
+// 渠道层接线，本内核零通知——没有收件人的邮件不存在。
+export const invoiceType = pgEnum("invoice_type", [
+  "deposit", // 定金（R-08-2，#231）
+  "balance", // 每批尾款（R-11-6，运费实报实销进尾款 R-10-4）
+  "sampling_fee", // 打样费（R-07，#238）
+  "flavor_dev", // 调味开发费（#238）
+  "label_design", // 标签设计费（R-06-16，#169）
+  "storage_fee", // 成品寄存费（R-10-7）
+  "customer_material", // 客供物料费（R-06-16）
+]);
+
+export const invoiceStatus = pgEnum("invoice_status", ["draft", "issued", "void"]);
+
+export const invoices = pgTable(
+  "invoices",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    // 单据号：创建事务里经 numbering/service.ts allocateDocumentNumber 分配
+    // （subject "invoice"，规则在配置工作室建）；没有编号的单据不存在——
+    // 无生效规则时创建失败（fail closed，NoActiveRuleError → 409）
+    number: text("number").notNull(),
+    invoiceType: invoiceType("invoice_type").notNull(),
+    status: invoiceStatus("status").notNull().default("draft"),
+    // 列先落地（expand-only），当前唯一合法值是 USD（R-13-7 销售税暂不征收，
+    // 多币种无消费方）——路由 zod 收口为常量
+    currency: text("currency").notNull().default("USD"),
+    subjectType: text("subject_type"),
+    subjectId: uuid("subject_id"),
+    sourceType: text("source_type"),
+    sourceKey: text("source_key"),
+    issuedAt: timestamp("issued_at", { withTimezone: true }),
+    issuedById: uuid("issued_by_id").references(() => authUser.id, { onDelete: "set null" }),
+    voidedAt: timestamp("voided_at", { withTimezone: true }),
+    voidedById: uuid("voided_by_id").references(() => authUser.id, { onDelete: "set null" }),
+    voidReason: text("void_reason"),
+    createdById: uuid("created_by_id").references(() => authUser.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("invoices_number_idx").on(t.number),
+    // 待确认发票（财务的主读法，R-12-6）按时间正序；状态过滤在查询侧
+    index("invoices_status_created_idx").on(t.status, t.createdAt),
+    // 锚点读法：一张报价/订单/批次名下有哪些发票（收款状态回写 #241 的路标）
+    index("invoices_subject_idx").on(t.subjectType, t.subjectId),
+    // 触发点幂等（见上）：同 (source_type, source_key) 只可能有一行
+    uniqueIndex("invoices_source_idx").on(t.sourceType, t.sourceKey),
+  ],
+);
+
+// 行项：invoice_id 级联（draft 作废即整票灭——草稿不是记录，与评论同裁）。
+// quantity 三位小数（工时/称量），unit_price_cents 整数分；行合计是生成列，
+// 应用读不写（老系统 total_price generated 的同一裁决）。行没有身份键，顺序
+// 即语义（报价行的顺序是商业文件的行文）——line_number 由写入侧按提交顺序
+// 1..n 落（PATCH 整体替换，读法按它排序），uuid 主键的随机序不能当行文序。
+// 空票不存在（老 bug500 的教训在创建面收口：lines 至少一行）。
+export const invoiceLines = pgTable(
+  "invoice_lines",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    invoiceId: uuid("invoice_id")
+      .notNull()
+      .references(() => invoices.id, { onDelete: "cascade" }),
+    lineNumber: integer("line_number").notNull(),
+    description: text("description").notNull(),
+    quantity: numeric("quantity", { precision: 12, scale: 3 }).notNull(),
+    unitPriceCents: integer("unit_price_cents").notNull(),
+    lineTotalCents: integer("line_total_cents")
+      .notNull()
+      .generatedAlwaysAs(sql`round(quantity * unit_price_cents)`),
+  },
+  (t) => [index("invoice_lines_invoice_id_idx").on(t.invoiceId, t.lineNumber)],
 );

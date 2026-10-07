@@ -11,6 +11,8 @@ import type { AuthzStore } from "./authz/service.ts";
 import "./approval/registry.ts";
 // R-16-6 消费方接线（#221 切片 2）：user_role 的可见性门 + 批准即生效 outcome
 import "./authz/role-approval.ts";
+// 发票域注册（#192 切片 1）：invoice 注册进编号注册表（第一个生产注册）
+import "./billing/registry.ts";
 import { activityRoutes } from "./routes/activity.ts";
 import { approvalsRoutes } from "./routes/approvals.ts";
 import { authProvidersRoutes } from "./routes/auth-providers.ts";
@@ -24,6 +26,7 @@ import { esignaturesRoutes } from "./routes/esignatures.ts";
 import { feedbackRoutes } from "./routes/feedback.ts";
 import { followsRoutes } from "./routes/follows.ts";
 import { healthRoutes } from "./routes/health.ts";
+import { invoicesRoutes } from "./routes/invoices.ts";
 import { meRoutes } from "./routes/me.ts";
 import { notificationsRoutes } from "./routes/notifications.ts";
 import { numberingRulesRoutes } from "./routes/numbering-rules.ts";
@@ -159,6 +162,10 @@ export function createApp(deps: AppDeps) {
   // 台账。定时生效的到点前滚是内核函数（rules/service.ts），cron 接线随 worker
   // 消费域进场
   app.route("/", rulesRoutes(deps));
+  // 发票（#192 切片 1）：草稿状态机 + 财务确认的内核面（invoices.manage 权限
+  // 点，finance/owner 默认持有）。触发点的系统生成不走 HTTP——属主域在自己的
+  // 业务事务里调 billing/service.ts，草稿与触发事实同事务生灭
+  app.route("/", invoicesRoutes(deps));
 
   return app;
 }

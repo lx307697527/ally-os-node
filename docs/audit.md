@@ -106,6 +106,13 @@
   （trigger/conditions/actions），spec 变更再记 `version`/`from`/`to`——规则的
   生命周期是纯配置面，每次变更一条审计；规则的**执行**不进审计词表，进
   automation_runs（执行日志表，一次一行，与审计同附录性：run 行不删除）），
+  `invoice.created`/`invoice.updated`/`invoice.confirmed`/`invoice.voided`
+  （发票内核 #192；target = 发票行 id，detail 恒记 `number`（单据号是人查票
+  的第一把钥匙）与 `totalCents`；created 另记 `invoiceType` 与 subject/source
+  引用（subject 引用在 detail，进对象的活动流时间线）、`lineCount`；updated
+  记 `fields: ["lines"]`（草稿换行整体替换，无实效变更的幂等 PATCH 不落此行）；
+  confirmed 记财务确认时刻的金额（R-12-6「谁确认发出了多少」的查询面）；voided
+  另记可选 `reason`——作废只对草稿，已发出的票走后续的红冲动词）、
   状态变更类动作在 detail 里带 `from`/`to`（如
   `{ from: "new", to: "contacted" }`），日志页详情列原样展示。
 - detail 放变更细节（授予/撤销了什么、从哪到哪、审批裁决等），不放大对象全文

@@ -43,7 +43,7 @@ export interface AuthzContext {
 }
 
 /** 权限点清单；随业务模块切片增加，新增必须先进这个注册表 */
-export const PERMISSIONS = ["roles.assign", "label_design", "audit.read", "workflow.configure", "approval.configure", "custom_fields.configure", "automations.configure", "numbering.configure", "rules.configure"] as const;
+export const PERMISSIONS = ["roles.assign", "label_design", "audit.read", "workflow.configure", "approval.configure", "custom_fields.configure", "automations.configure", "numbering.configure", "rules.configure", "invoices.manage"] as const;
 
 export type Permission = (typeof PERMISSIONS)[number];
 
@@ -85,9 +85,18 @@ export const permissionSchema = z.enum(PERMISSIONS);
  *   规则的**改值**不在此权限点后面——每条规则按裁决各有「谁能改」（行上的角色
  *   数组，owner 恒可），PATCH 与回滚的逐规则门在 rules/service.ts 裁决；这是
  *   配置工作室里唯一「族权限点 ≠ 改权」的族。
+ * - invoices.manage：老板与财务（#192，§12 财务「确认发送发票」+ 老板「全部
+ *   查看」）。发票全生命周期（手工建草稿、改草稿、确认发出、作废）都在这一个
+ *   权限点后面——财务面是单据面不是配置面，与配置工作室的 configure 族分开；
+ *   触发点的**系统生成**不在此权限点后面——属主域（打样确认 #238 / 报价接受
+ *   #231）在自己的业务事务里调 billing/service.ts，有没有权生成由触发点自己的
+ *   业务门裁决，财务的确认门只拦「人」的路径。admin 不默认持有：管理员的职责
+ *   是分配权限与配置工作室（§12），发票是业务单据；要持有时走授权（R-16-6：
+ *   授 finance 级需老板确认，user-roles 路由的 owner 门）。销售的记录级可见
+ *   （「只看自己单子的发票」）随订单域（#231）的可见性门进场，不在此权限点。
  */
 export const ROLE_PERMISSIONS: Readonly<Record<Role, readonly Permission[]>> = {
-  owner: ["roles.assign", "audit.read", "workflow.configure", "approval.configure", "custom_fields.configure", "automations.configure", "numbering.configure", "rules.configure"],
+  owner: ["roles.assign", "audit.read", "workflow.configure", "approval.configure", "custom_fields.configure", "automations.configure", "numbering.configure", "rules.configure", "invoices.manage"],
   admin: ["roles.assign", "audit.read", "workflow.configure", "approval.configure", "custom_fields.configure", "automations.configure", "numbering.configure", "rules.configure"],
   sales_lead: [],
   sales: [],
@@ -100,7 +109,7 @@ export const ROLE_PERMISSIONS: Readonly<Record<Role, readonly Permission[]>> = {
   production_lead: [],
   qa: [],
   lab_technician: [],
-  finance: [],
+  finance: ["invoices.manage"],
   customer: [],
 };
 

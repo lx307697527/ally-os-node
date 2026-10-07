@@ -12,7 +12,8 @@
   `YYYYMMDD` / null，枚举 `numbering_date_format`）、padding（序号位宽下限，
   超宽自然加长）、startNumber、active。配置面 `POST/GET/PATCH /api/numbering-rules`
   在 `numbering.configure` 权限点后面（owner/admin 默认持有）。
-- **可编号对象是注册表**：`numbering/registry.ts`（#225 切片刻意为空）。属主域
+- **可编号对象是注册表**：`numbering/registry.ts`（#225 切片刻意为空，第一个
+  生产注册是 invoice——`billing/registry.ts` 随 #192 切片 1 进场）。属主域
   切片在模块装载时 `registerNumberedSubject(subject, { label })`；未注册类型配置
   面回 400——不出现「能配规则但永远没人发号」的死配置。`GET
   /api/numbering-rules/subjects` 是配置 UI 的下拉数据源。
@@ -55,6 +56,11 @@
 - 日期段取 **UTC** 日历。时区是有业务后果的裁决（+8 时区每月头 8 小时会拿到上
   个月标签），随第一个真实消费方定，届时经 `@ally/config` 注入（`NUMBERING_TIMEZONE`），
   内核保持无环境依赖、`{ now }` 可注入测试时钟。
+  **裁决已收口（#192，invoice = 第一个真实消费方）：维持 UTC**——日期段只服务
+  号串的人读性（INV-202610-1000 的月份标签），不承载会计期间语义，+8 时区月初
+  8 小时的标签偏移在「号串可读」这个用途下无业务后果；`NUMBERING_TIMEZONE`
+  不设立，等真实按期出账需求出现再经 `@ally/config` 注入，注册与分配内核不动
+  （全文见 docs/billing.md）。
 
 ## 已落地：配置 UI（`/system/numbering`，System 区 rail）
 

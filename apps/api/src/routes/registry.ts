@@ -150,6 +150,14 @@ export const API_ROUTES: readonly RouteDecl[] = [
   { method: "PATCH", path: "/api/rules/:key", auth: { kind: "session" } },
   // 审计日志查询（#29）：owner / admin（audit.read 权限点）
   { method: "GET", path: "/api/audit-events", auth: { kind: "permission", permission: "audit.read" } },
+  // 发票（#192 切片 1）：草稿状态机 + 财务确认面，invoices.manage 权限点门
+  // （finance/owner 默认持有）。触发点的系统生成是属主域进程内调用，无 HTTP 面
+  { method: "POST", path: "/api/invoices", auth: { kind: "permission", permission: "invoices.manage" } },
+  { method: "GET", path: "/api/invoices", auth: { kind: "permission", permission: "invoices.manage" } },
+  { method: "GET", path: "/api/invoices/:id", auth: { kind: "permission", permission: "invoices.manage" } },
+  { method: "PATCH", path: "/api/invoices/:id", auth: { kind: "permission", permission: "invoices.manage" } },
+  { method: "POST", path: "/api/invoices/:id/confirm", auth: { kind: "permission", permission: "invoices.manage" } },
+  { method: "POST", path: "/api/invoices/:id/void", auth: { kind: "permission", permission: "invoices.manage" } },
   // 实时连接令牌（#110 切片 2）：把调用者自己会话的令牌发还给本人，WS auth
   // 帧用（cookie HttpOnly，浏览器拿不到）——session 门，令牌即会话本身
   { method: "GET", path: "/api/realtime/token", auth: { kind: "session" } },

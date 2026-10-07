@@ -204,6 +204,13 @@
       "when": 1791372025262,
       "tag": "0028_next_purple_man",
       "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1791379582696,
+      "tag": "0029_aberrant_franklin_richards",
+      "breakpoints": true
     }
   ]
 }
