@@ -417,6 +417,117 @@ describe.skipIf(!databaseUrl)("approvals route (#221, integration)", () => {
     expect(body.error).toBe("config_exists");
   });
 
+  // ── 配置改写/停用（#221 配置 UI:就地 PATCH + #226 台账）──────────────────
+
+  it("patches name/levels/active in place: version bumps, ledger and audit record the change", async () => {
+    const configId = await createConfig("patch_line", [{ name: "only", users: [bobId] }]);
+    const res = await app.request(`/api/approval-configs/${configId}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json", cookie: must(session.get("owner")) },
+      body: JSON.stringify({
+        name: "Patched line",
+        levels: [
+          { name: "lead", users: [bobId] },
+          { name: "final", users: [carolId], requireSignature: true, signatureMeaning: "reviewed" },
+        ],
+        active: false,
+      }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      config: { version: number; active: boolean; name: string; levels: LevelSpec[] };
+    };
+    expect(body.config.version).toBe(2);
+    expect(body.config.active).toBe(false);
+    expect(body.config.name).toBe("Patched line");
+    expect(body.config.levels).toHaveLength(2);
+    // 台账 v2(source updated)带 changes 摘要;审计行同发,行.version = 台账最新版
+    const history = await app.request(`/api/config-versions/approval_config/${configId}`, {
+      headers: { cookie: must(session.get("owner")) },
+    });
+    expect(history.status).toBe(200);
+    const revisions = (await history.json()) as {
+      revisions: { version: number; source: string; changes: Record<string, { from: unknown; to: unknown }> | null }[];
+    };
+    expect(revisions.revisions).toHaveLength(2);
+    expect(revisions.revisions[0]).toMatchObject({ version: 2, source: "updated" });
+    expect(Object.keys(must(revisions.revisions[0]?.changes))).toEqual(
+      expect.arrayContaining(["name", "levels", "active"]),
+    );
+    const audits = await db
+      .select()
+      .from(schema.auditEvents)
+      .where(eq(schema.auditEvents.action, "approval.config_updated"));
+    expect(audits).toHaveLength(1);
+  });
+
+  it("answers an idempotent PATCH without a revision or audit row", async () => {
+    const configId = await createConfig("noop_line", [{ name: "only", users: [bobId] }]);
+    const res = await app.request(`/api/approval-configs/${configId}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json", cookie: must(session.get("owner")) },
+      body: JSON.stringify({
+        name: `Config noop_line`,
+        levels: [{ name: "only", users: [bobId] }],
+        active: true,
+      }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { config: { version: number } };
+    expect(body.config.version).toBe(1);
+    const history = await app.request(`/api/config-versions/approval_config/${configId}`, {
+      headers: { cookie: must(session.get("owner")) },
+    });
+    const revisions = (await history.json()) as { revisions: unknown[] };
+    expect(revisions.revisions).toHaveLength(1);
+    const audits = await db
+      .select()
+      .from(schema.auditEvents)
+      .where(eq(schema.auditEvents.action, "approval.config_updated"));
+    expect(audits).toHaveLength(0);
+  });
+
+  it("rejects bad levels on PATCH with 422 and an unknown config with 404; guards the face with approval.configure", async () => {
+    const configId = await createConfig("guard_line", [{ name: "only", users: [bobId] }]);
+    const badLevels = await app.request(`/api/approval-configs/${configId}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json", cookie: must(session.get("owner")) },
+      body: JSON.stringify({ levels: [{ name: "only", users: [], roles: [] }] }),
+    });
+    expect(badLevels.status).toBe(422);
+    expect((await badLevels.json()) as { error?: string }).toMatchObject({ error: "invalid_levels" });
+    const missing = await app.request(`/api/approval-configs/${randomUUID()}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json", cookie: must(session.get("owner")) },
+      body: JSON.stringify({ active: false }),
+    });
+    expect(missing.status).toBe(404);
+    const forbidden = await app.request(`/api/approval-configs/${configId}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json", cookie: must(session.get("mallory")) },
+      body: JSON.stringify({ active: false }),
+    });
+    expect(forbidden.status).toBe(403);
+  });
+
+  it("stops routing new submissions to a deactivated line", async () => {
+    const configId = await createConfig("retire_line", [{ name: "only", users: [bobId] }]);
+    const docId = randomUUID();
+    docs.set(docId, { title: "Retire me", viewerIds: [aliceId, bobId] });
+    expect((await submit(docId, "retire_line")).status).toBe(201);
+    const deactivate = await app.request(`/api/approval-configs/${configId}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json", cookie: must(session.get("owner")) },
+      body: JSON.stringify({ active: false }),
+    });
+    expect(deactivate.status).toBe(200);
+    const docId2 = randomUUID();
+    docs.set(docId2, { title: "After retirement", viewerIds: [aliceId, bobId] });
+    const refused = await submit(docId2, "retire_line");
+    expect(refused.status).toBe(404);
+    expect((await refused.json()) as { error?: string }).toMatchObject({ error: "config_inactive" });
+  });
+
   // ── 提交 ────────────────────────────────────────────────────────────────
 
   it("gates submission on subject visibility and records approval.requested", async () => {

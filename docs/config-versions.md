@@ -72,10 +72,10 @@
 - **能力随内容改写路径走**：只有注册了 `draftContentSchema` + `applyRevision`
   的族能存草稿（automation_rule / custom_field_def / numbering_rule /
   workflow_template 四族——workflow 的定义改写面随 #220/#226 进场，definition
-  的草稿校验与 POST/PATCH 同一道四门）；approval 尚无定义改写端点，草稿与发布
-  对它答 409 `publish_unsupported`（与回滚的 `rollback_unsupported`
-  同一裁法）。权限 = 各族配置面的同一权限点（动态按族裁决，与台账读面共用
-  config-versions/http.ts）。
+  的草稿校验与 POST/PATCH 同一道四门）；approval 的就地 PATCH 随 #221 配置
+  UI 切片进场但**没有草稿面**（即改即生效，不需要第二层），草稿与发布对它
+  答 409 `publish_unsupported`；回滚则随 applyRevision 对它开放。权限 = 各族
+  配置面的同一权限点（动态按族裁决，与台账读面共用 config-versions/http.ts）。
 
 ## 记账协议（写入侧纪律）
 
@@ -106,9 +106,10 @@
   （§4.5「计算结构」硬底线），配置面只收参数且全部 strict zod（多打的未知键
   400）；定价规则 #223（phase-2）进场时公式结构同样在代码里，可配的只有费率
   表与分档（GoRules 决策表值类型，#233）。
-- **workflow / approval 的定义改写端点**：两族内容尚无就地改写路径（行内容恒
-  等于 v1），注册时不带 applyRevision / draftContentSchema，回滚答 409
-  `rollback_unsupported`、草稿与发布答 409 `publish_unsupported`；定义改写
-  端点（替换流程/审批线的就地形态）进场时同步补 applyRevision 与草稿契约。
+- ~~**workflow / approval 的定义改写端点**~~：均已进场——workflow 随 #220/#226
+  （PATCH + 草稿发布 + 回滚），approval 随 #221 配置 UI 切片（就地 PATCH +
+  回滚，无草稿面）。生产六族现都带 applyRevision；没有改写路径的族（夹具、
+  未来新族未接前）注册时不带 applyRevision / draftContentSchema，回滚答 409
+  `rollback_unsupported`、草稿与发布答 409 `publish_unsupported`。
 - **配置工作室 UI**：subjects/史/差异/草稿/发布端点已就绪，前端随配置工作室
   切片进场。

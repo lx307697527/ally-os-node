@@ -11,6 +11,7 @@ import { Region } from "./pages/Region.tsx";
 import { FeedbackDialog } from "./shared/components/FeedbackDialog.tsx";
 import { NotificationBell } from "./shared/components/NotificationBell.tsx";
 import { AuditLog } from "./shared/pages/AuditLog.tsx";
+import { ApprovalConfigs } from "./shared/pages/ApprovalConfigs.tsx";
 import { Approvals } from "./shared/pages/Approvals.tsx";
 import { NotificationSettings } from "./shared/pages/NotificationSettings.tsx";
 import { NumberingRules } from "./shared/pages/NumberingRules.tsx";
@@ -143,6 +144,10 @@ export function App(): ReactElement {
               不是敏感数据），改权逐规则裁决——页面把 403 的角色与 400 的逐格
               编译错误原样说话；硬底线在代码里，本页无「新建」。 */}
           <Route path="/system/rules" element={<RulesRegistry />} />
+          {/* 审批线（#221）：配置工作室的审批配置面；服务端 approval.configure
+              门，就地改写与停用走 #226 版本台账——键永不复用，编辑只影响之后
+              提交的请求，在飞的带着提交时刻的级别快照。 */}
+          <Route path="/system/approvals" element={<ApprovalConfigs />} />
           {/* 2FA 自助（#24）：强制门把未绑定的管理员引到这里的合同,绑定流程
               本身不需要新的 API 面——走的都是 /api/auth/two-factor/*。 */}
           <Route path="/settings/two-factor" element={<TwoFactorSettings />} />

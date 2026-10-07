@@ -87,6 +87,9 @@ export const API_ROUTES: readonly RouteDecl[] = [
   // 什么」，approval.configure 权限点门（owner/admin 默认持有）
   { method: "POST", path: "/api/approval-configs", auth: { kind: "permission", permission: "approval.configure" } },
   { method: "GET", path: "/api/approval-configs", auth: { kind: "permission", permission: "approval.configure" } },
+  // 就地改写/停用（#221 配置 UI）：真变更 bump 版本记 #226 台账,回滚端点随
+  // applyRevision 对审批族开放（config-versions 路由,动态按族同一权限点）
+  { method: "PATCH", path: "/api/approval-configs/:id", auth: { kind: "permission", permission: "approval.configure" } },
   // 审批请求（#221）：提交与详情过单据可见性门（subjects/registry.ts）；待办
   // 与裁决由配置点名授权（users/roles 命中即审批人），要求签名的级别在服务层
   // 过 2FA 门 + 签名仪式（#219 内核），自批合法（R-16-5），无新权限点
