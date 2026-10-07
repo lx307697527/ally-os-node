@@ -1,0 +1,1 @@
+ALTER TABLE "workflow_instances" ADD COLUMN "state_reminder_at" timestamp with time zone;
