@@ -4,7 +4,10 @@
 // (replace draft lines, confirm = issue, void a draft), the collection verbs
 // (record a payment, void one, the two checkout-link channels) and the credit
 // verbs (#192 红冲的 web 半边: create a credit-note draft, confirm it = the
-// credit applies, void a draft). Like every primary-surface adapter, it
+// credit applies, void a draft) and the installment-plan half (#192 分期的
+// web 半边: read a plan's ledger — the agreement cut into n ordinary draft
+// invoices — and create a split; the plan itself mints no verbs, every verb
+// lives on each part's own invoice). Like every primary-surface adapter, it
 // reports the failure mode instead of flattening it:
 //
 //   { ok: true, data }                       — a good read/write
@@ -136,6 +139,58 @@ const creditNotesLedgerSchema = z.object({
   creditNotes: z.array(creditNoteRowSchema),
 });
 
+// ---- Installment plans (#192 分期的 web 半边):a plan is the agreement's
+// ledger — one split, n ordinary draft invoices. The plan read carries the
+// agreed total (stamped at the split, never changes) beside the live totals,
+// with the drift (uninvoicedCents) exposed, never clamped; per-part money
+// states come from the same arithmetic the invoice pages read. ----
+
+const planPartSchema = z.object({
+  invoiceId: z.string(),
+  number: z.string(),
+  planIndex: z.number().int(),
+  status: z.enum(["draft", "issued", "void"]),
+  totalCents: z.number().int(),
+  creditedCents: z.number().int(),
+  paidCents: z.number().int(),
+  paymentStatus: z.enum(["unpaid", "partial", "paid"]),
+});
+
+const invoicePlanSchema = z.object({
+  id: z.string(),
+  label: z.string(),
+  subject: z.object({ type: z.string(), id: z.string() }).nullable(),
+  currency: z.string(),
+  totalCents: z.number().int(),
+  createdAt: z.string(),
+  // n 含 void(partCount)与在世口径(livePartCount)都由服务端派生——
+  // 「Part i of n」的 n 绝不从客户端手里的行集数出来
+  partCount: z.number().int(),
+  livePartCount: z.number().int(),
+  liveInvoicedCents: z.number().int(),
+  paidCents: z.number().int(),
+  outstandingCents: z.number().int(),
+  uninvoicedCents: z.number().int(),
+  parts: z.array(planPartSchema),
+});
+
+const invoicePlanCreatedSchema = z.object({
+  id: z.string(),
+  totalCents: z.number().int(),
+  parts: z.array(
+    z.object({
+      id: z.string(),
+      number: z.string(),
+      planIndex: z.number().int(),
+      amountCents: z.number().int(),
+    }),
+  ),
+});
+
+export type InvoicePlan = z.infer<typeof invoicePlanSchema>;
+export type InvoicePlanPart = z.infer<typeof planPartSchema>;
+export type InvoicePlanCreated = z.infer<typeof invoicePlanCreatedSchema>;
+
 export type Invoice = z.infer<typeof invoiceSchema>;
 export type InvoiceDetail = z.infer<typeof invoiceDetailSchema>;
 export type InvoiceLine = z.infer<typeof invoiceLineSchema>;
@@ -246,6 +301,34 @@ export interface CreditNoteCreateInput {
   lines: InvoiceLineInput[];
 }
 
+/** The plan verbs' failure taxonomy — the shared gates plus a 409 that today
+ *  carries one code: the missing numbering rule (a plan mints n invoice
+ *  numbers in one transaction; any failure rolls the whole plan back).
+ *  Codes never reach the user; the page says each as its own sentence. */
+export type InvoicePlanActionFailure =
+  | { ok: false; reason: "forbidden" | "notfound" | "unavailable" }
+  | { ok: false; reason: "conflict"; code: string | null };
+
+export type InvoicePlanResult =
+  | { ok: true; data: InvoicePlan }
+  | { ok: false; reason: "notfound" | "forbidden" | "unavailable" };
+
+/** A creation's answer: the plan's id, the server-stamped agreed total (= the
+ *  parts' sum, no separate field ever existed) and each part's invoice id,
+ *  number, ordinal and amount. */
+export type InvoicePlanCreateResult =
+  | { ok: true; data: InvoicePlanCreated }
+  | InvoicePlanActionFailure;
+
+/** What the client sends when splitting — a label (the agreement's narrative)
+ *  and the parts' amounts. No total field: the agreed amount is what the
+ *  parts add up to, stamped by the server (RULE-007). No subject yet — the
+ *  order domain wires that when it arrives (#231). */
+export interface InvoicePlanCreateInput {
+  label: string;
+  parts: { amountCents: number }[];
+}
+
 /** The manual booking's method — the server's PAYMENT_METHODS wordlist (the
  *  ledger stays open-ended; a booked row's method renders whatever arrived). */
 export type PaymentMethod = "card" | "paypal" | "wire_ach";
@@ -275,6 +358,8 @@ export interface InvoiceAdapters {
   createCreditNote(id: string, input: CreditNoteCreateInput): Promise<CreditNoteCreateResult>;
   confirmCreditNote(creditNoteId: string): Promise<CreditNoteVerbResult>;
   voidCreditNote(creditNoteId: string, reason?: string): Promise<CreditNoteVerbResult>;
+  invoicePlan(planId: string): Promise<InvoicePlanResult>;
+  createInvoicePlan(input: InvoicePlanCreateInput): Promise<InvoicePlanCreateResult>;
 }
 
 /** The state verbs' shared failure mapping: 403/404/409, a 409 carrying the
@@ -530,6 +615,39 @@ export function createInvoiceAdapters(fetchFn: typeof fetch = fetch): InvoiceAda
           ),
         });
         return await verb(res);
+      } catch {
+        return { ok: false, reason: "unavailable" };
+      }
+    },
+
+    async invoicePlan(planId: string): Promise<InvoicePlanResult> {
+      try {
+        const res = await fetchFn(`/api/invoice-plans/${encodeURIComponent(planId)}`);
+        if (res.status === 404) return { ok: false, reason: "notfound" };
+        if (res.status === 403) return { ok: false, reason: "forbidden" };
+        if (!res.ok) return { ok: false, reason: "unavailable" };
+        const parsed = invoicePlanSchema.safeParse(await res.json());
+        if (!parsed.success) return { ok: false, reason: "unavailable" };
+        return { ok: true, data: parsed.data };
+      } catch {
+        return { ok: false, reason: "unavailable" };
+      }
+    },
+
+    async createInvoicePlan(input: InvoicePlanCreateInput): Promise<InvoicePlanCreateResult> {
+      try {
+        const res = await fetchFn("/api/invoice-plans", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            label: input.label,
+            parts: input.parts.map((part) => ({ amountCents: part.amountCents })),
+          }),
+        });
+        if (!res.ok) return await actionFailure(res);
+        const parsed = invoicePlanCreatedSchema.safeParse(await res.json());
+        if (!parsed.success) return { ok: false, reason: "unavailable" };
+        return { ok: true, data: parsed.data };
       } catch {
         return { ok: false, reason: "unavailable" };
       }

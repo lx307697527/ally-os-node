@@ -271,6 +271,74 @@ describe("credit notes web face (#192 红冲的 web 半边)", () => {
   });
 });
 
+describe("installment plans web face (#192 分期的 web 半边)", () => {
+  it("the client reads the real plan endpoints and parses the ledger by zod", () => {
+    expect(client).toContain("`/api/invoice-plans/${encodeURIComponent(planId)}`");
+    expect(client).toContain('"/api/invoice-plans"');
+    expect(client).toContain("invoicePlanSchema.safeParse");
+    expect(client).toContain("invoicePlanCreatedSchema.safeParse");
+    expect(client).toContain("createInvoicePlan");
+  });
+
+  it("the plan section renders only for a member invoice — a plan fact, not a decoration", () => {
+    expect(detail).toContain("<PlanSection");
+    expect(detail).toContain("data.plan !== null ? <PlanSection memberOf={data.plan} /> : null");
+    expect(detail).toContain('data-testid="invoice-plan-section"');
+  });
+
+  it("every plan state is said: loading, unavailable, parts ledger, money blocks", () => {
+    expect(detail).toContain('data-testid="invoice-plan-loading"');
+    expect(detail).toContain('data-testid="invoice-plan-unavailable"');
+    expect(detail).toContain('data-testid="invoice-plan-parts"');
+    expect(detail).toContain('data-testid="invoice-plan-agreed"');
+    expect(detail).toContain('data-testid="invoice-plan-invoiced"');
+    expect(detail).toContain('data-testid="invoice-plan-paid"');
+    expect(detail).toContain('data-testid="invoice-plan-outstanding"');
+  });
+
+  it("part i of n comes from the server's facts, never a client derivation", () => {
+    expect(detail).toContain("part ${String(data.plan.index)} of ${String(data.plan.count)}");
+    expect(list).toContain("part ${String(row.plan.index)} of ${String(row.plan.count)}");
+    expect(client).toContain("n 含 void(partCount)与在世口径(livePartCount)都由服务端派生");
+  });
+
+  it("the drift is exposed, never clamped — both directions said as sentences", () => {
+    expect(detail).toContain("plan.uninvoicedCents > 0");
+    expect(detail).toContain("plan.uninvoicedCents < 0");
+    expect(detail).toContain("left it uninvoiced");
+    expect(detail).toContain("edited past the original split");
+  });
+
+  it("the plan mints no verbs — every verb lives on each part's own invoice page", () => {
+    expect(detail).toContain("The plan is the ledger — confirm, collect and void live on each part's");
+    expect(detail).toContain("to={`/invoices/${part.invoiceId}`}");
+    expect(detail).toContain('part.status === "void"');
+  });
+
+  it("the split action lives on the finance list, its dialog takes a label and parts only", () => {
+    expect(list).toContain('data-testid="invoices-plan-create"');
+    expect(list).toContain("CreatePlanDialog");
+    expect(list).toContain('data-testid="invoices-plan-label"');
+    expect(list).toContain('data-testid="invoices-plan-part-amount"');
+    expect(list).toContain('data-testid="invoices-plan-add-part"');
+    expect(list).toContain("parseDollarsToCents(");
+    expect(list).toContain("PLAN_PARTS_MIN = 2");
+    expect(list).toContain("PLAN_PARTS_MAX = 12");
+    expect(list).toContain("PLAN_TOTAL_MAX_CENTS");
+  });
+
+  it("the split dialog keeps the money discipline: no total field, the server stamps the agreed amount", () => {
+    expect(list).toContain("The total is stamped by the");
+    expect(list).toContain("stamped by the server");
+  });
+
+  it("the split's one gate has its own sentence — numbering is configuration, not a reload case", () => {
+    expect(list).toContain('code === "numbering_not_configured"');
+    expect(list).toContain("ask an admin to set one in the configuration studio");
+    expect(list).toContain('data-testid="invoices-flash"');
+  });
+});
+
 describe("wiring (#192 slice 4)", () => {
   it("the routes exist and the rail item points at them — one table, no drift", () => {
     expect(app).toContain('path="/invoices"');
