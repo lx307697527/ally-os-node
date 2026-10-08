@@ -62,6 +62,9 @@ export interface InvoiceSubject {
   id: string;
 }
 
+/** 账期天数的整数毫秒（dueAt = issuedAt + N 天，纯整数加法无日界换算） */
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
+
 export interface CreateDraftInvoiceInput {
   invoiceType: InvoiceType;
   lines: InvoiceLineInput[];
@@ -223,15 +226,19 @@ function linesMatch(
 
 /**
  * 确认发出（R-12-6 财务确认）：draft → issued，行锁定。重复确认幂等返回
- * already（审计不落第二行——no-op 不写审计的同一纪律）；void 票不可确认。
+ * already（审计不落第二行——no-op 不写审计的同一纪律；already 不改写 dueAt——
+ * 到期日是发行事实，只随第一次确认落）；void 票不可确认。
+ * dueInDays（R-12-7，可选）：账期天数，服务端从 issuedAt 算 dueAt（0 = 见票
+ * 即付；缺省 = 未约定账期，dueAt null 不进逾期扫描）。天 → 时刻是纯整数加法
+ * （UTC，无日界换算），不接客户端时刻（RULE-007 服务端唯一权威）。
  * 票不存在返回 null（路由 404）。
  */
 export async function confirmInvoice(
   tx: InvoiceTx,
   invoiceId: string,
   actorId: string,
-  options: { now?: Date } = {},
-): Promise<{ outcome: "issued" | "already"; totalCents: number } | null> {
+  options: { now?: Date; dueInDays?: number | undefined } = {},
+): Promise<{ outcome: "issued" | "already"; totalCents: number; dueAt: Date | null } | null> {
   const now = options.now ?? new Date();
   const locked = await tx
     .select({ status: schema.invoices.status })
@@ -245,16 +252,24 @@ export async function confirmInvoice(
   }
   const totalCents = await sumLineTotals(tx, invoiceId);
   if (invoice.status === "issued") {
-    return { outcome: "already", totalCents };
+    return { outcome: "already", totalCents, dueAt: null };
   }
   if (invoice.status === "void") {
     throw new InvoiceStateError("invoice_voided");
   }
+  const dueAt =
+    options.dueInDays === undefined ? null : new Date(now.getTime() + options.dueInDays * MS_PER_DAY);
   await tx
     .update(schema.invoices)
-    .set({ status: "issued", issuedAt: now, issuedById: actorId, updatedAt: now })
+    .set({
+      status: "issued",
+      issuedAt: now,
+      issuedById: actorId,
+      updatedAt: now,
+      ...(dueAt !== null ? { dueAt } : {}),
+    })
     .where(eq(schema.invoices.id, invoiceId));
-  return { outcome: "issued", totalCents };
+  return { outcome: "issued", totalCents, dueAt };
 }
 
 /**

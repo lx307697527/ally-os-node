@@ -218,6 +218,7 @@ describe("describeNotification (白名单类型：文案与深链在 TS 不在�
       "approval.reminder",
       "payment.attempt_failed",
       "payment.unbookable",
+      "invoice.overdue",
     ]);
   });
 
@@ -250,6 +251,26 @@ describe("describeNotification (白名单类型：文案与深链在 TS 不在�
       expect(face.href).toBeNull();
       expect(face.title).toBe("t");
     }
+  });
+
+  it("逾期提醒亮 worker 扫描拼好的 title/detail，深链到那张票（#192 due 扫描）", () => {
+    const face = describeNotification(
+      row({
+        eventType: "invoice.overdue",
+        aggregateType: "invoice",
+        aggregateId: "9a5e7f90-a1b2-4c3d-8e9f-0a1b2c3d4e5f",
+        payload: {
+          title: "Invoice INV-1007 is overdue",
+          detail: "USD 15,000.00 outstanding — was due 2026-10-01",
+          invoiceNumber: "INV-1007",
+          outstandingCents: 1_500_000,
+          currency: "USD",
+        },
+      }),
+    );
+    expect(face.title).toBe("Invoice INV-1007 is overdue");
+    expect(face.detail).toBe("USD 15,000.00 outstanding — was due 2026-10-01");
+    expect(face.href).toBe("/invoices/9a5e7f90-a1b2-4c3d-8e9f-0a1b2c3d4e5f");
   });
 });
 

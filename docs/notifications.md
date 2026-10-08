@@ -121,6 +121,22 @@ reminders. No carrier page for workflow instances exists yet, so like the paymen
 alerts it stays OFF the bell whitelist and carries `title`/`detail` facts for the
 honest fallback face; the email digest reads the same facts.
 
+Worker-side producer (#192 due-scan slice, 2026-10-09): the invoice overdue scan
+(`invoice-overdue-reminders`, daily at 13:10 UTC) inserts `invoice.overdue` rows
+for the `invoices.manage` holders when an issued invoice with a `due_at` is past
+due and still owes money (paid < total, derived live — $0 invoices are vacuously
+paid and never page anyone). R-12-7's other half is deliberate: the system never
+chases the CUSTOMER; the bell is the road sign for finance to chase manually.
+Two idempotency layers: the `overdue_reminder_at` ledger on the invoice row
+(status-conditional stamp + insert in one transaction, 24h re-remind cadence —
+the workflow/approval reminder shape) and a day-scoped `dedupe_key`
+(`invoice-overdue:<invoiceId>:<UTC day>`) on the rows. The carrier page exists
+(`/invoices/:id`), so the event joined the bell whitelist: the face reuses the
+worker-assembled `title`/`detail` (outstanding amount + due date) and deep-links
+to the invoice; the scan lands before the 13:30 digest so the same day's email
+carries it. Scheduling at 13:10 sits between the rules scan (13:00) and the
+digest (13:30).
+
 Task-domain ruling (#113, 2026-10-07): the follower fan-out exists for the
 status transition (`task.status_changed`, facts `taskTitle`/`actorName`/`from`/`to`);
 **reassignment has no follower event, by structure** — a reassignment removes the

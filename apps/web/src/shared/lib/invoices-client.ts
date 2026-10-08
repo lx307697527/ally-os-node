@@ -33,6 +33,8 @@ const invoiceSchema = z.object({
   paidCents: z.number().int(),
   paymentStatus: z.enum(["unpaid", "partial", "paid"]),
   issuedAt: z.string().nullable(),
+  // R-12-7：null = 未约定账期（不进逾期扫描）；展示随 web 面后续切片
+  dueAt: z.string().nullable(),
   voidedAt: z.string().nullable(),
   voidReason: z.string().nullable(),
   createdAt: z.string(),

@@ -19,7 +19,7 @@
 > ② 老仓库迁移文件 HEAD(FEAT-043 重构后的任务名)。两份名单都对不上的部分以切换日
 > `SELECT * FROM cron.job` 的实测为准(见文末切换手册)。
 
-## 表 A:老仓库迁移 HEAD 上的任务(重构后现状,28 个)
+## 表 A:老仓库迁移 HEAD 上的任务(重构后现状,29 个)
 
 | # | 老任务 | cron(UTC) | 干什么 | 新系统归属 |
 |---|--------|------------|--------|------------|
@@ -51,6 +51,7 @@
 | A26 | platform-scheduler-runs-cleanup | `45 3 * * *` | 老调度器运行台账清理 | **废弃**:pg-boss 自带保留策略(队列 `deleteAfterSeconds`/`retentionSeconds`)取代,无需自建台账 |
 | A27 | platform-collect-http-responses | `*/5 * * * *` | 收割 pg_net 异步 HTTP 响应 | **废弃**:pg-boss worker 同步执行并持有结果,不存在异步响应需要收割 |
 | A28 | marketing-abandoned-forms-cleanup | `20 3 * * *` | 半途表单提交数据清理 | 随营销/获客域(M1) |
+| A29 | billing-invoice-overdue-sweep | `0 13,14 * * *` | 发票逾期三档内部告警 + Slack 日报(FEAT-765;13/14 UTC 双触发、函数内只在纽约 09:00 做事) | **已落地**(#192 due 扫描切片,2026-10-09):任务名 `invoice-overdue-reminders`、每日 13:10 UTC 单触发。档位节奏(stage 1/7/30)刻意不搬——24h 再催与 approval/workflow 催办一致;Slack 日报不搬——业务提醒走通知域,Slack 通道留给 job 失败告警 |
 
 ## 表 B:issue #32 正文所列线上任务(旧时代任务名,2026-09-30 快照)
 

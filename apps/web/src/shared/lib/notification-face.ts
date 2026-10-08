@@ -37,6 +37,10 @@ export const NOTIFIED_EVENT_TYPES: readonly string[] = [
   // （unbookable 且票找不到）的行去处 null，点了只标已读——不猜去处。
   "payment.attempt_failed",
   "payment.unbookable",
+  // 逾期提醒（#192 due 扫描，R-12-7「逾期由财务人工催」）：worker 扫描从事实
+  // 拼好的 title/detail（金额 + 到期日），去处是那张票——催收动作（人工）从
+  // 台账页发起。行恒有锚点（扫描只为已发行的票落行）。
+  "invoice.overdue",
 ];
 
 /** API summary 的一行（zod 校验后的形状，camelCase）。 */
@@ -157,6 +161,14 @@ export function describeNotification(row: NotificationRow): NotificationFace {
     case "payment.unbookable":
       // 收款告警（#193）：title/detail 是服务端从银行事实拼好的句子（两渠道
       // 共用一份文案内核），展示层原样亮出；深链到那张票，没锚点就不猜。
+      return {
+        title: stringField(row.payload, "title") ?? row.eventType,
+        detail: stringField(row.payload, "detail") ?? "",
+        href: invoiceHref(row.aggregateId),
+      };
+    case "invoice.overdue":
+      // 逾期提醒（#192 due 扫描）：title/detail 是 worker 扫描从事实拼好的
+      // 句子（金额 + 到期日），展示层原样亮出；深链到那张票看台账。
       return {
         title: stringField(row.payload, "title") ?? row.eventType,
         detail: stringField(row.payload, "detail") ?? "",
