@@ -95,8 +95,8 @@ Invoice。创建事务里 `allocateDocumentNumber(tx, "invoice")`;**无生效规
 
 `invoice.created`(detail: number/invoiceType/subject·source 引用/lineCount/
 totalCents)、`invoice.updated`(fields:["lines"] + lineCount/totalCents,no-op
-不落)、`invoice.confirmed`(number/totalCents——财务确认的金额快照)、
-`invoice.voided`(number/totalCents/reason?)。
+不落)、`invoice.confirmed`(number/totalCents——财务确认的金额快照;带账期时
+加 dueInDays + dueAt)、`invoice.voided`(number/totalCents/reason?)。
 
 ## 端点
 
@@ -106,7 +106,7 @@ totalCents)、`invoice.updated`(fields:["lines"] + lineCount/totalCents,no-op
 | `GET /api/invoices?status=` | invoices.manage | 列表(含 totalCents;财务「待确认发票」主读法) |
 | `GET /api/invoices/:id` | invoices.manage | 详情(头 + 行 + totalCents) |
 | `PATCH /api/invoices/:id` | invoices.manage | 草稿换行(整体替换,行序即语义);仅 draft |
-| `POST /api/invoices/:id/confirm` | invoices.manage | draft → issued;幂等 |
+| `POST /api/invoices/:id/confirm` | invoices.manage | draft → issued;幂等;可选 `dueInDays`(0–365)→ 服务端算 dueAt(R-12-7) |
 | `POST /api/invoices/:id/void` | invoices.manage | draft → void(可带 reason);幂等 |
 
 404 用于票不存在(反探测,与任务详情同裁);409 用于「票在但状态不允许」
