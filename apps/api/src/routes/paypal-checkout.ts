@@ -12,6 +12,7 @@ import {
   PAYPAL_SURCHARGE_RULE_KEY,
   surchargeRateSchema,
 } from "../billing/surcharge.ts";
+import { effectiveDueCents, sumCreditCents } from "../billing/credits.ts";
 import { sumLineTotals } from "../billing/service.ts";
 import type { PayPalChannel } from "../billing/paypal.ts";
 import { payPalMisconfigured } from "../billing/paypal.ts";
@@ -27,9 +28,10 @@ import { getRule, RuleNotFoundError, RuleNotSetError, RuleShapeError } from "../
  * PayPalGateway，不新增第二套建订单的路径。
  *
  * 金额纪律（#193 验收「篡改金额被拒」的结构性答案，Stripe 同款）：body 里**没有
- * 金额字段可传**——principal = 发票行实时合计（发出后行锁定，恒定），币种从发票
- * 行抄录，锚点与拆分声明坐服务端写下的 custom_id（billing/paypal.ts 文件头）。
- * $0 票没有可收的钱，拒绝建订单。
+ * 金额字段可传**——principal = 有效应付（发票行实时合计 − 有效贷项，#192 红冲
+ * 切片；发出后行锁定、贷项边界行锁内校验，两者恒定），币种从发票行抄录，锚点
+ * 与拆分声明坐服务端写下的 custom_id（billing/paypal.ts 文件头）。$0 有效应付
+ * （全冲抵或 $0 票）没有可收的钱，拒绝建订单。
  *
  * 附加费（R-12-2/3）：实扣额 = principal + surcharge，费率读规则注册表
  * `payments.paypal_surcharge_pct`（0021 种子 3.9%，与卡片费率刻意两个键——两个
@@ -71,7 +73,11 @@ export function paypalCheckoutRoutes(deps: { db: Db; logger: Logger; paypal: Pay
     if (invoice.status !== "issued") {
       return c.json({ error: "not_issued" }, 409);
     }
-    const principalCents = await sumLineTotals(deps.db, id.data);
+    // 结算额 = 有效应付（发票合计 − 有效贷项，credits.ts 唯一权威算术）：
+    // 贷项单确认后票欠得少了，订单不能按原面额把客户多收一遍
+    const invoiceTotalCents = await sumLineTotals(deps.db, id.data);
+    const creditedCents = await sumCreditCents(deps.db, id.data);
+    const principalCents = effectiveDueCents(invoiceTotalCents, creditedCents);
     if (principalCents <= 0) {
       return c.json({ error: "nothing_to_collect" }, 409);
     }

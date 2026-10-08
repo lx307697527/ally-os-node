@@ -98,7 +98,7 @@ describe.skipIf(!databaseUrl)("invoice overdue scan (#192, integration)", () => 
 
   afterEach(async () => {
     await db.execute(
-      sql`truncate table ${schema.payments}, ${schema.invoiceLines}, ${schema.invoices}, ${schema.notifications} cascade`,
+      sql`truncate table ${schema.creditNoteLines}, ${schema.creditNotes}, ${schema.payments}, ${schema.invoiceLines}, ${schema.invoices}, ${schema.notifications} cascade`,
     );
   });
 
@@ -118,6 +118,8 @@ describe.skipIf(!databaseUrl)("invoice overdue scan (#192, integration)", () => 
     reminderAgeMs?: number;
     lines?: { quantity: number; unitPriceCents: number }[];
     payments?: { amountCents: number; voided?: boolean }[];
+    /** 直落贷项单（#192 红冲切片）：status 缺省 issued（草稿不进有效应付） */
+    credits?: { totalCents: number; status?: "draft" | "issued" | "void" }[];
   }
 
   /** 直落票例行（不经 createDraftInvoice——扫描读的是表不是服务） */
@@ -156,6 +158,28 @@ describe.skipIf(!databaseUrl)("invoice overdue scan (#192, integration)", () => 
         ...(payment.voided
           ? { voidedAt: new Date(now), voidReason: "booked twice" }
           : {}),
+      });
+    }
+    for (const credit of spec.credits ?? []) {
+      numberSeq += 1;
+      const status = credit.status ?? "issued";
+      const noteRows = await db
+        .insert(schema.creditNotes)
+        .values({
+          number: `CN-${String(numberSeq)}`,
+          invoiceId: id,
+          status,
+          reason: "price correction",
+          ...(status === "issued" ? { issuedAt: new Date(now) } : {}),
+          ...(status === "void" ? { voidedAt: new Date(now), voidReason: "wrong" } : {}),
+        })
+        .returning({ id: schema.creditNotes.id });
+      await db.insert(schema.creditNoteLines).values({
+        creditNoteId: must(noteRows[0]).id,
+        lineNumber: 1,
+        description: "correction",
+        quantity: "1.000",
+        unitPriceCents: credit.totalCents,
       });
     }
     return id;
@@ -238,6 +262,47 @@ describe.skipIf(!databaseUrl)("invoice overdue scan (#192, integration)", () => 
     await insertInvoice({ dueInMs: -3 * DAY, lines: [{ quantity: 0.5, unitPriceCents: 0 }] });
     const summary = await runInvoiceOverdueScan(services());
     expect(summary.overdueInvoices).toBe(0);
+  });
+
+  it("全冲抵（issued 贷项合计 = 发票合计）vacuously paid 出局；草稿贷项不算、void 贷项不算", async () => {
+    // 有效应付 0：全冲抵的票不该再挨催（outstanding 成负数更不可能）
+    const credited = await insertInvoice({
+      dueInMs: -3 * DAY,
+      credits: [{ totalCents: 20_000 }],
+    });
+    // 草稿/void 贷项不经财务确认（或不复存在），有效应付原封不动——照催
+    const draftCredited = await insertInvoice({
+      dueInMs: -3 * DAY,
+      credits: [{ totalCents: 20_000, status: "draft" }],
+    });
+    const voidCredited = await insertInvoice({
+      dueInMs: -3 * DAY,
+      credits: [{ totalCents: 20_000, status: "void" }],
+    });
+    const summary = await runInvoiceOverdueScan(services());
+    expect(summary.overdueInvoices).toBe(2);
+    const rows = await overdueRows();
+    const targets = new Set(rows.map((r) => r.aggregateId));
+    expect(targets.has(credited)).toBe(false);
+    expect(targets.has(draftCredited)).toBe(true);
+    expect(targets.has(voidCredited)).toBe(true);
+    // outstanding 按「发票合计 − 有效贷项 − 有效收款」陈述（草稿票 20000 − 0 − 0）
+    const detail = rows.find((r) => r.aggregateId === draftCredited);
+    expect((detail?.payload.outstandingCents as number | undefined)).toBe(20_000);
+  });
+
+  it("部分冲抵压缩 outstanding：催办金额是有效应付的欠款，不是原票面额的欠款", async () => {
+    // 发票 30000，issued 贷项 10000 → outstanding = 30000 − 10000 = 20000
+    const id = await insertInvoice({
+      dueInMs: -3 * DAY,
+      lines: [{ quantity: 3, unitPriceCents: 10_000 }],
+      credits: [{ totalCents: 10_000 }],
+    });
+    const summary = await runInvoiceOverdueScan(services());
+    expect(summary.overdueInvoices).toBe(1);
+    const rows = await overdueRows();
+    expect(rows.every((r) => r.aggregateId === id)).toBe(true);
+    expect((rows[0]?.payload.outstandingCents as number | undefined)).toBe(20_000);
   });
 
   it("催过没到再催间隔的不重复催；催过满 24h 的再催一轮", async () => {

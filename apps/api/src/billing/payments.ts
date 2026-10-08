@@ -1,6 +1,7 @@
 import { and, eq, isNull, sql } from "drizzle-orm";
 import type { Db } from "@ally/db";
 import { schema } from "@ally/db";
+import { effectiveDueCents, sumCreditCents } from "./credits.ts";
 import { sumLineTotals } from "./service.ts";
 
 /**
@@ -84,6 +85,8 @@ export type PaymentTx = Pick<Db, "select" | "insert" | "update" | "delete">;
 
 export interface InvoicePaymentSummary {
   totalCents: number;
+  /** 有效贷项合计（未 void 贷项单实时 SUM，#192 红冲切片）；应付口径见 summarizeInvoicePayments */
+  creditedCents: number;
   paidCents: number;
   paymentStatus: InvoicePaymentStatus;
 }
@@ -239,14 +242,25 @@ export async function sumPaidCents(tx: Pick<Db, "select">, invoiceId: string): P
   return Number(rows[0]?.paid ?? 0);
 }
 
-/** 发票的付款态三件套：实时合计 + 派生态（读写面共用的一个定义） */
+/**
+ * 发票的付款态三件套（#192 红冲切片起为四件套）：实时合计 + 派生态（读写面
+ * 共用的一个定义）。paymentStatus 的应付口径是**有效应付**（发票合计 − 有效
+ * 贷项，credits.ts 的唯一权威算术）——贷项单确认后发票就算「欠得少了」，$0
+ * 有效应付的票 vacuously paid（全冲抵的票不该再挨催）。
+ */
 export async function summarizeInvoicePayments(
   tx: Pick<Db, "select">,
   invoiceId: string,
 ): Promise<InvoicePaymentSummary> {
   const totalCents = await sumLineTotals(tx, invoiceId);
+  const creditedCents = await sumCreditCents(tx, invoiceId);
   const paidCents = await sumPaidCents(tx, invoiceId);
-  return { totalCents, paidCents, paymentStatus: computePaymentStatus(totalCents, paidCents) };
+  return {
+    totalCents,
+    creditedCents,
+    paidCents,
+    paymentStatus: computePaymentStatus(effectiveDueCents(totalCents, creditedCents), paidCents),
+  };
 }
 
 /** 一张票的收款台账读法；票不存在返回 null（路由 404） */

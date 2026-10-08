@@ -14,3 +14,10 @@ import { registerNumberedSubject } from "../numbering/registry.ts";
  * 注册与分配内核不动（裁决全文见 docs/billing.md 与 docs/numbering.md）。
  */
 registerNumberedSubject("invoice", { label: "Invoice" });
+
+/**
+ * credit_note（#192 红冲切片）：贷项单与发票同属钱面单据族（CN- 前缀惯例，
+ * 号串前缀由配置者在规则里给），没有编号的贷项单不存在（fail closed 同发票）。
+ * 时区裁决承袭上面的 invoice 条目：UTC。
+ */
+registerNumberedSubject("credit_note", { label: "Credit note" });

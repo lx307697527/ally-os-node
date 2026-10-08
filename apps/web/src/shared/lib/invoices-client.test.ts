@@ -37,6 +37,7 @@ const INVOICE = {
   currency: "USD",
   subject: { type: "batch", id: "b-1" },
   totalCents: 150000,
+  creditedCents: 0,
   paidCents: 0,
   paymentStatus: "unpaid",
   issuedAt: null,
@@ -157,6 +158,7 @@ describe("invoices client (#192 slice 4)", () => {
       Promise.resolve(
         jsonRes({
           totalCents: 150000,
+          creditedCents: 0,
           paidCents: 150000,
           paymentStatus: "paid",
           payments: [PAYMENT_ROW],
@@ -167,6 +169,7 @@ describe("invoices client (#192 slice 4)", () => {
       ok: true,
       data: {
         totalCents: 150000,
+        creditedCents: 0,
         paidCents: 150000,
         paymentStatus: "paid",
         payments: [PAYMENT_ROW],
@@ -275,7 +278,7 @@ describe("payment actions client (#192 remaining)", () => {
         seen.push({ url: input, method: init.method ?? "", body: init.body });
       }
       return Promise.resolve(
-        jsonRes({ id: "pay-9", paidCents: 150000, totalCents: 150000, paymentStatus: "paid" }, 201),
+        jsonRes({ id: "pay-9", paidCents: 150000, totalCents: 150000, creditedCents: 0, paymentStatus: "paid" }, 201),
       );
     });
     const result = await adapters.recordPayment("inv-1", {
@@ -294,7 +297,7 @@ describe("payment actions client (#192 remaining)", () => {
     });
     expect(result).toEqual({
       ok: true,
-      data: { paidCents: 150000, totalCents: 150000, paymentStatus: "paid" },
+      data: { paidCents: 150000, totalCents: 150000, creditedCents: 0, paymentStatus: "paid" },
     });
 
     await adapters.recordPayment("inv-1", { amountCents: 5, method: "card" });
@@ -329,7 +332,7 @@ describe("payment actions client (#192 remaining)", () => {
         seen.push({ url: input, body: init.body });
       }
       return Promise.resolve(
-        jsonRes({ status: "voided", paidCents: 0, paymentStatus: "unpaid" }),
+        jsonRes({ status: "voided", paidCents: 0, creditedCents: 0, paymentStatus: "unpaid" }),
       );
     });
     const result = await adapters.voidPayment("pay-1", "  booked twice  ");
@@ -337,7 +340,7 @@ describe("payment actions client (#192 remaining)", () => {
     expect(JSON.parse(seen[0]?.body ?? "{}")).toEqual({ reason: "booked twice" });
     expect(result).toEqual({
       ok: true,
-      data: { outcome: "voided", paidCents: 0, paymentStatus: "unpaid" },
+      data: { outcome: "voided", paidCents: 0, creditedCents: 0, paymentStatus: "unpaid" },
     });
   });
 

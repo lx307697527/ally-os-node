@@ -19,6 +19,7 @@ import { authProvidersRoutes } from "./routes/auth-providers.ts";
 import { auditEventsRoutes } from "./routes/audit-events.ts";
 import { automationsRoutes } from "./routes/automations.ts";
 import { commentsRoutes } from "./routes/comments.ts";
+import { creditNotesRoutes } from "./routes/credit-notes.ts";
 import { configDraftsRoutes } from "./routes/config-drafts.ts";
 import { configVersionsRoutes } from "./routes/config-versions.ts";
 import { customFieldsRoutes } from "./routes/custom-fields.ts";
@@ -220,6 +221,10 @@ export function createApp(deps: AppDeps) {
   // 上方，验签即认证），在自己的业务事务里调 billing/payments.ts 的
   // recordPayment，source 幂等键兜重放
   app.route("/", paymentsRoutes(deps));
+  // 贷项单（#192 红冲切片）：issued 票的更正动词——不改写已发行行，冲抵是
+  // 一张新单据（invoices.manage 同门；服务接缝 billing/credits.ts 供 #239
+  // 触发域进场复用）
+  app.route("/", creditNotesRoutes(deps));
   // Stripe 渠道（#193）：财务建支付链接的过渡面（invoices.manage 同门；客户门户
   // #186 进场后复用同一 StripeGateway 接归属校验）
   app.route("/", stripeCheckoutRoutes(deps));

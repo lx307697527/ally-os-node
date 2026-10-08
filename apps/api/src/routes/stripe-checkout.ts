@@ -12,6 +12,7 @@ import {
   computeSurchargeCents,
   surchargeRateSchema,
 } from "../billing/surcharge.ts";
+import { effectiveDueCents, sumCreditCents } from "../billing/credits.ts";
 import { sumLineTotals } from "../billing/service.ts";
 import type { StripeChannel } from "../billing/stripe.ts";
 import { stripeMisconfigured } from "../billing/stripe.ts";
@@ -68,7 +69,11 @@ export function stripeCheckoutRoutes(deps: { db: Db; logger: Logger; stripe: Str
     if (invoice.status !== "issued") {
       return c.json({ error: "not_issued" }, 409);
     }
-    const principalCents = await sumLineTotals(deps.db, id.data);
+    // 结算额 = 有效应付（发票合计 − 有效贷项，credits.ts 唯一权威算术）：
+    // 贷项单确认后票欠得少了，链接不能按原面额把客户多收一遍
+    const invoiceTotalCents = await sumLineTotals(deps.db, id.data);
+    const creditedCents = await sumCreditCents(deps.db, id.data);
+    const principalCents = effectiveDueCents(invoiceTotalCents, creditedCents);
     if (principalCents <= 0) {
       return c.json({ error: "nothing_to_collect" }, 409);
     }

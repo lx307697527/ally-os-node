@@ -265,18 +265,14 @@ describe.skipIf(!databaseUrl)("stripe checkout & webhook (#193, integration)", (
       { userId: USERS.own, role: "owner" },
       { userId: USERS.sal, role: "sales" },
     ]);
-    await db.insert(schema.numberingRules).values({
-      subject: "invoice",
-      label: "Invoice",
-      prefix: "INV-",
-      dateFormat: null,
-      padding: 4,
-      startNumber: 3000,
-    });
+    await db.insert(schema.numberingRules).values([
+      { subject: "invoice", label: "Invoice", prefix: "INV-", dateFormat: null, padding: 4, startNumber: 3000 },
+      { subject: "credit_note", label: "Credit note", prefix: "CN-", dateFormat: null, padding: 4, startNumber: 7000 },
+    ]);
   });
 
   beforeEach(async () => {
-    await db.execute(sql`truncate table ${schema.payments}, ${schema.invoiceLines}, ${schema.invoices} cascade`);
+    await db.execute(sql`truncate table ${schema.creditNoteLines}, ${schema.creditNotes}, ${schema.payments}, ${schema.invoiceLines}, ${schema.invoices} cascade`);
     await db.execute(sql`truncate table ${schema.auditEvents}`);
     await db.execute(sql`truncate table ${schema.notifications} cascade`);
     gateway.state.calls = [];
@@ -467,7 +463,6 @@ describe.skipIf(!databaseUrl)("stripe checkout & webhook (#193, integration)", (
       const onZero = await app.request(`/api/invoices/${zero.id}/stripe-checkout`, { method: "POST", headers: fin });
       expect(onZero.status).toBe(409);
       expect(((await onZero.json()) as { error: string }).error).toBe("nothing_to_collect");
-
       const invoice = await seedIssuedInvoice();
       expect(
         (await app.request(`/api/invoices/${invoice.id}/stripe-checkout`, { method: "POST", headers: sal })).status,
@@ -480,6 +475,64 @@ describe.skipIf(!databaseUrl)("stripe checkout & webhook (#193, integration)", (
       ).toBe(404);
 
       expect(gateway.state.calls).toHaveLength(1); // 只有 owner 那次真建了会话
+    });
+
+    it("collects the effective due: confirmed credits shrink the principal, full credit refuses (nothing_to_collect)", async () => {
+      const invoice = await seedIssuedInvoice(); // 面额 150000，种子费率 3.9%
+      const created = await app.request(`/api/invoices/${invoice.id}/credit-notes`, {
+        method: "POST",
+        headers: { "content-type": "application/json", ...fin },
+        body: JSON.stringify({
+          reason: "Line 1 overbilled",
+          lines: [{ description: "Price correction", quantity: 1, unitPriceCents: 50000 }],
+        }),
+      });
+      expect(created.status).toBe(201);
+      const noteId = ((await created.json()) as { id: string }).id;
+      const confirmed = await app.request(`/api/credit-notes/${noteId}/confirm`, {
+        method: "POST",
+        headers: { "content-type": "application/json", ...fin },
+        body: JSON.stringify({}),
+      });
+      expect(confirmed.status).toBe(200);
+
+      // 结算额 = 有效应付 100000，费按它计：gross = 100000 + 3.9% = 103900
+      const res = await app.request(`/api/invoices/${invoice.id}/stripe-checkout`, {
+        method: "POST",
+        headers: fin,
+      });
+      expect(res.status).toBe(201);
+      const body = (await res.json()) as { amountCents: number; principalCents: number; surchargeCents: number };
+      expect(body.principalCents).toBe(100000);
+      expect(body.surchargeCents).toBe(3900);
+      expect(body.amountCents).toBe(103900);
+
+      // 全冲抵后没有可收的钱：拒绝建链接（不是按原面额把客户多收一遍）
+      // 余款 100000 的贷项确认后，有效应付归零
+      const second = await app.request(`/api/invoices/${invoice.id}/credit-notes`, {
+        method: "POST",
+        headers: { "content-type": "application/json", ...fin },
+        body: JSON.stringify({
+          reason: "Remainder",
+          lines: [{ description: "Remainder", quantity: 1, unitPriceCents: 100000 }],
+        }),
+      });
+      expect(second.status).toBe(201);
+      const secondId = ((await second.json()) as { id: string }).id;
+      const secondConfirmed = await app.request(`/api/credit-notes/${secondId}/confirm`, {
+        method: "POST",
+        headers: { "content-type": "application/json", ...fin },
+        body: JSON.stringify({}),
+      });
+      expect(secondConfirmed.status).toBe(200);
+      const ledger = await app.request(`/api/invoices/${invoice.id}/credit-notes`, { headers: fin });
+      expect(((await ledger.json()) as { creditedCents: number }).creditedCents).toBe(150000);
+      const empty = await app.request(`/api/invoices/${invoice.id}/stripe-checkout`, {
+        method: "POST",
+        headers: fin,
+      });
+      expect(empty.status).toBe(409);
+      expect(((await empty.json()) as { error: string }).error).toBe("nothing_to_collect");
     });
 
     it("answers misconfigured when the channel is not enabled (fail closed)", async () => {

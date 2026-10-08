@@ -267,6 +267,13 @@
       "when": 1791476871314,
       "tag": "0037_flippant_chameleon",
       "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1791486657170,
+      "tag": "0038_fuzzy_dark_beast",
+      "breakpoints": true
     }
   ]
 }

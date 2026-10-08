@@ -27,10 +27,11 @@ import { schema, type Db } from "@ally/db";
  * 裁法一致，Slack 告警通道留给 job 失败（runner.ts），业务提醒走通知域。
  *
  * 台账在 invoices.overdue_reminder_at（扫描选中后盖章、通知行同事务落库）。
- * 付清不清零台账：收款是派生值，付清的票由 paid >= total 过滤结构性出局——
- * 台账只回答「上次催是什么时候」，不回答「还欠不欠」。条件盖章带 status =
- * 'issued'：当前状态机 issued 是终态（红冲是未来的新动词、不是对已发行的
- * 改写），这是范式防御不是现实竞争窗口——扫描期间票不会离开 issued。
+ * 付清不清零台账：收款是派生值，付清的票由 paid >= 有效应付 过滤结构性出局
+ * （有效应付 = 发票合计 − 有效贷项，#192 红冲切片的全冲抵票 vacuously paid，
+ * 结构性出局）——台账只回答「上次催是什么时候」，不回答「还欠不欠」。条件
+ * 盖章带 status = 'issued'：发票状态机 issued 是终态（红冲是独立的贷项单、
+ * 不改写发票行），这是范式防御不是现实竞争窗口——扫描期间票不会离开 issued。
  *
  * worker 不跨 app 依赖（apps/api 的 billing 内核过不来），候选集与收件人在
  * 这里用窄读取投影（workflow/reminder.ts 同一姿态）；金额格式化镜像
@@ -187,13 +188,33 @@ export async function runInvoiceOverdueScan(services: OverdueScanServices): Prom
     .from(schema.payments)
     .where(and(isNull(schema.payments.voidedAt), inArray(schema.payments.invoiceId, ids)))
     .groupBy(schema.payments.invoiceId);
+  const creditedSums = await db
+    .select({
+      invoiceId: schema.creditNotes.invoiceId,
+      credited: sql<string>`coalesce(sum(${schema.creditNoteLines.lineTotalCents}), 0)`,
+    })
+    .from(schema.creditNotes)
+    .innerJoin(
+      schema.creditNoteLines,
+      eq(schema.creditNoteLines.creditNoteId, schema.creditNotes.id),
+    )
+    .where(
+      and(
+        eq(schema.creditNotes.status, "issued"),
+        inArray(schema.creditNotes.invoiceId, ids),
+      ),
+    )
+    .groupBy(schema.creditNotes.invoiceId);
   const totals = new Map(lineSums.map((row) => [row.invoiceId, Number(row.total)]));
   const paids = new Map(paidSums.map((row) => [row.invoiceId, Number(row.paid)]));
+  const crediteds = new Map(creditedSums.map((row) => [row.invoiceId, Number(row.credited)]));
 
-  // 还欠钱的才催：paid >= total（含超收、$0 票 vacuously paid）没有逾期语义
+  // 还欠钱的才催：paid >= 有效应付（含超收、全冲抵与 $0 票 vacuously paid）
+  // 没有逾期语义；有效应付 = 发票合计 − 有效贷项（credits.ts 唯一权威算术）
   const overdue = candidates.filter((row) => {
     const paid = paids.get(row.id) ?? 0;
-    return paid < (totals.get(row.id) ?? 0);
+    const due = (totals.get(row.id) ?? 0) - (crediteds.get(row.id) ?? 0);
+    return paid < due;
   });
   if (overdue.length === 0) return summary;
 
@@ -214,7 +235,8 @@ export async function runInvoiceOverdueScan(services: OverdueScanServices): Prom
     if (dueAt === null) continue;
     const totalCents = totals.get(row.id) ?? 0;
     const paidCents = paids.get(row.id) ?? 0;
-    const outstandingCents = totalCents - paidCents;
+    const outstandingCents =
+      totalCents - (crediteds.get(row.id) ?? 0) - paidCents;
 
     // 盖章先行并带 status 条件（范式见模块注释）：update 匹配 0 行 = 本轮不催，
     // 通知行与台账同一事务，要么都在要么都不在

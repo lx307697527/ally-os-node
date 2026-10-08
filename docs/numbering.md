@@ -13,7 +13,8 @@
   超宽自然加长）、startNumber、active。配置面 `POST/GET/PATCH /api/numbering-rules`
   在 `numbering.configure` 权限点后面（owner/admin 默认持有）。
 - **可编号对象是注册表**：`numbering/registry.ts`（#225 切片刻意为空，第一个
-  生产注册是 invoice——`billing/registry.ts` 随 #192 切片 1 进场）。属主域
+  生产注册是 invoice 与 credit_note——`billing/registry.ts` 随 #192 切片 1
+  与红冲切片进场）。属主域
   切片在模块装载时 `registerNumberedSubject(subject, { label })`；未注册类型配置
   面回 400——不出现「能配规则但永远没人发号」的死配置。`GET
   /api/numbering-rules/subjects` 是配置 UI 的下拉数据源。
