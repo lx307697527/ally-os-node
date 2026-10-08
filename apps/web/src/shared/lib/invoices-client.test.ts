@@ -636,6 +636,146 @@ describe("credit notes client (#192 红冲的 web 半边)", () => {
   });
 });
 
+describe("installment plans client (#192 分期的 web 半边)", () => {
+  const PLAN = {
+    id: "plan-1",
+    label: "Annual retainer — 4 monthly parts",
+    subject: null,
+    currency: "USD",
+    totalCents: 300000,
+    createdAt: "2026-10-09T08:00:00.000Z",
+    partCount: 4,
+    livePartCount: 3,
+    liveInvoicedCents: 225000,
+    paidCents: 75000,
+    outstandingCents: 150000,
+    uninvoicedCents: 75000,
+    parts: [
+      {
+        invoiceId: "inv-1",
+        number: "INV-202610-1000",
+        planIndex: 1,
+        status: "issued",
+        totalCents: 75000,
+        creditedCents: 0,
+        paidCents: 75000,
+        paymentStatus: "paid",
+      },
+      {
+        invoiceId: "inv-2",
+        number: "INV-202610-1001",
+        planIndex: 2,
+        status: "draft",
+        totalCents: 75000,
+        creditedCents: 0,
+        paidCents: 0,
+        paymentStatus: "unpaid",
+      },
+      {
+        invoiceId: "inv-3",
+        number: "INV-202610-1002",
+        planIndex: 3,
+        status: "void",
+        totalCents: 75000,
+        creditedCents: 0,
+        paidCents: 0,
+        paymentStatus: "unpaid",
+      },
+    ],
+  };
+
+  it("invoicePlan hits the plan route and parses the ledger — agreed total beside the live totals", async () => {
+    const calls: string[] = [];
+    const adapters = createInvoiceAdapters((input) => {
+      if (typeof input === "string") calls.push(input);
+      return Promise.resolve(jsonRes(PLAN));
+    });
+    const result = await adapters.invoicePlan("plan-1");
+    expect(calls[0]).toBe("/api/invoice-plans/plan-1");
+    expect(result).toEqual({ ok: true, data: PLAN });
+  });
+
+  it("invoicePlan: 404 is notfound (the anti-probe answer), 403 forbidden, junk body unavailable", async () => {
+    const missing = createInvoiceAdapters(() => Promise.resolve(jsonRes({ error: "x" }, 404)));
+    await expect(missing.invoicePlan("plan-1")).resolves.toEqual({ ok: false, reason: "notfound" });
+    const denied = createInvoiceAdapters(() => Promise.resolve(jsonRes({ error: "x" }, 403)));
+    await expect(denied.invoicePlan("plan-1")).resolves.toEqual({ ok: false, reason: "forbidden" });
+    const junk = createInvoiceAdapters(() =>
+      Promise.resolve(jsonRes({ totalCents: "many", parts: "no" })),
+    );
+    await expect(junk.invoicePlan("plan-1")).resolves.toEqual({ ok: false, reason: "unavailable" });
+  });
+
+  it("createInvoicePlan POSTs the label and the parts — amounts only, no total field on the wire", async () => {
+    const seen: { url: string; method: string; body: string }[] = [];
+    const adapters = createInvoiceAdapters((input, init) => {
+      if (typeof input === "string" && init !== undefined) {
+        seen.push({
+          url: input,
+          method: init.method ?? "",
+          body: typeof init.body === "string" ? init.body : "",
+        });
+      }
+      return Promise.resolve(
+        jsonRes(
+          {
+            id: "plan-9",
+            totalCents: 300000,
+            parts: [
+              { id: "inv-1", number: "INV-202610-1000", planIndex: 1, amountCents: 100000 },
+              { id: "inv-2", number: "INV-202610-1001", planIndex: 2, amountCents: 200000 },
+            ],
+          },
+          201,
+        ),
+      );
+    });
+    const result = await adapters.createInvoicePlan({
+      label: "Annual retainer",
+      parts: [{ amountCents: 100000 }, { amountCents: 200000 }],
+    });
+    expect(seen[0]?.url).toBe("/api/invoice-plans");
+    expect(seen[0]?.method).toBe("POST");
+    expect(JSON.parse(seen[0]?.body ?? "null")).toEqual({
+      label: "Annual retainer",
+      parts: [{ amountCents: 100000 }, { amountCents: 200000 }],
+    });
+    expect(result).toEqual({
+      ok: true,
+      data: {
+        id: "plan-9",
+        totalCents: 300000,
+        parts: [
+          { id: "inv-1", number: "INV-202610-1000", planIndex: 1, amountCents: 100000 },
+          { id: "inv-2", number: "INV-202610-1001", planIndex: 2, amountCents: 200000 },
+        ],
+      },
+    });
+  });
+
+  it("a create 409 carries the numbering gate — any part's number failing rolls the whole plan back", async () => {
+    const unnumbered = createInvoiceAdapters(() =>
+      Promise.resolve(jsonRes({ error: "numbering_not_configured" }, 409)),
+    );
+    await expect(
+      unnumbered.createInvoicePlan({ label: "why", parts: [{ amountCents: 1 }, { amountCents: 2 }] }),
+    ).resolves.toEqual({ ok: false, reason: "conflict", code: "numbering_not_configured" });
+
+    const denied = createInvoiceAdapters(() => Promise.resolve(jsonRes({ error: "x" }, 403)));
+    await expect(
+      denied.createInvoicePlan({ label: "why", parts: [{ amountCents: 1 }, { amountCents: 2 }] }),
+    ).resolves.toEqual({ ok: false, reason: "forbidden" });
+  });
+
+  it("plan reads and creation die quietly on a dead network", async () => {
+    const dead = createInvoiceAdapters(() => Promise.reject(new Error("down")));
+    await expect(dead.invoicePlan("plan-1")).resolves.toEqual({ ok: false, reason: "unavailable" });
+    await expect(
+      dead.createInvoicePlan({ label: "why", parts: [{ amountCents: 1 }, { amountCents: 2 }] }),
+    ).resolves.toEqual({ ok: false, reason: "unavailable" });
+  });
+});
+
 describe("parseLocalDateTimeToIso", () => {
   it("a datetime-local value becomes a full UTC ISO string — the server's z.iso.datetime", () => {
     const iso = parseLocalDateTimeToIso("2026-10-07T09:00");

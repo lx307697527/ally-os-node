@@ -618,6 +618,27 @@ migration(记账/作废/两渠道建链接的 API 半边是切片 2 与 #193 渠
   计划行,detail 记 label/totalCents/partCount/partNumbers——一次动作一行,
   全部期号可查;成员票的后续动词走既有词条)。
 
+## 已落地:分期的 web 面(#192 分期切片的 web 半边)
+
+内核(PR #319)的 web 半边收尾,纯 web 面:零 API 改动、零 migration。两个
+落点:
+
+- **拆票动作在财务发票列表页**(`/invoices`,「Split into installments」):
+  对话框只收 label 与各期金额——2–12 期、逐期精确字符串解析
+  (`parseDollarsToCents`,浮点永不碰金额)、合计超 int4 在表单层先拒;
+  **没有「总额」字段**(约定额是各期之和、服务端盖章,RULE-007)。成功后
+  flash 报出服务端盖章的约定额与全部期号——成员草稿就落在缺省的 Draft 筛选
+  里,「拆出来就等确认」一眼可见。409 numbering_not_configured 逐码成句
+  (修复动作是配置,不是重试)。
+- **计划台账上成员票详情页**(`/invoices/:id`,`data.plan` 非空才渲染
+  Installment plan 区):label、part i of n、n 期(n 含 void,在世数另注)、
+  Agreed / Invoiced (live) / Paid (live) / Outstanding (live) 四格——全部读
+  服务端计划台账,客户端零重算;uninvoicedCents 两个方向的漂移各成一句
+  (>0 有期被作废/行被改少,<0 行被改到超过约定,原样暴露不 clamp);逐期行
+  链到各自发票页,void 期划线留痕。**计划区刻意零动词**:confirm/收款/void
+  都在各期自己的发票页——计划只是台账,不发明第二套动词。
+- 发票列表行与详情页 meta 行带 `part i of n`(i 与 n 都是服务端事实)。
+
 ## 剩余(#192 保持 open,Part of #192)
 
 1. **触发点接线**(属主域各自进场):打样/调味费(#238)、定金(#231,比例
@@ -630,6 +651,6 @@ migration(记账/作废/两渠道建链接的 API 半边是切片 2 与 #193 渠
    terms/due 的 web 面已落)、收款状态回写订单/批次(#241 发货门槛,读
    `computePaymentStatus`)、QuickBooks 推送(#181,含银行流水认领)、第一笔款
    到账转正式客户(R-02-5)等收款触发业务;
-4. PDF 存档(#128 统一 PDF 服务)、**分期的 web 面**(拆票动作与计划台账上页;
-   内核与 API 已落,web client 的 plan 契约已同步)、订单域按比例拆期触发
-   (#231 进场时走 createInvoicePlan 服务接缝)。
+4. PDF 存档(#128 统一 PDF 服务)、订单域按比例拆期触发(#231 进场时走
+   createInvoicePlan 服务接缝,web 的拆票动作届时补 subject 上下文)。
+   分期的 web 面(拆票动作 + 计划台账上页)已随本期落地。

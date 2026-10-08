@@ -47,6 +47,7 @@ import {
   type CreditNotesLedger,
   type InvoiceDetail as InvoiceDetailData,
   type InvoiceLineInput,
+  type InvoicePlan,
   type InvoiceVerbResult,
   type PaymentActionFailure,
   type PaymentLinkResult,
@@ -271,6 +272,11 @@ function InvoiceLoaded(props: { invoiceId: string }): ReactElement {
         >
           {data.invoiceType.replace(/_/g, " ")}
           {` · ${data.status === "draft" ? "draft — waiting for finance confirmation" : data.status}`}
+          {/* 分期成员事实(#192 分期的 web 半边):i 是创建时落定的序数,
+              n 是服务端派生的成员数(含 void)——两半都不在客户端推导 */}
+          {data.plan !== null
+            ? ` · part ${String(data.plan.index)} of ${String(data.plan.count)}`
+            : ""}
           {data.subject !== null ? ` · for ${data.subject.type}` : " · manual"}
           {` · created ${formatDay(data.createdAt)}`}
           {data.status === "issued" && data.issuedAt !== null ? ` · issued ${formatDay(data.issuedAt)}` : ""}
@@ -384,6 +390,8 @@ function InvoiceLoaded(props: { invoiceId: string }): ReactElement {
         ) : (
           <LinesReadonly lines={data.lines} currency={data.currency} />
         )}
+
+        {data.plan !== null ? <PlanSection memberOf={data.plan} /> : null}
 
         <PaymentsSection
           currency={data.currency}
@@ -778,6 +786,133 @@ function LinesEditor(props: {
         </Button>
       </div>
     </div>
+  );
+}
+
+/** The installment plan's ledger (#192 分期的 web 半边). A member invoice is
+ *  one part of an agreement cut into n ordinary invoices; only a member has a
+ *  plan, so this section renders only for one. The plan is the ledger of the
+ *  agreement — the agreed amount (stamped at the split, never changes) beside
+ *  the live totals, with the drift exposed, never clamped: a positive
+ *  uninvoiced balance means a voided part or reduced lines left part of the
+ *  agreement uninvoiced, a negative one means lines were edited past the
+ *  agreed amount. Read-only by design: the plan mints no verbs — confirm,
+ *  collect and void live on each part's own invoice page. */
+function PlanSection(props: {
+  memberOf: { id: string; index: number; count: number };
+}): ReactElement {
+  const plan = useQuery({
+    queryKey: ["invoices", "invoice-plans", props.memberOf.id],
+    queryFn: () => invoiceAdapters.invoicePlan(props.memberOf.id),
+  });
+  return (
+    <div className="mt-5 border-t border-line pt-4" data-testid="invoice-plan-section">
+      <Heading as="h3">Installment plan</Heading>
+      {plan.isPending ? (
+        <Paragraph className="mt-2" data-testid="invoice-plan-loading">
+          Loading…
+        </Paragraph>
+      ) : plan.data?.ok === true ? (
+        <PlanLedger plan={plan.data.data} memberOf={props.memberOf} />
+      ) : (
+        <Paragraph className="mt-2 text-ink-soft" data-testid="invoice-plan-unavailable">
+          The installment plan could not be loaded.
+        </Paragraph>
+      )}
+    </div>
+  );
+}
+
+/** The plan's facts, read off the server's ledger — every number here is the
+ *  plan read's answer, nothing is recomputed on the client. The n in
+ *  "part i of n" counts voided parts too (an ordinal is identity, the count is
+ *  the membership as it stands); the live tallies answer separately. */
+function PlanLedger(props: {
+  plan: InvoicePlan;
+  memberOf: { index: number; count: number };
+}): ReactElement {
+  const plan = props.plan;
+  return (
+    <>
+      <Paragraph
+        className="mt-1 font-mono text-[length:var(--fs-meta)] text-ink-soft"
+        data-testid="invoice-plan-summary"
+      >
+        {`${plan.label} · part ${String(props.memberOf.index)} of ${String(props.memberOf.count)} · ${String(plan.partCount)} parts (${String(plan.livePartCount)} live)`}
+      </Paragraph>
+      <div className="mt-3 flex flex-wrap gap-6" data-testid="invoice-plan-money">
+        <span data-testid="invoice-plan-agreed-block">
+          <span className="block font-mono text-[length:var(--fs-meta)] text-ink-soft">Agreed</span>
+          <span className="block font-slab text-ui text-ink" data-testid="invoice-plan-agreed">
+            {formatMoney(plan.totalCents, plan.currency)}
+          </span>
+        </span>
+        <span data-testid="invoice-plan-invoiced-block">
+          <span className="block font-mono text-[length:var(--fs-meta)] text-ink-soft">Invoiced (live)</span>
+          <span className="block font-slab text-ui text-ink" data-testid="invoice-plan-invoiced">
+            {formatMoney(plan.liveInvoicedCents, plan.currency)}
+          </span>
+        </span>
+        <span data-testid="invoice-plan-paid-block">
+          <span className="block font-mono text-[length:var(--fs-meta)] text-ink-soft">Paid (live)</span>
+          <span className="block font-slab text-ui text-ink" data-testid="invoice-plan-paid">
+            {formatMoney(plan.paidCents, plan.currency)}
+          </span>
+        </span>
+        <span data-testid="invoice-plan-outstanding-block">
+          <span className="block font-mono text-[length:var(--fs-meta)] text-ink-soft">Outstanding (live)</span>
+          <span className="block font-slab text-ui text-ink" data-testid="invoice-plan-outstanding">
+            {formatMoney(plan.outstandingCents, plan.currency)}
+          </span>
+        </span>
+      </div>
+      {plan.uninvoicedCents > 0 ? (
+        <Paragraph className="mt-2 text-ink-soft" data-testid="invoice-plan-drift">
+          {`${formatMoney(plan.uninvoicedCents, plan.currency)} of the agreed amount is not on a live invoice — a voided part or reduced lines left it uninvoiced.`}
+        </Paragraph>
+      ) : plan.uninvoicedCents < 0 ? (
+        <Paragraph className="mt-2 text-ink-soft" data-testid="invoice-plan-drift">
+          {`Live invoices exceed the agreed amount by ${formatMoney(-plan.uninvoicedCents, plan.currency)} — lines were edited past the original split.`}
+        </Paragraph>
+      ) : null}
+      <Paragraph
+        className="mt-1 font-mono text-[length:var(--fs-meta)] text-ink-soft"
+        data-testid="invoice-plan-discipline"
+      >
+        The plan is the ledger — confirm, collect and void live on each part's
+        own invoice page.
+      </Paragraph>
+      <ul className="mt-2" data-testid="invoice-plan-parts">
+        {plan.parts.map((part) => (
+          <li
+            key={part.invoiceId}
+            className="border-b border-line py-2"
+            data-testid="invoice-plan-part"
+            data-status={part.status}
+          >
+            <span className="flex items-center gap-2">
+              <Link
+                to={`/invoices/${part.invoiceId}`}
+                data-testid="invoice-plan-part-number"
+                className={
+                  part.status === "void"
+                    ? "text-ui text-ink-soft line-through hover:text-link"
+                    : "text-ui text-ink font-medium hover:text-link"
+                }
+              >
+                {part.number}
+              </Link>
+              <span className="min-w-0 flex-1 font-mono text-[length:var(--fs-meta)] text-ink-soft">
+                {`part ${String(part.planIndex)} · ${part.status === "draft" ? "draft — waiting for finance confirmation" : part.status} · ${part.paymentStatus}`}
+              </span>
+              <span className="font-mono text-ui-sm text-ink" data-testid="invoice-plan-part-amount">
+                {formatMoney(part.totalCents, plan.currency)}
+              </span>
+            </span>
+          </li>
+        ))}
+      </ul>
+    </>
   );
 }
 
