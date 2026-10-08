@@ -4,12 +4,19 @@
 // invoice/ledger shapes — and the pure money arithmetic (formatMoney ported
 // verbatim from the server's payment-alerts; dollars→cents and quantity text
 // parsed by exact string rules, never float).
+//
+// The payment-actions half (#192 remaining) covers the three collection verbs
+// finance gets on an issued invoice: record a manual payment (the ledger's
+// write), void a booked payment (the correction), and the two payment-link
+// channels whose answers carry the surcharge disclosure (gross = principal +
+// surcharge) and the customer-facing URL.
 import { describe, expect, it } from "vitest";
 
 import {
   createInvoiceAdapters,
   formatMoney,
   parseDollarsToCents,
+  parseLocalDateTimeToIso,
   parseQuantity,
 } from "./invoices-client.ts";
 
@@ -235,5 +242,206 @@ describe("invoices client (#192 slice 4)", () => {
     await expect(dead.get("inv-1")).resolves.toEqual({ ok: false, reason: "unavailable" });
     await expect(dead.payments("inv-1")).resolves.toEqual({ ok: false, reason: "unavailable" });
     await expect(dead.confirm("inv-1")).resolves.toEqual({ ok: false, reason: "unavailable" });
+  });
+});
+
+describe("payment actions client (#192 remaining)", () => {
+  it("recordPayment POSTs the amount, method and only the facts that exist", async () => {
+    const seen: { url: string; method: string; body: string }[] = [];
+    const adapters = createInvoiceAdapters((input, init) => {
+      if (typeof input === "string" && typeof init?.body === "string") {
+        seen.push({ url: input, method: init.method ?? "", body: init.body });
+      }
+      return Promise.resolve(
+        jsonRes({ id: "pay-9", paidCents: 150000, totalCents: 150000, paymentStatus: "paid" }, 201),
+      );
+    });
+    const result = await adapters.recordPayment("inv-1", {
+      amountCents: 150000,
+      method: "wire_ach",
+      receivedAtIso: "2026-10-07T09:00:00.000Z",
+      note: "wire ref 88",
+    });
+    expect(seen[0]?.url).toBe("/api/invoices/inv-1/payments");
+    expect(seen[0]?.method).toBe("POST");
+    expect(JSON.parse(seen[0]?.body ?? "{}")).toEqual({
+      amountCents: 150000,
+      method: "wire_ach",
+      receivedAt: "2026-10-07T09:00:00.000Z",
+      note: "wire ref 88",
+    });
+    expect(result).toEqual({
+      ok: true,
+      data: { paidCents: 150000, totalCents: 150000, paymentStatus: "paid" },
+    });
+
+    await adapters.recordPayment("inv-1", { amountCents: 5, method: "card" });
+    expect(JSON.parse(seen[1]?.body ?? "{}")).toEqual({ amountCents: 5, method: "card" });
+  });
+
+  it("recordPayment maps the state gates — a 409 keeps the server's code, 404 is notfound", async () => {
+    const gates = createInvoiceAdapters(() => Promise.resolve(jsonRes({ error: "not_issued" }, 409)));
+    await expect(gates.recordPayment("inv-1", { amountCents: 5, method: "card" })).resolves.toEqual({
+      ok: false,
+      reason: "conflict",
+      code: "not_issued",
+    });
+
+    const missing = createInvoiceAdapters(() => Promise.resolve(jsonRes({ error: "not_found" }, 404)));
+    await expect(missing.recordPayment("inv-1", { amountCents: 5, method: "card" })).resolves.toEqual({
+      ok: false,
+      reason: "notfound",
+    });
+
+    const refused = createInvoiceAdapters(() => Promise.resolve(jsonRes({ error: "x" }, 403)));
+    await expect(refused.recordPayment("inv-1", { amountCents: 5, method: "card" })).resolves.toEqual({
+      ok: false,
+      reason: "forbidden",
+    });
+  });
+
+  it("voidPayment POSTs the trimmed reason and returns the refreshed paid state", async () => {
+    const seen: { url: string; body: string }[] = [];
+    const adapters = createInvoiceAdapters((input, init) => {
+      if (typeof input === "string" && typeof init?.body === "string") {
+        seen.push({ url: input, body: init.body });
+      }
+      return Promise.resolve(
+        jsonRes({ status: "voided", paidCents: 0, paymentStatus: "unpaid" }),
+      );
+    });
+    const result = await adapters.voidPayment("pay-1", "  booked twice  ");
+    expect(seen[0]?.url).toBe("/api/payments/pay-1/void");
+    expect(JSON.parse(seen[0]?.body ?? "{}")).toEqual({ reason: "booked twice" });
+    expect(result).toEqual({
+      ok: true,
+      data: { outcome: "voided", paidCents: 0, paymentStatus: "unpaid" },
+    });
+  });
+
+  it("the Stripe link parses the money disclosure — gross, principal, surcharge, URL", async () => {
+    const seen: string[] = [];
+    const adapters = createInvoiceAdapters((input) => {
+      if (typeof input === "string") seen.push(input);
+      return Promise.resolve(
+        jsonRes({
+          invoiceId: "inv-1",
+          number: "INV-202610-1000",
+          sessionId: "cs_test_1",
+          url: "https://checkout.stripe.com/c/pay/cs_test_1",
+          amountCents: 155850,
+          principalCents: 150000,
+          surchargeCents: 5850,
+          currency: "USD",
+        }, 201),
+      );
+    });
+    const result = await adapters.stripeLink("inv-1");
+    expect(seen[0]).toBe("/api/invoices/inv-1/stripe-checkout");
+    expect(result).toEqual({
+      ok: true,
+      data: {
+        url: "https://checkout.stripe.com/c/pay/cs_test_1",
+        amountCents: 155850,
+        principalCents: 150000,
+        surchargeCents: 5850,
+        currency: "USD",
+      },
+    });
+  });
+
+  it("the PayPal link parses the approval URL through the same disclosure", async () => {
+    const adapters = createInvoiceAdapters(() =>
+      Promise.resolve(
+        jsonRes({
+          invoiceId: "inv-1",
+          number: "INV-202610-1000",
+          orderId: "5O190127TN364715T",
+          url: "https://www.paypal.com/checkoutnow?token=5O190127TN364715T",
+          amountCents: 150000,
+          principalCents: 150000,
+          surchargeCents: 0,
+          currency: "USD",
+        }, 201),
+      ),
+    );
+    await expect(adapters.paypalLink("inv-1")).resolves.toEqual({
+      ok: true,
+      data: {
+        url: "https://www.paypal.com/checkoutnow?token=5O190127TN364715T",
+        amountCents: 150000,
+        principalCents: 150000,
+        surchargeCents: 0,
+        currency: "USD",
+      },
+    });
+  });
+
+  it("a 500 misconfigured body is its own answer — the environment lacks the channel", async () => {
+    const unconfigured = createInvoiceAdapters(() =>
+      Promise.resolve(jsonRes({ error: "misconfigured" }, 500)),
+    );
+    await expect(unconfigured.stripeLink("inv-1")).resolves.toEqual({
+      ok: false,
+      reason: "misconfigured",
+    });
+    await expect(unconfigured.paypalLink("inv-1")).resolves.toEqual({
+      ok: false,
+      reason: "misconfigured",
+    });
+
+    const broken = createInvoiceAdapters(() => Promise.resolve(jsonRes({ error: "boom" }, 500)));
+    await expect(broken.stripeLink("inv-1")).resolves.toEqual({ ok: false, reason: "unavailable" });
+  });
+
+  it("the checkout gates surface as conflicts with their codes", async () => {
+    const zero = createInvoiceAdapters(() => Promise.resolve(jsonRes({ error: "nothing_to_collect" }, 409)));
+    await expect(zero.stripeLink("inv-1")).resolves.toEqual({
+      ok: false,
+      reason: "conflict",
+      code: "nothing_to_collect",
+    });
+
+    const rule = createInvoiceAdapters(() =>
+      Promise.resolve(jsonRes({ error: "surcharge_rule_unusable" }, 409)),
+    );
+    await expect(rule.paypalLink("inv-1")).resolves.toEqual({
+      ok: false,
+      reason: "conflict",
+      code: "surcharge_rule_unusable",
+    });
+  });
+
+  it("a 201 whose body does not parse reads as unavailable, never trusted", async () => {
+    const junk = createInvoiceAdapters(() =>
+      Promise.resolve(jsonRes({ url: 42, amountCents: "many" }, 201)),
+    );
+    await expect(junk.stripeLink("inv-1")).resolves.toEqual({ ok: false, reason: "unavailable" });
+  });
+
+  it("payment verbs die quietly on a dead network", async () => {
+    const dead = createInvoiceAdapters(() => Promise.reject(new Error("down")));
+    await expect(dead.recordPayment("inv-1", { amountCents: 5, method: "card" })).resolves.toEqual({
+      ok: false,
+      reason: "unavailable",
+    });
+    await expect(dead.voidPayment("pay-1", "why")).resolves.toEqual({ ok: false, reason: "unavailable" });
+    await expect(dead.stripeLink("inv-1")).resolves.toEqual({ ok: false, reason: "unavailable" });
+    await expect(dead.paypalLink("inv-1")).resolves.toEqual({ ok: false, reason: "unavailable" });
+  });
+});
+
+describe("parseLocalDateTimeToIso", () => {
+  it("a datetime-local value becomes a full UTC ISO string — the server's z.iso.datetime", () => {
+    const iso = parseLocalDateTimeToIso("2026-10-07T09:00");
+    expect(iso).not.toBeNull();
+    expect(new Date(iso ?? "").toISOString()).toBe(iso);
+    expect(Date.parse(iso ?? "")).toBe(Date.parse("2026-10-07T09:00"));
+  });
+
+  it("empty and unparseable values read as null — the field is optional, junk is not silent", () => {
+    expect(parseLocalDateTimeToIso("")).toBeNull();
+    expect(parseLocalDateTimeToIso("   ")).toBeNull();
+    expect(parseLocalDateTimeToIso("not a date")).toBeNull();
   });
 });

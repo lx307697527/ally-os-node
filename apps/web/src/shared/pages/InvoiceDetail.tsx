@@ -1,7 +1,7 @@
 // The invoice detail page (#192 slice 4 — the finance confirmation page's
 // working half): the lines finance checks before issuing, the two state verbs
 // (confirm = issue, R-12-6's human gate; void a draft), whole-replacement
-// editing of draft lines, and the payment ledger.
+// editing of draft lines, and the payment ledger with its verbs.
 //
 // Disciplines said on the page, not just enforced by the API:
 // - issuing is final — an issued invoice's lines never change (corrections are
@@ -11,6 +11,10 @@
 //   its own; the authoritative totals appear after the save lands.
 // - money is integer cents end to end; the editor's dollars inputs parse by
 //   exact string rules (parseDollarsToCents), never float.
+// - the collection verbs (#192 remaining) record facts, not intentions: a
+//   manual booking is money that arrived outside a payment link, a void is a
+//   correction with a reason, and a link's payment is booked by the provider's
+//   confirmation — recording it by hand too would double-count.
 //
 // States are honest: loading, not-available (the anti-probe 404), unreachable
 // API, and per-verb errors — a 409's machine code is translated into the
@@ -27,12 +31,20 @@ import {
   createInvoiceAdapters,
   formatMoney,
   parseDollarsToCents,
+  parseLocalDateTimeToIso,
   parseQuantity,
   type InvoiceDetail as InvoiceDetailData,
   type InvoiceLineInput,
   type InvoiceVerbResult,
+  type PaymentActionFailure,
+  type PaymentLinkResult,
+  type PaymentMethod,
+  type PaymentRow,
   type PaymentsLedger,
 } from "../lib/invoices-client.ts";
+
+/** The created link handed to the dialog — a refusal never gets here. */
+type PaymentLinkData = Extract<PaymentLinkResult, { ok: true }>["data"];
 
 const invoiceAdapters = createInvoiceAdapters();
 
@@ -81,6 +93,43 @@ function verbError(result: Exclude<InvoiceVerbResult, { ok: true }>): string {
   return "The change could not be saved. Reload and try again.";
 }
 
+/** The payment verbs' gates, said for a person. Each 409 code names its own
+ *  state; misconfiguration is a config fact (the environment lacks the
+ *  provider), so its sentence points at setup, never at reloading. */
+function paymentActionError(result: Exclude<PaymentActionFailure, { ok: true }>): string {
+  if (result.reason === "conflict") {
+    if (result.code === "not_issued") {
+      return "Only an issued invoice can collect payments — reload to see its current state.";
+    }
+    if (result.code === "invoice_voided") {
+      return "This invoice has been voided — reload to see its current state.";
+    }
+    if (result.code === "payment_exists") {
+      return "A payment from this exact source is already booked — reload the ledger before recording again.";
+    }
+    if (result.code === "payment_voided") {
+      return "That payment row is already voided — reload the ledger to see it.";
+    }
+    if (result.code === "nothing_to_collect") {
+      return "This invoice has nothing to collect — its total is zero.";
+    }
+    if (result.code === "surcharge_rule_unusable") {
+      return "The surcharge rule cannot be read right now — ask an admin to check it in the rules registry, then try the link again.";
+    }
+    return "The payment state changed while you were working — reload and try again.";
+  }
+  if (result.reason === "misconfigured") {
+    return "This payment provider is not configured on this environment — the link cannot be created.";
+  }
+  if (result.reason === "forbidden") {
+    return "Your account does not have permission to manage invoices.";
+  }
+  if (result.reason === "notfound") {
+    return "This invoice is no longer available to you.";
+  }
+  return "The change could not be saved. Reload and try again.";
+}
+
 export function InvoiceDetail(): ReactElement {
   const { invoiceId } = useParams();
   if (invoiceId === undefined || !invoiceIdSchema.safeParse(invoiceId).success) {
@@ -102,10 +151,14 @@ function InvoiceLoaded(props: { invoiceId: string }): ReactElement {
 
   const data = invoice.data?.ok === true ? invoice.data.data : undefined;
 
-  const [flash, setFlash] = useState<string | null>(null);
+  const [flash, setFlash] = useState<{ text: string; kind: "ok" | "error" } | null>(null);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [voidOpen, setVoidOpen] = useState(false);
   const [editing, setEditing] = useState(false);
+  const [recordOpen, setRecordOpen] = useState(false);
+  const [voidTarget, setVoidTarget] = useState<PaymentRow | null>(null);
+  const [link, setLink] = useState<{ channel: "Stripe" | "PayPal"; data: PaymentLinkData } | null>(null);
+  const [linkBusy, setLinkBusy] = useState<false | "stripe" | "paypal">(false);
 
   // One invalidation refreshes the detail, its ledger and every cached list —
   // a state verb moves the row between filters, a line edit moves the totals.
@@ -180,8 +233,11 @@ function InvoiceLoaded(props: { invoiceId: string }): ReactElement {
         </div>
 
         {flash !== null ? (
-          <Paragraph className="mt-3 text-ink" data-testid="invoice-flash">
-            {flash}
+          <Paragraph
+            className={`mt-3 ${flash.kind === "error" ? "text-err" : "text-ink"}`}
+            data-testid="invoice-flash"
+          >
+            {flash.text}
           </Paragraph>
         ) : null}
 
@@ -228,7 +284,7 @@ function InvoiceLoaded(props: { invoiceId: string }): ReactElement {
             invoice={data}
             onSaved={(message) => {
               setEditing(false);
-              setFlash(message);
+              setFlash({ text: message, kind: "ok" });
               refresh();
             }}
             onCancel={() => {
@@ -244,6 +300,34 @@ function InvoiceLoaded(props: { invoiceId: string }): ReactElement {
           ledger={ledger.data?.ok === true ? ledger.data.data : undefined}
           loading={ledger.isPending}
           unavailable={ledger.data?.ok === false}
+          issued={data.status === "issued"}
+          linkBusy={linkBusy}
+          onRecordPayment={() => {
+            setFlash(null);
+            setRecordOpen(true);
+          }}
+          onPaymentLink={(channel) => {
+            setFlash(null);
+            setLinkBusy(channel);
+            void (channel === "stripe"
+              ? invoiceAdapters.stripeLink(data.id)
+              : invoiceAdapters.paypalLink(data.id)
+            ).then((result) => {
+              setLinkBusy(false);
+              if (result.ok) {
+                setLink({ channel: channel === "stripe" ? "Stripe" : "PayPal", data: result.data });
+              } else {
+                // A failed link has nothing to hand over, so there is no
+                // dialog — the refusal is the page's message line, said as
+                // the error it is.
+                setFlash({ text: paymentActionError(result), kind: "error" });
+              }
+            });
+          }}
+          onVoidPayment={(row) => {
+            setFlash(null);
+            setVoidTarget(row);
+          }}
         />
       </Card>
 
@@ -255,7 +339,11 @@ function InvoiceLoaded(props: { invoiceId: string }): ReactElement {
           }}
           onIssued={(outcome) => {
             setConfirmOpen(false);
-            setFlash(outcome === "already" ? "Already issued — nothing changed." : "Invoice issued.");
+            setFlash(
+              outcome === "already"
+                ? { text: "Already issued — nothing changed.", kind: "ok" }
+                : { text: "Invoice issued.", kind: "ok" },
+            );
             refresh();
           }}
         />
@@ -268,8 +356,58 @@ function InvoiceLoaded(props: { invoiceId: string }): ReactElement {
           }}
           onVoided={(outcome) => {
             setVoidOpen(false);
-            setFlash(outcome === "already" ? "Already voided — nothing changed." : "Invoice voided.");
+            setFlash(
+              outcome === "already"
+                ? { text: "Already voided — nothing changed.", kind: "ok" }
+                : { text: "Invoice voided.", kind: "ok" },
+            );
             refresh();
+          }}
+        />
+      ) : null}
+      {recordOpen ? (
+        <RecordPaymentDialog
+          invoice={data}
+          onClose={() => {
+            setRecordOpen(false);
+          }}
+          onRecorded={(paid) => {
+            setRecordOpen(false);
+            setFlash({
+              text: `Payment recorded — ${formatMoney(paid.paidCents, data.currency)} paid of ${formatMoney(paid.totalCents, data.currency)} (${paid.paymentStatus}).`,
+              kind: "ok",
+            });
+            refresh();
+          }}
+        />
+      ) : null}
+      {voidTarget !== null ? (
+        <VoidPaymentDialog
+          invoice={data}
+          payment={voidTarget}
+          onClose={() => {
+            setVoidTarget(null);
+          }}
+          onVoided={(outcome) => {
+            setVoidTarget(null);
+            setFlash({
+              text:
+                outcome === "already"
+                  ? "Already voided — nothing changed."
+                  : "Payment voided — the ledger now shows the corrected paid total.",
+              kind: "ok",
+            });
+            refresh();
+          }}
+        />
+      ) : null}
+      {link !== null ? (
+        <PaymentLinkDialog
+          invoice={data}
+          channel={link.channel}
+          data={link.data}
+          onClose={() => {
+            setLink(null);
           }}
         />
       ) : null}
@@ -617,19 +755,59 @@ function VoidDraftDialog(props: {
   );
 }
 
-/** The payment ledger, read-only (#192 slice 2's endpoints are the surface).
- *  A booked payment's amount is what it settles of the invoice; the card /
- *  PayPal surcharge is the customer's separate fee, shown next to it. Voided
- *  corrections stay visible — money rows are never deleted. */
+/** The payment ledger and its verbs (#192 slice 2's endpoints are the surface;
+ *  #192 remaining adds the collection actions). A booked payment's amount is
+ *  what it settles of the invoice; the card / PayPal surcharge is the
+ *  customer's separate fee, shown next to it. Voided corrections stay visible
+ *  — money rows are never deleted; only a live row offers the void verb. */
 function PaymentsSection(props: {
   currency: string;
   ledger: PaymentsLedger | undefined;
   loading: boolean;
   unavailable: boolean;
+  issued: boolean;
+  linkBusy: false | "stripe" | "paypal";
+  onRecordPayment: () => void;
+  onPaymentLink: (channel: "stripe" | "paypal") => void;
+  onVoidPayment: (row: PaymentRow) => void;
 }): ReactElement {
   return (
     <div className="mt-5 border-t border-line pt-4" data-testid="invoice-payments-section">
       <Heading as="h3">Payments</Heading>
+      {props.issued ? (
+        <div className="mt-2 flex flex-wrap gap-2" data-testid="invoice-payment-actions">
+          <Button
+            variant="primary"
+            size="sm"
+            onClick={props.onRecordPayment}
+            data-testid="invoice-record-payment"
+          >
+            Record payment
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            disabled={props.linkBusy !== false}
+            onClick={() => {
+              props.onPaymentLink("stripe");
+            }}
+            data-testid="invoice-stripe-link"
+          >
+            {props.linkBusy === "stripe" ? "Creating the link…" : "Stripe payment link"}
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            disabled={props.linkBusy !== false}
+            onClick={() => {
+              props.onPaymentLink("paypal");
+            }}
+            data-testid="invoice-paypal-link"
+          >
+            {props.linkBusy === "paypal" ? "Creating the link…" : "PayPal payment link"}
+          </Button>
+        </div>
+      ) : null}
       {props.loading ? (
         <Paragraph className="mt-2" data-testid="invoice-payments-loading">
           Loading…
@@ -657,15 +835,30 @@ function PaymentsSection(props: {
                   data-testid="invoice-payments-row"
                   data-voided={row.voidedAt !== null}
                 >
-                  <span
-                    className={`block text-ui ${
-                      row.voidedAt !== null ? "text-ink-soft line-through" : "text-ink"
-                    }`}
-                  >
-                    {`${methodLabel(row.method)} · ${formatMoney(row.amountCents, row.currency)}`}
-                    {row.surchargeCents !== null
-                      ? ` (+ ${formatMoney(row.surchargeCents, row.currency)} surcharge)`
-                      : ""}
+                  <span className="flex items-center gap-2">
+                    <span
+                      className={`min-w-0 flex-1 text-ui ${
+                        row.voidedAt !== null ? "text-ink-soft line-through" : "text-ink"
+                      }`}
+                    >
+                      {`${methodLabel(row.method)} · ${formatMoney(row.amountCents, row.currency)}`}
+                      {row.surchargeCents !== null
+                        ? ` (+ ${formatMoney(row.surchargeCents, row.currency)} surcharge)`
+                        : ""}
+                    </span>
+                    {row.voidedAt === null ? (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => {
+                          props.onVoidPayment(row);
+                        }}
+                        aria-label={`Void this ${methodLabel(row.method)} payment of ${formatMoney(row.amountCents, row.currency)}`}
+                        data-testid="invoice-payment-void"
+                      >
+                        Void
+                      </Button>
+                    ) : null}
                   </span>
                   <span className="mt-0.5 block font-mono text-[length:var(--fs-meta)] text-ink-soft">
                     {`received ${formatDayTime(row.receivedAt)}`}
@@ -681,5 +874,273 @@ function PaymentsSection(props: {
         </>
       )}
     </div>
+  );
+}
+
+/** Record a manual payment (#192 remaining): the facts of an arrival — the
+ *  amount that actually landed, how, when, and an optional note. The amount
+ *  starts empty on purpose: what arrived is a fact only finance knows, and
+ *  over- or under-payment is real — prefilling the outstanding would invite
+ *  booking money that is not there. The dialog says why link money is not
+ *  recorded here: the provider's webhook books its own, and a hand row on top
+ *  would double-count. */
+function RecordPaymentDialog(props: {
+  invoice: InvoiceDetailData;
+  onRecorded: (paid: { paidCents: number; totalCents: number; paymentStatus: string }) => void;
+  onClose: () => void;
+}): ReactElement {
+  const [amount, setAmount] = useState("");
+  const [method, setMethod] = useState<PaymentMethod>("wire_ach");
+  const [receivedAt, setReceivedAt] = useState("");
+  const [note, setNote] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function record(): Promise<void> {
+    setError(null);
+    const amountCents = parseDollarsToCents(amount);
+    if (amountCents === null || amountCents <= 0) {
+      setError("The amount must be a dollar amount like 1,500.00 — the money that actually arrived.");
+      return;
+    }
+    const receivedAtIso = parseLocalDateTimeToIso(receivedAt);
+    if (receivedAt !== "" && receivedAtIso === null) {
+      setError("The received time could not be read — clear it to use now, or pick a valid date and time.");
+      return;
+    }
+    if (receivedAtIso !== null && new Date(receivedAtIso).getTime() > Date.now()) {
+      setError("The received time cannot be in the future — an arrival is a past fact.");
+      return;
+    }
+    setBusy(true);
+    const result = await invoiceAdapters.recordPayment(props.invoice.id, {
+      amountCents,
+      method,
+      ...(receivedAtIso !== null ? { receivedAtIso } : {}),
+      ...(note.trim() !== "" ? { note: note.trim() } : {}),
+    });
+    setBusy(false);
+    if (!result.ok) {
+      setError(paymentActionError(result));
+      return;
+    }
+    props.onRecorded(result.data);
+  }
+
+  return (
+    <DialogFrame labelledBy="invoice-record-title" title="Record payment">
+      <Paragraph className="mb-4 text-ink-soft">
+        Record money that has actually arrived on{" "}
+        <strong>{props.invoice.number}</strong> — a wire or ACH that landed
+        outside a payment link. Card and PayPal payments made through a link
+        are booked by the provider's confirmation; recording them here too
+        would double-count.
+      </Paragraph>
+      <label className="mb-3 block">
+        <span className="mb-1 block text-ui-sm font-semibold text-ink">Amount received (USD)</span>
+        <Input
+          type="text"
+          value={amount}
+          onChange={(event) => {
+            setAmount(event.target.value);
+          }}
+          aria-label="Amount received in dollars"
+          placeholder="1,500.00"
+          className="w-[180px]"
+          data-testid="invoice-record-amount"
+        />
+      </label>
+      <label className="mb-3 block">
+        <span className="mb-1 block text-ui-sm font-semibold text-ink">Method</span>
+        <select
+          className="rounded-control border border-line bg-card p-[var(--pad-control)] text-ui text-ink"
+          value={method}
+          onChange={(event) => {
+            setMethod(event.target.value as PaymentMethod);
+          }}
+          aria-label="Payment method"
+          data-testid="invoice-record-method"
+        >
+          <option value="wire_ach">Wire / ACH</option>
+          <option value="card">Card</option>
+          <option value="paypal">PayPal</option>
+        </select>
+      </label>
+      <label className="mb-3 block">
+        <span className="mb-1 block text-ui-sm font-semibold text-ink">Received at (optional — now if empty)</span>
+        <Input
+          type="datetime-local"
+          value={receivedAt}
+          onChange={(event) => {
+            setReceivedAt(event.target.value);
+          }}
+          aria-label="When the money arrived"
+          data-testid="invoice-record-received-at"
+        />
+      </label>
+      <label className="mb-4 block">
+        <span className="mb-1 block text-ui-sm font-semibold text-ink">Note (optional)</span>
+        <Input
+          type="text"
+          value={note}
+          maxLength={500}
+          onChange={(event) => {
+            setNote(event.target.value);
+          }}
+          aria-label="Payment note"
+          placeholder="Wire ref, payer name, what this settles"
+          data-testid="invoice-record-note"
+        />
+      </label>
+      {error !== null ? (
+        <Paragraph className="mb-3 text-err" data-testid="invoice-record-error">
+          {error}
+        </Paragraph>
+      ) : null}
+      <div className="flex items-center gap-3">
+        <Button variant="primary" disabled={busy} onClick={() => { void record(); }} data-testid="invoice-record-go">
+          {busy ? "Recording…" : "Record payment"}
+        </Button>
+        <Button variant="ghost" disabled={busy} onClick={props.onClose} data-testid="invoice-record-cancel">
+          Cancel
+        </Button>
+      </div>
+    </DialogFrame>
+  );
+}
+
+/** Void a booked payment (the correction verb): a mistake's undo, not a
+ *  refund — refunds are their own flow. The reason is required because the
+ *  voided row stays on the ledger with it; money rows are never deleted. */
+function VoidPaymentDialog(props: {
+  invoice: InvoiceDetailData;
+  payment: PaymentRow;
+  onVoided: (outcome: string) => void;
+  onClose: () => void;
+}): ReactElement {
+  const [reason, setReason] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function voidPayment(): Promise<void> {
+    setError(null);
+    if (reason.trim() === "") {
+      setError("Write why this payment is being voided — the ledger keeps the reason on the row.");
+      return;
+    }
+    setBusy(true);
+    const result = await invoiceAdapters.voidPayment(props.payment.id, reason);
+    setBusy(false);
+    if (!result.ok) {
+      setError(paymentActionError(result));
+      return;
+    }
+    props.onVoided(result.data.outcome);
+  }
+
+  return (
+    <DialogFrame labelledBy="invoice-payment-void-title" title="Void payment">
+      <Paragraph className="mb-4 text-ink-soft">
+        Void the {methodLabel(props.payment.method).toLowerCase()} payment of{" "}
+        <strong>{formatMoney(props.payment.amountCents, props.payment.currency)}</strong> on{" "}
+        <strong>{props.invoice.number}</strong>? Money rows are never deleted —
+        the voided row stays on the ledger struck through with this reason, and
+        the paid total drops as soon as the void lands.
+      </Paragraph>
+      <label className="mb-4 block">
+        <span className="mb-1 block text-ui-sm font-semibold text-ink">Reason</span>
+        <Input
+          type="text"
+          value={reason}
+          maxLength={500}
+          onChange={(event) => {
+            setReason(event.target.value);
+          }}
+          aria-label="Void payment reason"
+          placeholder="Booked twice, wrong amount, test row…"
+          data-testid="invoice-payment-void-reason"
+        />
+      </label>
+      {error !== null ? (
+        <Paragraph className="mb-3 text-err" data-testid="invoice-payment-void-error">
+          {error}
+        </Paragraph>
+      ) : null}
+      <div className="flex items-center gap-3">
+        <Button variant="primary" disabled={busy} onClick={() => { void voidPayment(); }} data-testid="invoice-payment-void-go">
+          {busy ? "Voiding…" : "Void payment"}
+        </Button>
+        <Button variant="ghost" disabled={busy} onClick={props.onClose} data-testid="invoice-payment-void-cancel">
+          Cancel
+        </Button>
+      </div>
+    </DialogFrame>
+  );
+}
+
+/** The payment link's answer (#192 remaining): the customer's URL, the money
+ *  they will see (gross = principal + surcharge), and the discipline that the
+ *  provider's confirmation books the payment — finance sends the link, the
+ *  webhook does the booking, nobody records it by hand. Only a created link
+ *  opens this dialog; a refusal has nothing to hand over and dies as the
+ *  page's error line instead. */
+function PaymentLinkDialog(props: {
+  invoice: InvoiceDetailData;
+  channel: "Stripe" | "PayPal";
+  data: PaymentLinkData;
+  onClose: () => void;
+}): ReactElement {
+  const [copied, setCopied] = useState<string | null>(null);
+
+  async function copy(): Promise<void> {
+    try {
+      await navigator.clipboard.writeText(props.data.url);
+      setCopied("Copied.");
+    } catch {
+      setCopied("Copy failed — select the link and copy it by hand.");
+    }
+  }
+
+  const data = props.data;
+  return (
+    <DialogFrame labelledBy="invoice-link-title" title={`${props.channel} payment link`}>
+      <Paragraph className="mb-3 text-ink-soft">
+        Send this link to the customer for{" "}
+        <strong>{props.invoice.number}</strong> — they will pay{" "}
+        <strong>{formatMoney(data.amountCents, data.currency)}</strong>
+        {data.surchargeCents > 0
+          ? ` (${formatMoney(data.principalCents, data.currency)} invoice + ${formatMoney(data.surchargeCents, data.currency)} ${props.channel.toLowerCase()} surcharge)`
+          : ""}
+        . The provider's confirmation books the payment — this page's Paid
+        total updates then; do not record it by hand.
+      </Paragraph>
+      <span className="mb-1 block text-ui-sm font-semibold text-ink">Payment link</span>
+      <Input
+        type="text"
+        readOnly
+        value={data.url}
+        onFocus={(event) => {
+          event.target.select();
+        }}
+        aria-label="Payment link URL"
+        className="w-full font-mono text-[length:var(--fs-meta)]"
+        data-testid="invoice-link-url"
+      />
+      <div className="mt-3 flex items-center gap-3">
+        <Button variant="primary" size="sm" onClick={() => { void copy(); }} data-testid="invoice-link-copy">
+          Copy link
+        </Button>
+        {copied !== null ? (
+          <span className="text-ui-sm text-ink-soft" data-testid="invoice-link-copied">
+            {copied}
+          </span>
+        ) : null}
+      </div>
+      <div className="mt-4 flex items-center gap-3">
+        <Button variant="ghost" onClick={props.onClose} data-testid="invoice-link-close">
+          Close
+        </Button>
+      </div>
+    </DialogFrame>
   );
 }
