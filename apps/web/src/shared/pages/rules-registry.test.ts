@@ -71,6 +71,12 @@ describe("rules registry page rulings (#233)", () => {
     expect(page).toContain('data-testid="rules-change-issues"');
   });
 
+  it("逐格错误穿到格子上:同一份 issues 喂定位器,坐标随编辑器走,面板照旧保留原话", () => {
+    expect(page).toContain("locateTableCellIssues(changeIssues");
+    expect(page).toContain("cellIssueKey(");
+    expect(page.replace(/\s+/g, " ")).toContain("cellIssues={tableCellIssues}");
+  });
+
   it("画不出的值退回 JSON 模式:打开表单按值定型,网格不假装什么都能画", () => {
     expect(page).toContain("formatTableDraft(rule.value)");
     expect(page).toContain('grid === null ? "json" : "grid"');

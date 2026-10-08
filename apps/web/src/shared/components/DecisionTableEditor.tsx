@@ -17,6 +17,10 @@
 //    page on submit, and the server's zod + compile probe stay the only
 //    authority. Cell syntax errors come back as the server's per-cell issues,
 //    verbatim — same discipline as the JSON path.
+//  - The compile probe's per-cell refusals are worn by their cells: the page
+//    resolves the server's issues onto the grid (locateTableCellIssues) and
+//    this component only paints what it is handed — the marks are annotations
+//    of the last refusal, lifted when the next save re-judges.
 //  - Empty cell semantics are said out loud: an empty input cell is always
 //    true, an empty output cell produces nothing.
 import type { DragEvent, ReactElement } from "react";
@@ -26,6 +30,7 @@ import { Button, Input, Paragraph } from "@ally/ui";
 import {
   addTableColumn,
   addTableRow,
+  cellIssueKey,
   moveTableColumn,
   moveTableRow,
   patchTableColumn,
@@ -44,9 +49,17 @@ const CELL_PLACEHOLDER: Record<TableColumnKind, string> = {
 interface DecisionTableEditorProps {
   draft: TableDraft;
   onChange: (draft: TableDraft) => void;
+  /** The last save's compile-probe refusals, resolved onto this grid by the
+   *  page via locateTableCellIssues — keyed by cellIssueKey. A marked cell is
+   *  one the server named; the marks lift when the next save re-judges. */
+  cellIssues?: ReadonlyMap<string, string>;
 }
 
-export function DecisionTableEditor({ draft, onChange }: DecisionTableEditorProps): ReactElement {
+export function DecisionTableEditor({
+  draft,
+  onChange,
+  cellIssues,
+}: DecisionTableEditorProps): ReactElement {
   const [dragRowKey, setDragRowKey] = useState<string | null>(null);
   const [dragColumnKey, setDragColumnKey] = useState<string | null>(null);
   const [dropRowKey, setDropRowKey] = useState<string | null>(null);
@@ -266,21 +279,28 @@ export function DecisionTableEditor({ draft, onChange }: DecisionTableEditorProp
                     ⠿
                   </span>
                 </td>
-                {draft.columns.map((column) => (
-                  <td key={column.key} className="border border-line p-0">
-                    <textarea
-                      className="block min-w-[10rem] resize-y border-0 bg-transparent p-2 font-mono text-ui text-ink outline-none"
-                      rows={1}
-                      aria-label={`${column.id} cell`}
-                      placeholder={CELL_PLACEHOLDER[column.kind]}
-                      data-testid="rules-edit-table-cell"
-                      value={row.cells[column.key] ?? ""}
-                      onChange={(e) => {
-                        onChange(setTableCell(draft, row.key, column.key, e.target.value));
-                      }}
-                    />
-                  </td>
-                ))}
+                {draft.columns.map((column) => {
+                  const issue = cellIssues?.get(cellIssueKey(row.key, column.key));
+                  return (
+                    <td key={column.key} className="border border-line p-0">
+                      <textarea
+                        className={`block min-w-[10rem] resize-y border-0 bg-transparent p-2 font-mono text-ui text-ink outline-none ${
+                          issue !== undefined ? "outline-2 outline-[var(--err-line)]" : ""
+                        }`}
+                        rows={1}
+                        aria-label={`${column.id} cell`}
+                        aria-invalid={issue !== undefined}
+                        placeholder={CELL_PLACEHOLDER[column.kind]}
+                        data-testid="rules-edit-table-cell"
+                        title={issue}
+                        value={row.cells[column.key] ?? ""}
+                        onChange={(e) => {
+                          onChange(setTableCell(draft, row.key, column.key, e.target.value));
+                        }}
+                      />
+                    </td>
+                  );
+                })}
                 <td className="border border-line px-2 py-1 text-center">
                   <button
                     type="button"
@@ -323,6 +343,15 @@ export function DecisionTableEditor({ draft, onChange }: DecisionTableEditorProp
         >
           + Row
         </Button>
+        {cellIssues !== undefined && cellIssues.size > 0 ? (
+          <Paragraph
+            className="mt-2 text-ui-sm text-err"
+            data-testid="rules-edit-table-cell-errors"
+          >
+            Red cells are the ones the server refused on the last save — fix
+            them and save again; the server re-judges every cell either way.
+          </Paragraph>
+        ) : null}
       </div>
     </div>
   );

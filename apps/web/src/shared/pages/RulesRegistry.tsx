@@ -34,11 +34,13 @@ import { Button, Card, Heading, Input, Paragraph } from "@ally/ui";
 import {
   createRulesAdapters,
   buildRuleValue,
+  cellIssueKey,
   emptyTableDraft,
   emptyValueDraft,
   filterRules,
   formatTableDraft,
   formatValueDraft,
+  locateTableCellIssues,
   parseDecisionTableDisplay,
   parseRefs,
   serializeTableDraft,
@@ -269,6 +271,19 @@ export function RulesRegistry(): ReactElement {
     enabled: selectedId !== null,
   });
   const history = historyQuery.data?.ok ? historyQuery.data.data : undefined;
+
+  /** The compile probe's per-cell refusals, worn by their cells: the same
+   *  issues array the panel renders verbatim resolves onto the grid draft, so
+   *  a refused save points at the exact cells that must change. Recomputed
+   *  live — the marks follow their cells until the next save attempt (or a
+   *  reopen/mode switch) re-judges. */
+  const locatedCellIssues =
+    changeIssues !== null && tableDraft !== null
+      ? locateTableCellIssues(changeIssues, tableDraft)
+      : [];
+  const tableCellIssues = new Map(
+    locatedCellIssues.map((issue) => [cellIssueKey(issue.rowKey, issue.columnKey), issue.message]),
+  );
 
   function refresh(): void {
     void queryClient.invalidateQueries({ queryKey: ["rules-registry"] });
@@ -739,7 +754,11 @@ export function RulesRegistry(): ReactElement {
                           </div>
                           {editorMode === "grid" && tableDraft !== null ? (
                             <div className="mt-3">
-                              <DecisionTableEditor draft={tableDraft} onChange={setTableDraft} />
+                              <DecisionTableEditor
+                                draft={tableDraft}
+                                onChange={setTableDraft}
+                                cellIssues={tableCellIssues}
+                              />
                             </div>
                           ) : (
                             <>

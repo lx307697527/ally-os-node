@@ -843,3 +843,81 @@ export function setTableCell(
     ),
   };
 }
+
+// ── Cell-issue locator (#233): the compile probe's per-cell refusals wear
+//    their cell ────────────────────────────────────────────────────────────
+// The server's write-face compile probe (apps/api/src/rules/
+// decision-table-schema.ts) names every syntax-broken cell in its own words —
+// `rule "<_id>" input|output cell "<column id>" does not parse: <zen json>` —
+// joins them with "; " behind the "rules: invalid decision table: " envelope,
+// and the PATCH route returns that whole string as issues[0]. These helpers
+// are a mirror of that wording: the grid wears the refusal on the named cell
+// instead of leaving it buried in the issues panel. The panel keeps the
+// verbatim text; the locator only decides where it points.
+
+export interface TableCellIssueRef {
+  /** The rule row's `_id` as the server named it */
+  rowId: string;
+  /** The column id as the server named it */
+  columnId: string;
+  /** This cell's slice of the server message, verbatim (envelope stripped) */
+  message: string;
+}
+
+const CELL_PARSE_PATTERN = /rule "([^"]*)" (?:input|output) cell "([^"]*)" does not parse: /g;
+const DECISION_TABLE_ENVELOPE = "rules: invalid decision table: ";
+
+export function parseTableCellIssues(issues: readonly string[]): TableCellIssueRef[] {
+  const refs: TableCellIssueRef[] = [];
+  for (const issue of issues) {
+    const matches = [...issue.matchAll(CELL_PARSE_PATTERN)];
+    for (const [index, match] of matches.entries()) {
+      const start = match.index;
+      const next = matches[index + 1]?.index ?? issue.length;
+      refs.push({
+        rowId: match[1] ?? "",
+        columnId: match[2] ?? "",
+        message: issue
+          .slice(start, next)
+          .replace(/;\s*$/, "")
+          .trim()
+          .replace(DECISION_TABLE_ENVELOPE, ""),
+      });
+    }
+  }
+  return refs;
+}
+
+/** Stable composite key for one grid cell — row and column handles contain no
+ *  colons (nextFreeId mints `row_*`/`col_*`), so `::` cannot collide. */
+export function cellIssueKey(rowKey: string, columnKey: string): string {
+  return `${rowKey}::${columnKey}`;
+}
+
+export interface TableCellIssue {
+  rowKey: string;
+  columnKey: string;
+  message: string;
+}
+
+/** Resolves the server's cell refs onto the current draft's stable handles.
+ *  A ref the draft can no longer resolve (renamed id, removed row/column
+ *  since the refused save) is dropped, not guessed — the issues panel still
+ *  carries the verbatim text. */
+export function locateTableCellIssues(
+  issues: readonly string[],
+  draft: TableDraft,
+): TableCellIssue[] {
+  const rowKeysById = new Map(
+    draft.rows.filter((row) => row.id.trim() !== "").map((row) => [row.id, row.key]),
+  );
+  const columnKeysById = new Map(draft.columns.map((column) => [column.id, column.key]));
+  const located: TableCellIssue[] = [];
+  for (const ref of parseTableCellIssues(issues)) {
+    const rowKey = rowKeysById.get(ref.rowId);
+    const columnKey = columnKeysById.get(ref.columnId);
+    if (rowKey === undefined || columnKey === undefined) continue;
+    located.push({ rowKey, columnKey, message: ref.message });
+  }
+  return located;
+}
