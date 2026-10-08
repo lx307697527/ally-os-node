@@ -10,6 +10,11 @@
 // write), void a booked payment (the correction), and the two payment-link
 // channels whose answers carry the surcharge disclosure (gross = principal +
 // surcharge) and the customer-facing URL.
+//
+// The credit-notes half (#192 红冲的 web 半边) covers the correction ledger's
+// read and its verbs: create a credit-note draft against an issued invoice
+// (reason + lines, no computed totals on the wire), confirm it (the credit
+// then counts), void a draft — with each 409 carrying the gate's own code.
 import { describe, expect, it } from "vitest";
 
 import {
@@ -69,6 +74,19 @@ const PAYMENT_ROW = {
   voidedAt: null,
   voidReason: null,
   createdAt: "2026-10-07T09:00:00.000Z",
+};
+
+const CREDIT_NOTE_ROW = {
+  id: "cn-1",
+  number: "CN-202610-1001",
+  status: "draft",
+  reason: "billed twice for setup",
+  currency: "USD",
+  totalCents: 50000,
+  issuedAt: null,
+  voidedAt: null,
+  voidReason: null,
+  createdAt: "2026-10-09T08:00:00.000Z",
 };
 
 describe("formatMoney", () => {
@@ -453,6 +471,144 @@ describe("payment actions client (#192 remaining)", () => {
     await expect(dead.voidPayment("pay-1", "why")).resolves.toEqual({ ok: false, reason: "unavailable" });
     await expect(dead.stripeLink("inv-1")).resolves.toEqual({ ok: false, reason: "unavailable" });
     await expect(dead.paypalLink("inv-1")).resolves.toEqual({ ok: false, reason: "unavailable" });
+  });
+});
+
+describe("credit notes client (#192 红冲的 web 半边)", () => {
+  it("creditNotes hits the invoice's credit-notes route and parses the ledger shape", async () => {
+    const calls: string[] = [];
+    const adapters = createInvoiceAdapters((input) => {
+      if (typeof input === "string") calls.push(input);
+      return Promise.resolve(
+        jsonRes({ creditedCents: 50000, creditNotes: [CREDIT_NOTE_ROW] }),
+      );
+    });
+    const result = await adapters.creditNotes("inv-1");
+    expect(calls[0]).toBe("/api/invoices/inv-1/credit-notes");
+    expect(result).toEqual({
+      ok: true,
+      data: { creditedCents: 50000, creditNotes: [CREDIT_NOTE_ROW] },
+    });
+  });
+
+  it("creditNotes: 404 is notfound, 403 is forbidden, junk body and 500 are unavailable", async () => {
+    const missing = createInvoiceAdapters(() => Promise.resolve(jsonRes({ error: "x" }, 404)));
+    await expect(missing.creditNotes("inv-1")).resolves.toEqual({ ok: false, reason: "notfound" });
+    const denied = createInvoiceAdapters(() => Promise.resolve(jsonRes({ error: "x" }, 403)));
+    await expect(denied.creditNotes("inv-1")).resolves.toEqual({ ok: false, reason: "forbidden" });
+    const junk = createInvoiceAdapters(() =>
+      Promise.resolve(jsonRes({ creditedCents: "many", creditNotes: [] })),
+    );
+    await expect(junk.creditNotes("inv-1")).resolves.toEqual({ ok: false, reason: "unavailable" });
+    const dead = createInvoiceAdapters(() => Promise.resolve(jsonRes({ error: "boom" }, 500)));
+    await expect(dead.creditNotes("inv-1")).resolves.toEqual({ ok: false, reason: "unavailable" });
+  });
+
+  it("createCreditNote POSTs reason and lines — quantity and unit price only, never a computed total", async () => {
+    const seen: { url: string; method: string; body: string }[] = [];
+    const adapters = createInvoiceAdapters((input, init) => {
+      if (typeof input === "string" && init !== undefined) {
+        seen.push({
+          url: input,
+          method: init.method ?? "",
+          body: typeof init.body === "string" ? init.body : "",
+        });
+      }
+      return Promise.resolve(jsonRes({ id: "cn-9", number: "CN-202610-1001" }, 201));
+    });
+    const result = await adapters.createCreditNote("inv-1", {
+      reason: "billed twice for setup",
+      lines: [{ description: "Setup fee (one of two)", quantity: 1, unitPriceCents: 25000 }],
+    });
+    expect(seen[0]?.url).toBe("/api/invoices/inv-1/credit-notes");
+    expect(seen[0]?.method).toBe("POST");
+    expect(JSON.parse(seen[0]?.body ?? "null")).toEqual({
+      reason: "billed twice for setup",
+      lines: [{ description: "Setup fee (one of two)", quantity: 1, unitPriceCents: 25000 }],
+    });
+    expect(result).toEqual({ ok: true, data: { id: "cn-9", number: "CN-202610-1001" } });
+  });
+
+  it("a create 409 carries the server's gate code — boundary, invoice state or numbering rule", async () => {
+    const over = createInvoiceAdapters(() =>
+      Promise.resolve(jsonRes({ error: "credit_exceeds_invoice" }, 409)),
+    );
+    await expect(
+      over.createCreditNote("inv-1", {
+        reason: "why",
+        lines: [{ description: "all of it", quantity: 1, unitPriceCents: 999999999 }],
+      }),
+    ).resolves.toEqual({ ok: false, reason: "conflict", code: "credit_exceeds_invoice" });
+
+    const unnumbered = createInvoiceAdapters(() =>
+      Promise.resolve(jsonRes({ error: "numbering_not_configured" }, 409)),
+    );
+    await expect(
+      unnumbered.createCreditNote("inv-1", { reason: "why", lines: [{ description: "x", quantity: 1, unitPriceCents: 1 }] }),
+    ).resolves.toEqual({ ok: false, reason: "conflict", code: "numbering_not_configured" });
+
+    const missing = createInvoiceAdapters(() => Promise.resolve(jsonRes({ error: "x" }, 404)));
+    await expect(
+      missing.createCreditNote("inv-1", { reason: "why", lines: [{ description: "x", quantity: 1, unitPriceCents: 1 }] }),
+    ).resolves.toEqual({ ok: false, reason: "notfound" });
+  });
+
+  it("confirm and void hit the note's own routes; the outcome comes back as data", async () => {
+    const seen: string[] = [];
+    const adapters = createInvoiceAdapters((input) => {
+      if (typeof input === "string") seen.push(input);
+      return Promise.resolve(jsonRes({ status: "issued" }));
+    });
+    const confirmed = await adapters.confirmCreditNote("cn-1");
+    expect(seen[0]).toBe("/api/credit-notes/cn-1/confirm");
+    expect(confirmed).toEqual({ ok: true, data: { outcome: "issued" } });
+
+    const voiding = createInvoiceAdapters((input) => {
+      if (typeof input === "string") seen.push(input);
+      return Promise.resolve(jsonRes({ status: "already" }));
+    });
+    const voided = await voiding.voidCreditNote("cn-1");
+    expect(seen[1]).toBe("/api/credit-notes/cn-1/void");
+    expect(voided).toEqual({ ok: true, data: { outcome: "already" } });
+  });
+
+  it("void carries the reason only when one is given — the API's admission is optional", async () => {
+    const bodies: (string | undefined)[] = [];
+    const adapters = createInvoiceAdapters((input, init) => {
+      if (typeof input === "string" && init !== undefined) {
+        bodies.push(typeof init.body === "string" ? init.body : undefined);
+      }
+      return Promise.resolve(jsonRes({ status: "voided" }));
+    });
+    await adapters.voidCreditNote("cn-1", "duplicate of CN-1002");
+    expect(JSON.parse(bodies[0] ?? "null")).toEqual({ reason: "duplicate of CN-1002" });
+
+    await adapters.voidCreditNote("cn-1");
+    expect(JSON.parse(bodies[1] ?? "null")).toEqual({});
+  });
+
+  it("credit verbs: a 409 names the note's own gate; a dead network reads unavailable", async () => {
+    const voidedNote = createInvoiceAdapters(() =>
+      Promise.resolve(jsonRes({ error: "credit_note_voided" }, 409)),
+    );
+    await expect(voidedNote.confirmCreditNote("cn-1")).resolves.toEqual({
+      ok: false,
+      reason: "conflict",
+      code: "credit_note_voided",
+    });
+
+    const final = createInvoiceAdapters(() =>
+      Promise.resolve(jsonRes({ error: "not_voidable" }, 409)),
+    );
+    await expect(final.voidCreditNote("cn-1")).resolves.toEqual({
+      ok: false,
+      reason: "conflict",
+      code: "not_voidable",
+    });
+
+    const dead = createInvoiceAdapters(() => Promise.reject(new Error("down")));
+    await expect(dead.confirmCreditNote("cn-1")).resolves.toEqual({ ok: false, reason: "unavailable" });
+    await expect(dead.voidCreditNote("cn-1", "why")).resolves.toEqual({ ok: false, reason: "unavailable" });
   });
 });
 

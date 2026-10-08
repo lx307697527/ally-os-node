@@ -211,6 +211,66 @@ describe("payment terms and due dates (#192 remaining — R-12-7's web face)", (
   });
 });
 
+describe("credit notes web face (#192 红冲的 web 半边)", () => {
+  it("the client reads the real credit endpoints and parses the ledger by zod", () => {
+    expect(client).toContain("`/api/invoices/${encodeURIComponent(id)}/credit-notes`");
+    expect(client).toContain("`/api/credit-notes/${encodeURIComponent(creditNoteId)}/confirm`");
+    expect(client).toContain("`/api/credit-notes/${encodeURIComponent(creditNoteId)}/void`");
+    expect(client).toContain("creditNotesLedgerSchema.safeParse");
+    expect(client).toContain("createCreditNote");
+  });
+
+  it("every state is said on the detail page: loading, unavailable, empty, ledger, credited money", () => {
+    expect(detail).toContain('data-testid="invoice-credit-section"');
+    expect(detail).toContain('data-testid="invoice-credits-loading"');
+    expect(detail).toContain('data-testid="invoice-credits-unavailable"');
+    expect(detail).toContain('data-testid="invoice-credits-empty"');
+    expect(detail).toContain('data-testid="invoice-credits-list"');
+    expect(detail).toContain('data-testid="invoice-detail-credited"');
+    expect(detail).toContain("data.creditedCents > 0");
+  });
+
+  it("the ledger section is an issued-invoice fact — credits cannot exist on a draft or void invoice", () => {
+    expect(detail).toContain("<CreditNotesSection");
+    expect(detail).toContain('data-testid="invoice-credit-create"');
+    expect(detail).toContain("CreateCreditNoteDialog");
+    expect(detail).toContain("ConfirmCreditNoteDialog");
+    expect(detail).toContain("VoidCreditNoteDialog");
+  });
+
+  it("R-12-6's gate is said on the page: a draft credits nothing, issued is final, corrections are new documents", () => {
+    expect(detail).toContain("Issue credit note");
+    expect(detail).toContain("Confirm credit note");
+    expect(detail).toContain("it credits nothing until it is confirmed");
+    expect(detail).toContain("the credited total counts confirmed notes");
+    expect(detail).toContain("it never edits the invoice's own lines");
+    expect(detail).toContain("An issued credit note is final");
+  });
+
+  it("each credit gate has its own sentence; codes never reach the user", () => {
+    expect(detail).toContain('code === "not_issued"');
+    expect(detail).toContain('code === "invoice_voided"');
+    expect(detail).toContain('code === "credit_exceeds_invoice"');
+    expect(detail).toContain('code === "numbering_not_configured"');
+    expect(detail).toContain('code === "credit_note_voided"');
+    expect(detail).toContain('code === "not_voidable"');
+    expect(detail).toContain("returning money is the refund flow");
+  });
+
+  it("the create dialog keeps the money discipline: exact string parsing, reason required, no client totals", () => {
+    expect(detail).toContain("Write why this credit is being issued");
+    expect(detail).toContain("amounts are computed by the server");
+    expect(detail).toContain("parseQuantity(row.quantity)");
+    expect(detail).toContain("parseDollarsToCents(row.unitPrice)");
+  });
+
+  it("only a draft row offers verbs; voided notes stay visible struck through — records, never deleted", () => {
+    expect(detail).toContain('note.status === "draft"');
+    expect(detail).toContain('note.status === "void" ? "text-ink-soft line-through" : "text-ink"');
+    expect(detail).toContain("voidReason !== null");
+  });
+});
+
 describe("wiring (#192 slice 4)", () => {
   it("the routes exist and the rail item points at them — one table, no drift", () => {
     expect(app).toContain('path="/invoices"');

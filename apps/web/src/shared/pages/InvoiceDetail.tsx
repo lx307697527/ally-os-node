@@ -1,20 +1,27 @@
 // The invoice detail page (#192 slice 4 — the finance confirmation page's
 // working half): the lines finance checks before issuing, the two state verbs
 // (confirm = issue, R-12-6's human gate; void a draft), whole-replacement
-// editing of draft lines, and the payment ledger with its verbs.
+// editing of draft lines, the payment ledger with its verbs, and the credit
+// notes (#192 红冲的 web 半边): the correction ledger with its own verbs —
+// create a draft credit note, confirm it (the credit then reduces what the
+// customer owes), void a draft.
 //
 // Disciplines said on the page, not just enforced by the API:
-// - issuing is final — an issued invoice's lines never change (corrections are
-//   a later slice's own verbs); the confirm dialog shows the money it commits.
+// - issuing is final — an issued invoice's lines never change (corrections
+//   are credit notes: new documents, never edits); the confirm dialog shows
+//   the money it commits.
 // - the server computes every amount (generated columns; RULE-007) — the
 //   editor submits quantities and unit prices only, and shows no totals of
 //   its own; the authoritative totals appear after the save lands.
 // - money is integer cents end to end; the editor's dollars inputs parse by
 //   exact string rules (parseDollarsToCents), never float.
-// - the collection verbs (#192 remaining) record facts, not intentions: a
-//   manual booking is money that arrived outside a payment link, a void is a
-//   correction with a reason, and a link's payment is booked by the provider's
-//   confirmation — recording it by hand too would double-count.
+// - the collection verbs record facts, not intentions: a manual booking is
+//   money that arrived outside a payment link, a void is a correction with a
+//   reason, and a link's payment is booked by the provider's confirmation —
+//   recording it by hand too would double-count.
+// - a credit note credits nothing while it is a draft (R-12-6's gate — the
+//   credited total counts confirmed notes only); an issued credit note is
+//   final, and crediting stops at the invoice's total.
 //
 // States are honest: loading, not-available (the anti-probe 404), unreachable
 // API, and per-verb errors — a 409's machine code is translated into the
@@ -35,6 +42,9 @@ import {
   parseDueInDays,
   parseLocalDateTimeToIso,
   parseQuantity,
+  type CreditActionFailure,
+  type CreditNoteRow,
+  type CreditNotesLedger,
   type InvoiceDetail as InvoiceDetailData,
   type InvoiceLineInput,
   type InvoiceVerbResult,
@@ -145,6 +155,42 @@ function paymentActionError(result: Exclude<PaymentActionFailure, { ok: true }>)
   return "The change could not be saved. Reload and try again.";
 }
 
+/** The credit verbs' gates, said for a person. The codes split by subject —
+ *  some belong to the invoice being credited (only an issued invoice can be
+ *  credited), some to the boundary (crediting stops at the invoice total),
+ *  one to configuration (the numbering rule), two to the note itself. A
+ *  404 reads the same whichever document vanished: reload. */
+function creditActionError(result: Exclude<CreditActionFailure, { ok: true }>): string {
+  if (result.reason === "conflict") {
+    if (result.code === "not_issued") {
+      return "Only an issued invoice can be credited — reload to see its current state.";
+    }
+    if (result.code === "invoice_voided") {
+      return "This invoice has been voided — reload to see its current state.";
+    }
+    if (result.code === "credit_exceeds_invoice") {
+      return "These lines would push the credited total past the invoice's total — lower the amounts. A credit reduces what the customer owes; returning money is the refund flow, not a credit note.";
+    }
+    if (result.code === "numbering_not_configured") {
+      return "No numbering rule is active for credit notes — ask an admin to set one in the configuration studio, then try again.";
+    }
+    if (result.code === "credit_note_voided") {
+      return "That credit note is voided — reload the ledger to see it.";
+    }
+    if (result.code === "not_voidable") {
+      return "Only a draft credit note can be voided — an issued credit note is final; reload to see its current state.";
+    }
+    return "The credit note changed while you were working — reload and try again.";
+  }
+  if (result.reason === "forbidden") {
+    return "Your account does not have permission to manage invoices.";
+  }
+  if (result.reason === "notfound") {
+    return "This document is no longer available to you.";
+  }
+  return "The change could not be saved. Reload and try again.";
+}
+
 export function InvoiceDetail(): ReactElement {
   const { invoiceId } = useParams();
   if (invoiceId === undefined || !invoiceIdSchema.safeParse(invoiceId).success) {
@@ -163,6 +209,10 @@ function InvoiceLoaded(props: { invoiceId: string }): ReactElement {
     queryKey: ["invoices", "payments", props.invoiceId],
     queryFn: () => invoiceAdapters.payments(props.invoiceId),
   });
+  const credits = useQuery({
+    queryKey: ["invoices", "credit-notes", props.invoiceId],
+    queryFn: () => invoiceAdapters.creditNotes(props.invoiceId),
+  });
 
   const data = invoice.data?.ok === true ? invoice.data.data : undefined;
 
@@ -174,6 +224,9 @@ function InvoiceLoaded(props: { invoiceId: string }): ReactElement {
   const [voidTarget, setVoidTarget] = useState<PaymentRow | null>(null);
   const [link, setLink] = useState<{ channel: "Stripe" | "PayPal"; data: PaymentLinkData } | null>(null);
   const [linkBusy, setLinkBusy] = useState<false | "stripe" | "paypal">(false);
+  const [creditCreateOpen, setCreditCreateOpen] = useState(false);
+  const [creditConfirmTarget, setCreditConfirmTarget] = useState<CreditNoteRow | null>(null);
+  const [creditVoidTarget, setCreditVoidTarget] = useState<CreditNoteRow | null>(null);
 
   // One invalidation refreshes the detail, its ledger and every cached list —
   // a state verb moves the row between filters, a line edit moves the totals.
@@ -242,6 +295,14 @@ function InvoiceLoaded(props: { invoiceId: string }): ReactElement {
               {formatMoney(data.paidCents, data.currency)}
             </span>
           </span>
+          {data.creditedCents > 0 ? (
+            <span data-testid="invoice-detail-credited-block">
+              <span className="block font-mono text-[length:var(--fs-meta)] text-ink-soft">Credited</span>
+              <span className="block font-slab text-ui text-ink" data-testid="invoice-detail-credited">
+                {formatMoney(data.creditedCents, data.currency)}
+              </span>
+            </span>
+          ) : null}
           <span data-testid="invoice-detail-payment-status-block">
             <span className="block font-mono text-[length:var(--fs-meta)] text-ink-soft">Payment status</span>
             <span className="block font-slab text-ui text-ink" data-testid="invoice-detail-payment-status">
@@ -358,6 +419,28 @@ function InvoiceLoaded(props: { invoiceId: string }): ReactElement {
             setVoidTarget(row);
           }}
         />
+
+        {data.status === "issued" ? (
+          <CreditNotesSection
+            invoiceTotalCents={data.totalCents}
+            currency={data.currency}
+            ledger={credits.data?.ok === true ? credits.data.data : undefined}
+            loading={credits.isPending}
+            unavailable={credits.data?.ok === false}
+            onCreate={() => {
+              setFlash(null);
+              setCreditCreateOpen(true);
+            }}
+            onConfirm={(note) => {
+              setFlash(null);
+              setCreditConfirmTarget(note);
+            }}
+            onVoid={(note) => {
+              setFlash(null);
+              setCreditVoidTarget(note);
+            }}
+          />
+        ) : null}
       </Card>
 
       {confirmOpen ? (
@@ -437,6 +520,58 @@ function InvoiceLoaded(props: { invoiceId: string }): ReactElement {
           data={link.data}
           onClose={() => {
             setLink(null);
+          }}
+        />
+      ) : null}
+      {creditCreateOpen ? (
+        <CreateCreditNoteDialog
+          invoice={data}
+          onClose={() => {
+            setCreditCreateOpen(false);
+          }}
+          onCreated={(created) => {
+            setCreditCreateOpen(false);
+            setFlash({
+              text: `Credit note ${created.number} created as a draft — it credits nothing until it is confirmed.`,
+              kind: "ok",
+            });
+            refresh();
+          }}
+        />
+      ) : null}
+      {creditConfirmTarget !== null ? (
+        <ConfirmCreditNoteDialog
+          invoice={data}
+          note={creditConfirmTarget}
+          onClose={() => {
+            setCreditConfirmTarget(null);
+          }}
+          onConfirmed={(outcome) => {
+            setCreditConfirmTarget(null);
+            setFlash(
+              outcome === "already"
+                ? { text: "Already issued — nothing changed.", kind: "ok" }
+                : { text: "Credit note issued — the credited total now reduces what the customer owes.", kind: "ok" },
+            );
+            refresh();
+          }}
+        />
+      ) : null}
+      {creditVoidTarget !== null ? (
+        <VoidCreditNoteDialog
+          invoice={data}
+          note={creditVoidTarget}
+          onClose={() => {
+            setCreditVoidTarget(null);
+          }}
+          onVoided={(outcome) => {
+            setCreditVoidTarget(null);
+            setFlash(
+              outcome === "already"
+                ? { text: "Already voided — nothing changed.", kind: "ok" }
+                : { text: "Credit note voided — the boundary it held is released.", kind: "ok" },
+            );
+            refresh();
           }}
         />
       ) : null}
@@ -1232,6 +1367,410 @@ function PaymentLinkDialog(props: {
       <div className="mt-4 flex items-center gap-3">
         <Button variant="ghost" onClick={props.onClose} data-testid="invoice-link-close">
           Close
+        </Button>
+      </div>
+    </DialogFrame>
+  );
+}
+
+/** The credit-note ledger and its verbs (#192 红冲的 web 半边). A credit note
+ *  is a correction document in its own right — it never edits the invoice's
+ *  lines, and the credited total counts confirmed (issued) notes only: a
+ *  draft credits nothing until finance confirms it (R-12-6's gate). Voided
+ *  notes stay visible struck through — documents are records, never deleted;
+ *  an issued note is final, so only a draft row offers verbs. */
+function CreditNotesSection(props: {
+  invoiceTotalCents: number;
+  currency: string;
+  ledger: CreditNotesLedger | undefined;
+  loading: boolean;
+  unavailable: boolean;
+  onCreate: () => void;
+  onConfirm: (note: CreditNoteRow) => void;
+  onVoid: (note: CreditNoteRow) => void;
+}): ReactElement {
+  return (
+    <div className="mt-5 border-t border-line pt-4" data-testid="invoice-credit-section">
+      <Heading as="h3">Credit notes</Heading>
+      <div className="mt-2 flex flex-wrap gap-2" data-testid="invoice-credit-actions">
+        <Button variant="primary" size="sm" onClick={props.onCreate} data-testid="invoice-credit-create">
+          Issue credit note
+        </Button>
+      </div>
+      {props.loading ? (
+        <Paragraph className="mt-2" data-testid="invoice-credits-loading">
+          Loading…
+        </Paragraph>
+      ) : props.unavailable || props.ledger === undefined ? (
+        <Paragraph className="mt-2 text-ink-soft" data-testid="invoice-credits-unavailable">
+          The credit-note ledger could not be loaded.
+        </Paragraph>
+      ) : (
+        <>
+          <Paragraph className="mt-1 font-mono text-[length:var(--fs-meta)] text-ink-soft" data-testid="invoice-credits-summary">
+            {`Credited ${formatMoney(props.ledger.creditedCents, props.currency)} of ${formatMoney(props.invoiceTotalCents, props.currency)} — the credited total counts confirmed notes; a draft credits nothing until it is issued.`}
+          </Paragraph>
+          {props.ledger.creditNotes.length === 0 ? (
+            <Paragraph className="mt-2 text-ink-soft" data-testid="invoice-credits-empty">
+              No credit notes. A correction is a new document that credits this
+              invoice — it never edits the invoice's own lines.
+            </Paragraph>
+          ) : (
+            <ul className="mt-2" data-testid="invoice-credits-list">
+              {props.ledger.creditNotes.map((note) => (
+                <li
+                  key={note.id}
+                  className="border-b border-line py-2"
+                  data-testid="invoice-credits-row"
+                  data-status={note.status}
+                >
+                  <span className="flex items-center gap-2">
+                    <span
+                      className={`min-w-0 flex-1 text-ui ${
+                        note.status === "void" ? "text-ink-soft line-through" : "text-ink"
+                      }`}
+                    >
+                      {`${note.number} · ${formatMoney(note.totalCents, note.currency)} · ${
+                        note.status === "draft"
+                          ? "draft — waiting for finance confirmation"
+                          : note.status
+                      }`}
+                    </span>
+                    {note.status === "draft" ? (
+                      <>
+                        <Button
+                          variant="primary"
+                          size="sm"
+                          onClick={() => {
+                            props.onConfirm(note);
+                          }}
+                          aria-label={`Confirm credit note ${note.number}`}
+                          data-testid="invoice-credit-confirm"
+                        >
+                          Confirm
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => {
+                            props.onVoid(note);
+                          }}
+                          aria-label={`Void draft credit note ${note.number}`}
+                          data-testid="invoice-credit-void"
+                        >
+                          Void
+                        </Button>
+                      </>
+                    ) : null}
+                  </span>
+                  <span className="mt-0.5 block font-mono text-[length:var(--fs-meta)] text-ink-soft">
+                    {note.reason}
+                    {` · created ${formatDay(note.createdAt)}`}
+                    {note.status === "issued" && note.issuedAt !== null ? ` · issued ${formatDay(note.issuedAt)}` : ""}
+                    {note.status === "void" && note.voidedAt !== null
+                      ? ` · voided ${formatDay(note.voidedAt)}${note.voidReason !== null ? `: ${note.voidReason}` : ""}`
+                      : ""}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+/** Open a credit-note draft (#192 红冲的 web 半边). The reason is required —
+ *  it is the correction's narrative body, the row the auditor reads. The
+ *  lines follow the invoice editor's discipline: description, quantity, unit
+ *  price, parsed by exact string rules; no totals are computed or shown here
+ *  — the server's generated columns are the only totals, and the boundary
+ *  (credits never pass the invoice's total) is checked there, in the
+ *  invoice's row lock. */
+function CreateCreditNoteDialog(props: {
+  invoice: InvoiceDetailData;
+  onCreated: (created: { id: string; number: string }) => void;
+  onClose: () => void;
+}): ReactElement {
+  const [reason, setReason] = useState("");
+  const [rows, setRows] = useState<{ description: string; quantity: string; unitPrice: string }[]>([
+    { description: "", quantity: "", unitPrice: "" },
+  ]);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  function updateRow(index: number, patch: Partial<{ description: string; quantity: string; unitPrice: string }>): void {
+    setRows(rows.map((row, i) => (i === index ? { ...row, ...patch } : row)));
+  }
+
+  function removeRow(index: number): void {
+    if (rows.length <= 1) return;
+    setRows(rows.filter((_, i) => i !== index));
+  }
+
+  async function create(): Promise<void> {
+    setError(null);
+    const trimmedReason = reason.trim();
+    if (trimmedReason === "") {
+      setError("Write why this credit is being issued — the reason stays on the document.");
+      return;
+    }
+    const lines: InvoiceLineInput[] = [];
+    for (const [index, row] of rows.entries()) {
+      const description = row.description.trim();
+      const quantity = parseQuantity(row.quantity);
+      const unitPriceCents = parseDollarsToCents(row.unitPrice);
+      if (description === "") {
+        setError(`Line ${String(index + 1)}: write what this line credits.`);
+        return;
+      }
+      if (quantity === null) {
+        setError(`Line ${String(index + 1)}: the quantity must be a positive number with at most three decimals.`);
+        return;
+      }
+      if (unitPriceCents === null) {
+        setError(`Line ${String(index + 1)}: the unit price must be a dollar amount like 1,500.00.`);
+        return;
+      }
+      lines.push({ description, quantity, unitPriceCents });
+    }
+    setBusy(true);
+    const result = await invoiceAdapters.createCreditNote(props.invoice.id, {
+      reason: trimmedReason,
+      lines,
+    });
+    setBusy(false);
+    if (!result.ok) {
+      setError(creditActionError(result));
+      return;
+    }
+    props.onCreated(result.data);
+  }
+
+  return (
+    <DialogFrame labelledBy="invoice-credit-create-title" title="Issue credit note">
+      <Paragraph className="mb-4 text-ink-soft">
+        Credit <strong>{props.invoice.number}</strong> with a new document — the
+        invoice's own lines never change. A draft credits nothing; once
+        confirmed, an issued credit note is final and the credited amount
+        reduces what the customer owes. The credited total can never pass the
+        invoice's total.
+      </Paragraph>
+      <label className="mb-3 block">
+        <span className="mb-1 block text-ui-sm font-semibold text-ink">Reason</span>
+        <Input
+          type="text"
+          value={reason}
+          maxLength={500}
+          onChange={(event) => {
+            setReason(event.target.value);
+          }}
+          aria-label="Credit note reason"
+          placeholder="Why this credit is being issued — e.g. billed twice for setup"
+          data-testid="invoice-credit-create-reason"
+        />
+      </label>
+      <Paragraph className="mb-2 font-mono text-[length:var(--fs-meta)] text-ink-soft">
+        Credit lines — amounts are computed by the server; they appear once the
+        draft is on the books.
+      </Paragraph>
+      <ul className="grid gap-2" data-testid="invoice-credit-create-rows">
+        {rows.map((row, index) => (
+          <li key={index} className="flex flex-wrap items-center gap-2" data-testid="invoice-credit-create-row">
+            <Input
+              type="text"
+              value={row.description}
+              onChange={(event) => {
+                updateRow(index, { description: event.target.value });
+              }}
+              aria-label={`Credit line ${String(index + 1)} description`}
+              placeholder="What this line credits"
+              className="min-w-[220px] flex-1"
+              data-testid="invoice-credit-create-description"
+            />
+            <Input
+              type="text"
+              value={row.quantity}
+              onChange={(event) => {
+                updateRow(index, { quantity: event.target.value });
+              }}
+              aria-label={`Credit line ${String(index + 1)} quantity`}
+              placeholder="Quantity"
+              className="w-[110px]"
+              data-testid="invoice-credit-create-quantity"
+            />
+            <Input
+              type="text"
+              value={row.unitPrice}
+              onChange={(event) => {
+                updateRow(index, { unitPrice: event.target.value });
+              }}
+              aria-label={`Credit line ${String(index + 1)} unit price in dollars`}
+              placeholder="Unit price (USD)"
+              className="w-[140px]"
+              data-testid="invoice-credit-create-unit-price"
+            />
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled={rows.length <= 1}
+              onClick={() => {
+                removeRow(index);
+              }}
+              aria-label={`Remove credit line ${String(index + 1)}`}
+              data-testid="invoice-credit-create-remove-line"
+            >
+              Remove
+            </Button>
+          </li>
+        ))}
+      </ul>
+      <div className="mt-2 flex flex-wrap gap-2">
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => {
+            setRows([...rows, { description: "", quantity: "", unitPrice: "" }]);
+          }}
+          data-testid="invoice-credit-create-add-line"
+        >
+          Add line
+        </Button>
+      </div>
+      {error !== null ? (
+        <Paragraph className="mt-2 text-err" data-testid="invoice-credit-create-error">
+          {error}
+        </Paragraph>
+      ) : null}
+      <div className="mt-3 flex items-center gap-3">
+        <Button variant="primary" disabled={busy} onClick={() => { void create(); }} data-testid="invoice-credit-create-go">
+          {busy ? "Creating…" : "Create draft credit note"}
+        </Button>
+        <Button variant="ghost" disabled={busy} onClick={props.onClose} data-testid="invoice-credit-create-cancel">
+          Cancel
+        </Button>
+      </div>
+    </DialogFrame>
+  );
+}
+
+/** The credit note's own R-12-6 gate: confirming issues the document and the
+ *  credited amount starts reducing what the customer owes. Issued is final —
+ *  a mistaken credit is corrected by crediting back, never by editing. */
+function ConfirmCreditNoteDialog(props: {
+  invoice: InvoiceDetailData;
+  note: CreditNoteRow;
+  onConfirmed: (outcome: string) => void;
+  onClose: () => void;
+}): ReactElement {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function confirm(): Promise<void> {
+    setBusy(true);
+    setError(null);
+    const result = await invoiceAdapters.confirmCreditNote(props.note.id);
+    setBusy(false);
+    if (!result.ok) {
+      setError(creditActionError(result));
+      return;
+    }
+    props.onConfirmed(result.data.outcome);
+  }
+
+  return (
+    <DialogFrame labelledBy="invoice-credit-confirm-title" title="Confirm credit note">
+      <Paragraph className="mb-4 text-ink-soft">
+        Confirm credit note <strong>{props.note.number}</strong> for{" "}
+        <strong>{formatMoney(props.note.totalCents, props.note.currency)}</strong> against{" "}
+        <strong>{props.invoice.number}</strong>? Once issued, the credited
+        amount reduces what the customer owes — paid statuses and payment links
+        follow the credited total. An issued credit note is final; it cannot be
+        voided.
+      </Paragraph>
+      <Paragraph className="mb-4 font-mono text-[length:var(--fs-meta)] text-ink-soft">
+        {`Reason: ${props.note.reason}`}
+      </Paragraph>
+      {error !== null ? (
+        <Paragraph className="mb-3 text-err" data-testid="invoice-credit-confirm-error">
+          {error}
+        </Paragraph>
+      ) : null}
+      <div className="flex items-center gap-3">
+        <Button variant="primary" disabled={busy} onClick={() => { void confirm(); }} data-testid="invoice-credit-confirm-go">
+          {busy ? "Confirming…" : "Confirm credit note"}
+        </Button>
+        <Button variant="ghost" disabled={busy} onClick={props.onClose} data-testid="invoice-credit-confirm-cancel">
+          Cancel
+        </Button>
+      </div>
+    </DialogFrame>
+  );
+}
+
+/** Void a draft credit note (the correction verb on the correction): the
+ *  draft is cancelled and stays on the books as void; the boundary it held
+ *  is released. The reason is optional, mirroring the API's admission — a
+ *  voided note keeps whatever reason was given beside it on the ledger. */
+function VoidCreditNoteDialog(props: {
+  invoice: InvoiceDetailData;
+  note: CreditNoteRow;
+  onVoided: (outcome: string) => void;
+  onClose: () => void;
+}): ReactElement {
+  const [reason, setReason] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function voidNote(): Promise<void> {
+    setBusy(true);
+    setError(null);
+    const result = await invoiceAdapters.voidCreditNote(
+      props.note.id,
+      reason.trim() === "" ? undefined : reason.trim(),
+    );
+    setBusy(false);
+    if (!result.ok) {
+      setError(creditActionError(result));
+      return;
+    }
+    props.onVoided(result.data.outcome);
+  }
+
+  return (
+    <DialogFrame labelledBy="invoice-credit-void-title" title="Void draft credit note">
+      <Paragraph className="mb-4 text-ink-soft">
+        Void draft credit note <strong>{props.note.number}</strong> against{" "}
+        <strong>{props.invoice.number}</strong>? The draft is cancelled and
+        stays on the books as void — it can never be issued, and the credited
+        boundary it held is released. This cannot be undone.
+      </Paragraph>
+      <label className="mb-4 block">
+        <span className="mb-1 block text-ui-sm font-semibold text-ink">Reason (optional)</span>
+        <Input
+          type="text"
+          value={reason}
+          maxLength={500}
+          onChange={(event) => {
+            setReason(event.target.value);
+          }}
+          aria-label="Void credit note reason"
+          placeholder="Why this draft is being cancelled"
+          data-testid="invoice-credit-void-reason"
+        />
+      </label>
+      {error !== null ? (
+        <Paragraph className="mb-3 text-err" data-testid="invoice-credit-void-error">
+          {error}
+        </Paragraph>
+      ) : null}
+      <div className="flex items-center gap-3">
+        <Button variant="primary" disabled={busy} onClick={() => { void voidNote(); }} data-testid="invoice-credit-void-go">
+          {busy ? "Voiding…" : "Void draft"}
+        </Button>
+        <Button variant="ghost" disabled={busy} onClick={props.onClose} data-testid="invoice-credit-void-cancel">
+          Cancel
         </Button>
       </div>
     </DialogFrame>
