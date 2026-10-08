@@ -30,7 +30,9 @@ import { Button, Card, Heading, Input, Paragraph } from "@ally/ui";
 import {
   createInvoiceAdapters,
   formatMoney,
+  isInvoiceOverdue,
   parseDollarsToCents,
+  parseDueInDays,
   parseLocalDateTimeToIso,
   parseQuantity,
   type InvoiceDetail as InvoiceDetailData,
@@ -49,6 +51,19 @@ type PaymentLinkData = Extract<PaymentLinkResult, { ok: true }>["data"];
 const invoiceAdapters = createInvoiceAdapters();
 
 const invoiceIdSchema = z.uuid();
+
+/** The payment-terms presets (R-12-7): the words a contract uses; the number
+ *  is whole days, 0 = due on receipt. "none" = no agreed terms — no due date,
+ *  the invoice never enters the overdue scan; "custom" opens the days field
+ *  for whatever the contract says (0–365, the server's own admission). */
+const TERMS_OPTIONS: readonly { value: string; label: string; days: number | null }[] = [
+  { value: "none", label: "No agreed terms", days: null },
+  { value: "receipt", label: "Due on receipt", days: 0 },
+  { value: "net15", label: "Net 15", days: 15 },
+  { value: "net30", label: "Net 30", days: 30 },
+  { value: "net60", label: "Net 60", days: 60 },
+  { value: "custom", label: "Custom days…", days: null },
+];
 
 function formatDay(iso: string): string {
   return new Intl.DateTimeFormat(undefined, { dateStyle: "medium" }).format(new Date(iso));
@@ -180,6 +195,9 @@ function InvoiceLoaded(props: { invoiceId: string }): ReactElement {
   }
 
   const isDraft = data.status === "draft";
+  // The scan's own rule, read at render: past due and still owing. Display
+  // only — the reminder ledger, not this flag, sends the bells.
+  const overdue = isInvoiceOverdue(data);
 
   return (
     <div className="w-full" data-page="invoice-detail" data-testid="invoice-detail-root">
@@ -230,6 +248,17 @@ function InvoiceLoaded(props: { invoiceId: string }): ReactElement {
               {data.paymentStatus}
             </span>
           </span>
+          {data.dueAt !== null ? (
+            <span data-testid="invoice-detail-due-block">
+              <span className="block font-mono text-[length:var(--fs-meta)] text-ink-soft">Due</span>
+              <span
+                className={`block font-slab text-ui ${overdue ? "text-err" : "text-ink"}`}
+                data-testid="invoice-detail-due"
+              >
+                {`${formatDay(data.dueAt)}${overdue ? " · overdue" : ""}`}
+              </span>
+            </span>
+          ) : null}
         </div>
 
         {flash !== null ? (
@@ -648,18 +677,38 @@ function DialogFrame(props: {
   );
 }
 
+/** The confirmation gate (R-12-6) with the terms beside it (R-12-7): issuing
+ *  is final, and the agreed terms are the last thing finance sets before it.
+ *  The preset labels are contract words; a custom value is whole days. The
+ *  due preview is the server's own arithmetic (issuedAt + N × 86 400 000 ms,
+ *  integer, UTC) run against now — the server stamps the authoritative date
+ *  at the moment of issue; this says what the choice means before committing. */
 function ConfirmIssueDialog(props: {
   invoice: InvoiceDetailData;
   onIssued: (outcome: string) => void;
   onClose: () => void;
 }): ReactElement {
+  const [terms, setTerms] = useState("none");
+  const [customDays, setCustomDays] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const dueInDays =
+    terms === "custom"
+      ? parseDueInDays(customDays)
+      : (TERMS_OPTIONS.find((option) => option.value === terms)?.days ?? null);
+
   async function confirm(): Promise<void> {
-    setBusy(true);
     setError(null);
-    const result = await invoiceAdapters.confirm(props.invoice.id);
+    if (terms === "custom" && dueInDays === null) {
+      setError("Custom terms must be whole days between 0 and 365 — 0 means due on receipt.");
+      return;
+    }
+    setBusy(true);
+    const result =
+      dueInDays === null
+        ? await invoiceAdapters.confirm(props.invoice.id)
+        : await invoiceAdapters.confirm(props.invoice.id, dueInDays);
     setBusy(false);
     if (!result.ok) {
       setError(verbError(result));
@@ -676,6 +725,50 @@ function ConfirmIssueDialog(props: {
         issued invoice can no longer be edited — its lines are locked and
         payments can be booked against it.
       </Paragraph>
+      <label className="mb-3 block">
+        <span className="mb-1 block text-ui-sm font-semibold text-ink">Payment terms</span>
+        <select
+          className="rounded-control border border-line bg-card p-[var(--pad-control)] text-ui text-ink"
+          value={terms}
+          onChange={(event) => {
+            setTerms(event.target.value);
+          }}
+          aria-label="Payment terms"
+          data-testid="invoice-confirm-terms"
+        >
+          {TERMS_OPTIONS.map((option) => (
+            <option key={option.value} value={option.value}>
+              {option.label}
+            </option>
+          ))}
+        </select>
+      </label>
+      {terms === "custom" ? (
+        <label className="mb-3 block">
+          <span className="mb-1 block text-ui-sm font-semibold text-ink">
+            Terms in days (0 = due on receipt)
+          </span>
+          <Input
+            type="text"
+            value={customDays}
+            onChange={(event) => {
+              setCustomDays(event.target.value);
+            }}
+            aria-label="Payment terms in days"
+            placeholder="e.g. 45"
+            className="w-[120px]"
+            data-testid="invoice-confirm-custom-days"
+          />
+        </label>
+      ) : null}
+      {dueInDays !== null ? (
+        <Paragraph
+          className="mb-4 font-mono text-[length:var(--fs-meta)] text-ink-soft"
+          data-testid="invoice-confirm-due-preview"
+        >
+          {`Due ${formatDay(new Date(Date.now() + dueInDays * 86_400_000).toISOString())} — ${String(dueInDays)} ${dueInDays === 1 ? "day" : "days"} after issue; past-due invoices remind finance, the system never chases the customer.`}
+        </Paragraph>
+      ) : null}
       {error !== null ? (
         <Paragraph className="mb-3 text-err" data-testid="invoice-confirm-error">
           {error}

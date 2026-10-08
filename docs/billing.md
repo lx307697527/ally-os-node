@@ -468,6 +468,15 @@ migration(记账/作废/两渠道建链接的 API 半边是切片 2 与 #193 渠
   恒 null,语义自洽。
 - 读面:列表/详情带 `dueAt`(web client 的 zod 同步收口);审计
   `invoice.confirmed` 带 `dueInDays` + `dueAt`。
+- **web 面**:confirm 对话框的 terms 选择器——预设是合同词(No agreed
+  terms / Due on receipt / Net 15/30/60),「Custom days…」展开天数输入,客户端
+  `parseDueInDays` 镜像服务端 zod 准入(整数 0–365),注定被拒的提交死在表单
+  不过网络;预览行用服务端同款整数加法(`issuedAt + N × 86 400 000` ms)给出
+  「Due <日期>」,权威值仍由服务端在发行时刻盖章(RULE-007)。缺省即
+  「No agreed terms」——不替财务决定账期。到期日在详情页金额区占一个
+  Due 槽位、列表行 meta 行带 `due <日期>`;**逾期标记**用扫描同一条规则在
+  渲染时派生(`dueAt` 已过 ∧ `paymentStatus ≠ paid`,$0 票 vacuously paid),
+  只是展示事实——谁真的挨铃由台账决定,不看时钟。
 - 账期 per 客户(#232「老板批准的账期客户,额度由老板设」,R-12-4/5 → #241)
   进场后,confirm 的 terms 缺省可从客户主数据读——当前无客户域,terms 由财务
   按合同逐票给。
@@ -502,8 +511,8 @@ migration(记账/作废/两渠道建链接的 API 半边是切片 2 与 #193 渠
    超 10% 拦开票 R-11-4)——调 `createDraftInvoice` 传 source 幂等键;
 2. 剩真渠道测试环境的端到端(部署面:webhook URL + 密钥)与客户门户的发起面
    (#186)——收款动作的 web 面(手工记账/收款作废/两渠道链接)已上页;
-3. 到期前提醒的**客户面**(R-12-7 前半:渠道层邮件/门户,内部 due 扫描已落)、
-   收款状态回写订单/批次(#241 发货门槛,读 `computePaymentStatus`)、QuickBooks
-   推送(#181,含银行流水认领)、第一笔款到账转正式客户(R-02-5)等收款触发
-   业务;confirm 的 terms 选择器与到期日的 web 展示随下一切片上页;
+3. 到期前提醒的**客户面**(R-12-7 前半:渠道层邮件/门户,内部 due 扫描与
+   terms/due 的 web 面已落)、收款状态回写订单/批次(#241 发货门槛,读
+   `computePaymentStatus`)、QuickBooks 推送(#181,含银行流水认领)、第一笔款
+   到账转正式客户(R-02-5)等收款触发业务;
 4. PDF 存档(#128 统一 PDF 服务)、分期/更正/贷项(红冲动词)。
