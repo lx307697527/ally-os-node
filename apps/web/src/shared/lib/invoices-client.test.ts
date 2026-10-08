@@ -41,6 +41,8 @@ const INVOICE = {
   status: "draft",
   currency: "USD",
   subject: { type: "batch", id: "b-1" },
+  // 分期成员事实(#192 分期切片):null = 非分期票;成员票带 { id, index, count }
+  plan: null,
   totalCents: 150000,
   creditedCents: 0,
   paidCents: 0,
@@ -169,6 +171,28 @@ describe("invoices client (#192 slice 4)", () => {
       Promise.resolve(new Response("<html>fallback</html>", { status: 200 })),
     );
     await expect(html.get("inv-1")).resolves.toEqual({ ok: false, reason: "unavailable" });
+  });
+
+  it("an installment member carries its plan fact — index from creation, count derived server-side", async () => {
+    const adapters = createInvoiceAdapters(() =>
+      Promise.resolve(
+        jsonRes({
+          ...INVOICE,
+          invoiceType: "installment",
+          plan: { id: "plan-1", index: 2, count: 3 },
+          lines: [LINE],
+        }),
+      ),
+    );
+    await expect(adapters.get("inv-1")).resolves.toEqual({
+      ok: true,
+      data: {
+        ...INVOICE,
+        invoiceType: "installment",
+        plan: { id: "plan-1", index: 2, count: 3 },
+        lines: [LINE],
+      },
+    });
   });
 
   it("payments parses the ledger shape; 404 is notfound", async () => {

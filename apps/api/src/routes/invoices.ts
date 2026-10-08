@@ -21,6 +21,7 @@ import {
 } from "../billing/service.ts";
 import { effectiveDueCents, sumCreditCents } from "../billing/credits.ts";
 import { computePaymentStatus, sumPaidCents } from "../billing/payments.ts";
+import { countAllPlanMembers, countPlanMembers } from "../billing/installments.ts";
 import { NoActiveRuleError } from "../numbering/service.ts";
 
 /**
@@ -106,6 +107,8 @@ function presentInvoice(
     currency: string;
     subjectType: string | null;
     subjectId: string | null;
+    planId: string | null;
+    planIndex: number | null;
     issuedAt: Date | null;
     dueAt: Date | null;
     voidedAt: Date | null;
@@ -116,6 +119,7 @@ function presentInvoice(
   totalCents: number,
   creditedCents: number,
   paidCents: number,
+  planCount: number | undefined,
   lines?: {
     id: string;
     lineNumber: number;
@@ -134,6 +138,12 @@ function presentInvoice(
     subject:
       row.subjectType !== null && row.subjectId !== null
         ? { type: row.subjectType, id: row.subjectId }
+        : null,
+    // 分期成员事实（#192 分期切片）：i 是创建时落定的序数，n 是成员数（含
+    // void，读时派生——不从行集数出来）；null = 非分期票
+    plan:
+      row.planId !== null && row.planIndex !== null && planCount !== undefined
+        ? { id: row.planId, index: row.planIndex, count: planCount }
         : null,
     totalCents,
     // 有效贷项合计（#192 红冲切片）：未 void 贷项单实时 SUM，原票面额不变
@@ -259,6 +269,8 @@ export function invoicesRoutes(deps: { db: Db; logger: Logger }) {
       )
       .where(eq(schema.creditNotes.status, "issued"))
       .groupBy(schema.creditNotes.invoiceId);
+    // 分期成员数（#192 分期切片）：全体 planId 一次分组，「n」恒读时派生
+    const planCounts = await countAllPlanMembers(deps.db);
     const totals = new Map(lineSums.map((row) => [row.invoiceId, Number(row.total)]));
     const paids = new Map(paidSums.map((row) => [row.invoiceId, Number(row.paid)]));
     const crediteds = new Map(creditedSums.map((row) => [row.invoiceId, Number(row.credited)]));
@@ -269,6 +281,7 @@ export function invoicesRoutes(deps: { db: Db; logger: Logger }) {
           totals.get(row.id) ?? 0,
           crediteds.get(row.id) ?? 0,
           paids.get(row.id) ?? 0,
+          row.planId !== null ? planCounts.get(row.planId) : undefined,
         ),
       ),
     });
@@ -303,7 +316,10 @@ export function invoicesRoutes(deps: { db: Db; logger: Logger }) {
     const totalCents = lines.reduce((sum, line) => sum + line.lineTotalCents, 0);
     const creditedCents = await sumCreditCents(deps.db, row.id);
     const paidCents = await sumPaidCents(deps.db, row.id);
-    return c.json(presentInvoice(row, totalCents, creditedCents, paidCents, lines));
+    // 「Part i of n」的 n 读时派生（成员数含 void），不从行集数出来
+    const planCount =
+      row.planId !== null ? await countPlanMembers(deps.db, row.planId) : undefined;
+    return c.json(presentInvoice(row, totalCents, creditedCents, paidCents, planCount, lines));
   });
 
   app.patch("/api/invoices/:id", requireInvoicesManage, async (c) => {

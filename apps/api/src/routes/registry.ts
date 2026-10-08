@@ -185,6 +185,10 @@ export const API_ROUTES: readonly RouteDecl[] = [
   { method: "GET", path: "/api/credit-notes/:id", auth: { kind: "permission", permission: "invoices.manage" } },
   { method: "POST", path: "/api/credit-notes/:id/confirm", auth: { kind: "permission", permission: "invoices.manage" } },
   { method: "POST", path: "/api/credit-notes/:id/void", auth: { kind: "permission", permission: "invoices.manage" } },
+  // 分期拆票（#192 分期切片）：一个约定总额切成 n 期草稿票，invoices.manage
+  // 同门；成员票的 confirm/void/收款走上面发票与收款的既有声明
+  { method: "POST", path: "/api/invoice-plans", auth: { kind: "permission", permission: "invoices.manage" } },
+  { method: "GET", path: "/api/invoice-plans/:id", auth: { kind: "permission", permission: "invoices.manage" } },
   // Stripe 渠道（#193）：checkout 链接是财务面（invoices.manage 同门）；webhook
   // 是 provider 面——公开指「不过会话中间件」，认证 = Stripe-Signature 验签
   // （routes/stripe-webhook.ts），漏登记才是真的口子

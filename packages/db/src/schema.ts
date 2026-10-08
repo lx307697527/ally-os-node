@@ -1295,6 +1295,8 @@ export const invoiceType = pgEnum("invoice_type", [
   "label_design", // 标签设计费（R-06-16，#169）
   "storage_fee", // 成品寄存费（R-10-7）
   "customer_material", // 客供物料费（R-06-16）
+  "installment", // 分期拆票的一部分（#192 分期切片；老系统第 8 类同款）——
+  // 它存在的触发事实是「一个约定总额被切成 n 期」，计划的成员身份见 invoice_plans
 ]);
 
 export const invoiceStatus = pgEnum("invoice_status", ["draft", "issued", "void"]);
@@ -1331,6 +1333,14 @@ export const invoices = pgTable(
     voidedById: uuid("voided_by_id").references(() => authUser.id, { onDelete: "set null" }),
     voidReason: text("void_reason"),
     createdById: uuid("created_by_id").references(() => authUser.id, { onDelete: "set null" }),
+    // 分期拆票（#192 分期切片）：这张票是哪个计划的一部分。plan_index 是创建
+    // 事务里落定的稳定序数（1-based，拆的顺序即约定的还款顺序）——「Part i of n」
+    // 的 i 是身份事实，不随后续成员变动重编号；n（成员数，含 void）是成员关系
+    // 的现状，读时 COUNT 派生，不落快照列。老系统 BUG-274 的教训反过来用：
+    // 序数绝不能从读到的行集推导（页面上有哪些行就报 Part 1 of 1）。
+    // 两列皆 null = 不是分期票（手工票/触发点票不受影响）
+    planId: uuid("plan_id").references(() => invoicePlans.id),
+    planIndex: integer("plan_index"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -1344,6 +1354,8 @@ export const invoices = pgTable(
     uniqueIndex("invoices_source_idx").on(t.sourceType, t.sourceKey),
     // 逾期扫描（R-12-7）的候选集：issued 且有到期日的稀疏集，按到期日正序催最老的
     index("invoices_issued_due_idx").on(t.dueAt).where(sql`status = 'issued' and due_at is not null`),
+    // 分期计划的成员读法：一个计划切出了哪些票、「Part i of n」的 n
+    index("invoices_plan_id_idx").on(t.planId),
   ],
 );
 
@@ -1369,6 +1381,49 @@ export const invoiceLines = pgTable(
       .generatedAlwaysAs(sql`round(quantity * unit_price_cents)`),
   },
   (t) => [index("invoice_lines_invoice_id_idx").on(t.invoiceId, t.lineNumber)],
+);
+
+// ── 分期拆票（#192 分期切片：一个约定总额切成 n 张草稿票）─────────────────────
+// #232 §10「分期、更正、贷项」。老系统对照（#88 手工时代）：分期不是一张票，
+// 是 `installment` 类型 + 母子票 parent_invoice_id 接缝 + 「Part i of n」的
+// 屏幕推导——序数从当前页行集算出来，三期计划印成 "Part 1 of 1"（老系统
+// BUG-274），母子票的计划总额没有权威落点。本内核的裁决：
+//
+// 1. **计划是事实，票是文档**：一张约定总额（total_cents，创建事务里盖章，
+//    = 各期之和）被切成 n 张 `installment` 类型的草稿票，每期一张、各自走
+//    发票的既有动词（confirm 的账期、收款、void）——分期不引入第二套单据
+//    状态机，钱的纪律（整数分、生成列行合计、实时 SUM）一行不改。
+// 2. **「Part i of n」两半分开**：i（plan_index）是创建时落定的身份，n 是
+//    成员数读时派生（invoices.plan_id 计数，含 void——被作废的期仍是「这刀
+//    切过的事实」，计划读面用 live 口径另答还剩几期有效）。
+// 3. **计划的 total_cents 是约定的拆分额，不是派生状态**：成员票是草稿、行
+//    可改、可 void，live 合计会漂——约定额恒不变，计划读面把「约定 vs 现状」
+//    的差作为 uninvoicedCents 原样暴露（可以为负 = 现状超过约定，不 clamp，
+//    边界若被破坏负数暴露问题比吞掉它诚实，effectiveDueCents 同裁）。
+// 4. **无 source 幂等列**：当前唯一入口是财务手工拆票（订单域 #231 的按比例
+//    拆期进场时走同一服务接缝）；触发域进场时 expand 唯一索引，不需回填
+//    （expand-only，贷项单同款注释）。
+export const invoicePlans = pgTable(
+  "invoice_plans",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    // 这笔钱在还什么（分期是约定的叙事本体，reason 之于贷项单同位）
+    label: text("label").notNull(),
+    // 业务锚点（invoices.subject 同裁，多态开集）：约定挂在哪个业务事实上
+    subjectType: text("subject_type"),
+    subjectId: uuid("subject_id"),
+    // 约定的拆分总额（创建时 = 各期之和，盖章后恒不变——裁决见上）
+    totalCents: integer("total_cents").notNull(),
+    // 币种（成员票从计划抄录，自描述；列先落地，当前唯一合法值 USD）
+    currency: text("currency").notNull().default("USD"),
+    createdById: uuid("created_by_id").references(() => authUser.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    // 计划无删除路径（成员票只 void），成员外键 NO ACTION 即底线
+    index("invoice_plans_subject_idx").on(t.subjectType, t.subjectId),
+  ],
 );
 
 // ── 收款台账（#192 切片 2：收款与 paid 态）────────────────────────────────────

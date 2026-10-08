@@ -118,6 +118,11 @@
   记 `fields: ["lines"]`（草稿换行整体替换，无实效变更的幂等 PATCH 不落此行）；
   confirmed 记财务确认时刻的金额（R-12-6「谁确认发出了多少」的查询面）；voided
   另记可选 `reason`——作废只对草稿，已发出的票走后续的红冲动词）、
+  `invoice_plan.created`
+  （分期拆票 #192 分期切片；target = 计划行 id，detail 记 `label`/`totalCents`
+  （创建时盖章的约定拆分额）与 `partCount`/`partNumbers`——一次拆票动作一行
+  审计，全部期号在此可查；subject 引用在 detail，进对象的活动流时间线。成员
+  票自身的后续动词（confirm/void/收款）走发票与收款的既有词条）、
   `payment.recorded`/`payment.voided`
   （收款台账 #192 切片 2；target = 收款行 id，detail 恒记 `invoiceId`/
   `invoiceNumber`（钱挂在哪张票上）、`amountCents`/`method` 与记账/作废后该票
