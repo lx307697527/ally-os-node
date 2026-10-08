@@ -43,6 +43,25 @@ function rowFor(eventType: string): NotificationRow {
       createdAt: "2026-10-06T08:00:00.000Z",
     };
   }
+  if (eventType === "invoice.overdue") {
+    // 逾期提醒（#192 due 扫描）：聚合是发票，payload 带 worker 扫描拼好的
+    // title/detail（金额 + 到期日事实）。
+    return {
+      id: "n-1",
+      eventType,
+      aggregateType: "invoice",
+      aggregateId: INVOICE_ID,
+      payload: {
+        title: "Invoice INV-1007 is overdue",
+        detail: "USD 15,000.00 outstanding — was due 2026-10-01",
+        invoiceNumber: "INV-1007",
+        outstandingCents: 1_500_000,
+        currency: "USD",
+      },
+      isRead: false,
+      createdAt: "2026-10-06T08:00:00.000Z",
+    };
+  }
   return {
     id: "n-1",
     eventType,
@@ -111,5 +130,10 @@ describe("notification hrefs land on real routes (#110 slice 1)", () => {
       const face = describeNotification(rowFor(eventType));
       expect(face.href, `${eventType} lands on the invoice page`).toBe(`/invoices/${INVOICE_ID}`);
     }
+  });
+
+  it("an overdue reminder deep-links to the invoice it is about (#192 due 扫描)", () => {
+    const face = describeNotification(rowFor("invoice.overdue"));
+    expect(face.href).toBe(`/invoices/${INVOICE_ID}`);
   });
 });

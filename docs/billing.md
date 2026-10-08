@@ -60,8 +60,9 @@ draft ──confirm(finance)──▶ issued        draft ──void(finance)─
   409 `not_voidable`;重复作废幂等。
 - **付款态不 expand 进 invoice_status**(0023 注释里的预告被收款切片推翻,
   裁决见下「收款内核」):invoice_status 只回答「单据走到哪一步」,「钱收了
-  多少」是收款台账对实时 SUM 的回答。发出后的通知(到期提醒 R-12-7、逾期不
-  自动催款)随客户门户与渠道层接线——本内核零通知,没有收件人的邮件不存在。
+  多少」是收款台账对实时 SUM 的回答。**给客户的**到期前提醒(R-12-7 前半)
+  随客户门户与渠道层接线——没有收件人的邮件不存在;逾期的内部提醒(财务
+  人工催的路标)已随 due 扫描落地,见下「发票到期日与逾期扫描」。
 
 ### 权限:`invoices.manage`(finance / owner)
 
@@ -449,6 +450,50 @@ migration(记账/作废/两渠道建链接的 API 半边是切片 2 与 #193 渠
   失败分相与发票动词同构(409 带机器码);交付对话框只收成功形状
   (`Extract<PaymentLinkResult, { ok: true }>`),拒绝分支在类型上进不来。
 
+## 已落地:发票到期日与逾期对账扫描(#192 due 扫描切片,R-12-7 内部半边)
+
+设计权威:#232 §10「到期前自动提醒客户;**逾期由财务人工催,系统不发催款**
+(R-12-7)」。老系统对照:FEAT-765 的 `billing-invoice-overdue-sweep`
+(stage 1/7/30 三档内部告警 + Slack 日报)+ FEAT-447 的 due_date 写入口径。
+本切片的裁决:
+
+### 到期日(0037,expand-only)
+
+- **`invoices.due_at`**:`confirm` 时由可选 `dueInDays`(0–365 整数,0 = 见票
+  即付)算出 `issuedAt + N 天`(UTC——numbering 的同一时区裁决;存时刻不存
+  日期,terms 是「N 天」的整数事实,没有日界换算就没有日界漂移)。body 只收
+  天数不收时刻(RULE-007);缺省 = 未约定账期,due_at null 不进扫描(老系统
+  「NULL = 未约定」同款语义)。重复 confirm 幂等 already,**不改写 dueAt**——
+  到期日是发行事实,只随第一次确认落;存量已发行票(切片前)没有 terms,
+  恒 null,语义自洽。
+- 读面:列表/详情带 `dueAt`(web client 的 zod 同步收口);审计
+  `invoice.confirmed` 带 `dueInDays` + `dueAt`。
+- 账期 per 客户(#232「老板批准的账期客户,额度由老板设」,R-12-4/5 → #241)
+  进场后,confirm 的 terms 缺省可从客户主数据读——当前无客户域,terms 由财务
+  按合同逐票给。
+
+### 逾期扫描(worker,`invoice-overdue-reminders`)
+
+- **每日 13:10 UTC**(pg-boss,`apps/worker/src/billing/`):排在 rules 每日
+  扫描(13:00)之后、通知摘要(13:30)之前——逾期的铃铛当天进摘要。候选集
+  = issued ∧ due_at 已过 ∧ (从未催过 ∨ 上次催满 24h),`invoices_issued_due_idx`
+  部分索引;对候选集两条分组查询实时派生 total/paid(workflow 提醒的窄读取
+  投影同一姿态,worker 不跨 app 依赖),**还欠钱的才催**——paid ≥ total(含
+  超收、$0 票 vacuously paid)没有逾期语义。
+- **只提醒内部**:收件人 = invoices.manage 持有者(owner/finance 角色 + 个人
+  授权,api `invoiceAlertRecipients` 的同一矩阵,worker 侧窄读取);落一行
+  `invoice.overdue` 通知(payload 带 worker 拼好的 title/detail:金额 + 到期日),
+  进铃铛白名单深链 `/invoices/:invoiceId`,催收(人工)从台账页发起。**不发
+  客户催款**:R-12-7 的前半(到期前提醒客户)随客户门户与渠道层接线。
+- **幂等两层**:台账 `invoices.overdue_reminder_at`(盖章带 status 条件、通知
+  行同事务,24h 再催——approval/workflow 催办同一节奏)+ notifications
+  `dedupe_key` 日粒度(`invoice-overdue:<id>:<UTC 日>`)。付清不清零台账:
+  收款是派生值,付清的票由 paid ≥ total 过滤结构性出局,台账只回答「上次催
+  是什么时候」。老系统的 stage 1/7/30 档位与 Slack 日报刻意不搬——24h 节奏
+  与既有催办一致,Slack 通道留给 job 失败告警(runner.ts),业务提醒走通知域。
+- 老任务处置见 `docs/cron-migration.md`(billing-invoice-overdue-sweep →
+  invoice-overdue-reminders)。
+
 ## 剩余(#192 保持 open,Part of #192)
 
 1. **触发点接线**(属主域各自进场):打样/调味费(#238)、定金(#231,比例
@@ -457,7 +502,8 @@ migration(记账/作废/两渠道建链接的 API 半边是切片 2 与 #193 渠
    超 10% 拦开票 R-11-4)——调 `createDraftInvoice` 传 source 幂等键;
 2. 剩真渠道测试环境的端到端(部署面:webhook URL + 密钥)与客户门户的发起面
    (#186)——收款动作的 web 面(手工记账/收款作废/两渠道链接)已上页;
-3. 到期前提醒(R-12-7,渠道层 + due 扫描)、收款状态回写订单/批次(#241 发货
-   门槛,读 `computePaymentStatus`)、QuickBooks 推送(#181,含银行流水认领)、
-   第一笔款到账转正式客户(R-02-5)等收款触发业务;
+3. 到期前提醒的**客户面**(R-12-7 前半:渠道层邮件/门户,内部 due 扫描已落)、
+   收款状态回写订单/批次(#241 发货门槛,读 `computePaymentStatus`)、QuickBooks
+   推送(#181,含银行流水认领)、第一笔款到账转正式客户(R-02-5)等收款触发
+   业务;confirm 的 terms 选择器与到期日的 web 展示随下一切片上页;
 4. PDF 存档(#128 统一 PDF 服务)、分期/更正/贷项(红冲动词)。

@@ -38,6 +38,8 @@ const INVOICE = {
   paidCents: 0,
   paymentStatus: "unpaid",
   issuedAt: null,
+  // R-12-7:API 读面恒带 dueAt(null = 未约定账期)
+  dueAt: null,
   voidedAt: null,
   voidReason: null,
   createdAt: "2026-10-07T08:00:00.000Z",

@@ -90,6 +90,10 @@ const patchBody = z.object({ lines: z.array(lineInput).min(1).max(200) });
 
 const voidBody = z.object({ reason: z.string().trim().min(1).max(500).optional() });
 
+// 确认发出时可选的账期（R-12-7）：0 = 见票即付，365 封顶（两年账期不是发票是
+// 关系问题）。dueAt 由服务端从 issuedAt 算，body 只收天数不收时刻（RULE-007）
+const confirmBody = z.object({ dueInDays: z.number().int().min(0).max(365).optional() });
+
 const invoiceStatusValues = ["draft", "issued", "void"] as const;
 
 function presentInvoice(
@@ -102,6 +106,7 @@ function presentInvoice(
     subjectType: string | null;
     subjectId: string | null;
     issuedAt: Date | null;
+    dueAt: Date | null;
     voidedAt: Date | null;
     voidReason: string | null;
     createdAt: Date;
@@ -133,6 +138,8 @@ function presentInvoice(
     paidCents,
     paymentStatus: computePaymentStatus(totalCents, paidCents),
     issuedAt: row.issuedAt,
+    // null = 未约定账期（不进逾期扫描，R-12-7 的语义半边由数据自己说）
+    dueAt: row.dueAt,
     voidedAt: row.voidedAt,
     voidReason: row.voidReason,
     createdAt: row.createdAt,
@@ -318,13 +325,25 @@ export function invoicesRoutes(deps: { db: Db; logger: Logger }) {
     if (!id.success) {
       return c.json({ error: "invalid_request" }, 400);
     }
+    // body 可省（不带账期 = 未约定，dueAt null）
+    const parsed = confirmBody.safeParse((await c.req.json().catch(() => undefined)) ?? {});
+    if (!parsed.success) {
+      return c.json({ error: "invalid_request" }, 400);
+    }
     const actorId = c.get("user").id;
-    let confirmed: { outcome: "issued" | "already" | null; number: string; totalCents: number };
+    let confirmed: {
+      outcome: "issued" | "already" | null;
+      number: string;
+      totalCents: number;
+      dueAt: Date | null;
+    };
     try {
       confirmed = await deps.db.transaction(async (tx) => {
-        const result = await confirmInvoice(tx, id.data, actorId);
+        const result = await confirmInvoice(tx, id.data, actorId, {
+          dueInDays: parsed.data.dueInDays,
+        });
         if (result === null) {
-          return { outcome: null, number: "", totalCents: 0 };
+          return { outcome: null, number: "", totalCents: 0, dueAt: null };
         }
         const header = await tx
           .select({ number: schema.invoices.number })
@@ -335,6 +354,7 @@ export function invoicesRoutes(deps: { db: Db; logger: Logger }) {
           outcome: result.outcome,
           number: header[0]?.number ?? "",
           totalCents: result.totalCents,
+          dueAt: result.dueAt,
         };
       });
     } catch (err) {
@@ -348,7 +368,13 @@ export function invoicesRoutes(deps: { db: Db; logger: Logger }) {
         actor: actorId,
         action: "invoice.confirmed",
         target: id.data,
-        detail: { number: confirmed.number, totalCents: confirmed.totalCents },
+        detail: {
+          number: confirmed.number,
+          totalCents: confirmed.totalCents,
+          ...(parsed.data.dueInDays !== undefined && confirmed.dueAt !== null
+            ? { dueInDays: parsed.data.dueInDays, dueAt: confirmed.dueAt.toISOString() }
+            : {}),
+        },
       });
     }
     return c.json({ status: confirmed.outcome });

@@ -1283,8 +1283,9 @@ export const rulesEffectDigestRuns = pgTable("rules_effect_digest_runs", {
 // draft → void（作废）。付款态不 expand 进本枚举（0023 时的预告被收款切片
 // 推翻，裁决见 payments 表注释）：invoice_status 只回答「单据走到哪一步」，
 // 「钱收了多少」是收款台账对实时 SUM 的回答。issued 行不可再改——更正/贷项
-// （红冲）是 #192 后续切片的新动词，不改写已发出的行。收件人通知（到期提醒
-// R-12-7）随客户门户与渠道层接线，本内核零通知——没有收件人的邮件不存在。
+// （红冲）是 #192 后续切片的新动词，不改写已发出的行。到期日的内部逾期半边
+// （due_at + 扫描台账）已落：**给客户的**到期前提醒（R-12-7 前半）随客户门户
+// 与渠道层接线——没有收件人的邮件不存在。
 export const invoiceType = pgEnum("invoice_type", [
   "deposit", // 定金（R-08-2，#231）
   "balance", // 每批尾款（R-11-6，运费实报实销进尾款 R-10-4）
@@ -1316,6 +1317,15 @@ export const invoices = pgTable(
     sourceKey: text("source_key"),
     issuedAt: timestamp("issued_at", { withTimezone: true }),
     issuedById: uuid("issued_by_id").references(() => authUser.id, { onDelete: "set null" }),
+    // 到期日（R-12-7）：确认发出时由 terms 算出（issuedAt + dueInDays 天，UTC——
+    // numbering 的同一时区裁决）；null = 未约定账期（老系统同款语义），不进逾期
+    // 扫描。存时刻不存日期：terms 是「N 天」的整数事实，日界随发行时刻走，没有
+    // 时区换算就没有日界漂移
+    dueAt: timestamp("due_at", { withTimezone: true }),
+    // 逾期提醒台账（workflow.state_reminder_at / approval.last_reminder_* 同裁）：
+    // 扫描选中后盖章、通知行同事务落库；再催隔 24h。收款是派生值不落列，台账
+    // 也不因付清清零——付清的票由扫描的 paid >= total 过滤结构性出局
+    overdueReminderAt: timestamp("overdue_reminder_at", { withTimezone: true }),
     voidedAt: timestamp("voided_at", { withTimezone: true }),
     voidedById: uuid("voided_by_id").references(() => authUser.id, { onDelete: "set null" }),
     voidReason: text("void_reason"),
@@ -1331,6 +1341,8 @@ export const invoices = pgTable(
     index("invoices_subject_idx").on(t.subjectType, t.subjectId),
     // 触发点幂等（见上）：同 (source_type, source_key) 只可能有一行
     uniqueIndex("invoices_source_idx").on(t.sourceType, t.sourceKey),
+    // 逾期扫描（R-12-7）的候选集：issued 且有到期日的稀疏集，按到期日正序催最老的
+    index("invoices_issued_due_idx").on(t.dueAt).where(sql`status = 'issued' and due_at is not null`),
   ],
 );
 

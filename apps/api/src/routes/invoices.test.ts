@@ -149,6 +149,7 @@ describe.skipIf(!databaseUrl)("invoice endpoints (#192 slice 1, integration)", (
     subject: { type: string; id: string } | null;
     totalCents: number;
     issuedAt: string | null;
+    dueAt: string | null;
     voidedAt: string | null;
     voidReason: string | null;
     lines?: {
@@ -324,6 +325,59 @@ describe.skipIf(!databaseUrl)("invoice endpoints (#192 slice 1, integration)", (
     const detail = (await detailRes.json()) as InvoiceJson;
     expect(detail.status).toBe("issued");
     expect(detail.issuedAt).not.toBeNull();
+    // 不带 terms = 未约定账期：dueAt null（不进逾期扫描的语义半边）
+    expect(detail.dueAt).toBeNull();
+  });
+
+  it("confirm with dueInDays sets dueAt = issuedAt + N days, audit carries terms; repeat keeps it", async () => {
+    const invoice = await seedDraft([lineBody("Balance", 1, 200000)]);
+    const res = await app.request(`/api/invoices/${invoice.id}/confirm`, {
+      method: "POST",
+      headers: { "content-type": "application/json", ...fin },
+      body: JSON.stringify({ dueInDays: 30 }),
+    });
+    expect(res.status).toBe(200);
+    expect(await auditCount("invoice.confirmed")).toBe(1);
+    const events = await db
+      .select({ detail: schema.auditEvents.detail })
+      .from(schema.auditEvents)
+      .where(eq(schema.auditEvents.action, "invoice.confirmed"));
+    expect(events[0]?.detail).toMatchObject({ dueInDays: 30 });
+    expect(typeof (events[0]?.detail as { dueAt?: unknown }).dueAt).toBe("string");
+
+    const detailRes = await app.request(`/api/invoices/${invoice.id}`, { headers: fin });
+    const detail = (await detailRes.json()) as InvoiceJson;
+    expect(detail.dueAt).not.toBeNull();
+    const issuedAt = new Date(detail.issuedAt ?? "").getTime();
+    const dueAt = new Date(detail.dueAt ?? "").getTime();
+    expect(dueAt - issuedAt).toBe(30 * 24 * 3_600_000);
+
+    // 重复确认幂等 already：不改写到期日（发行事实只随第一次确认落）
+    const repeat = await app.request(`/api/invoices/${invoice.id}/confirm`, {
+      method: "POST",
+      headers: { "content-type": "application/json", ...fin },
+      body: JSON.stringify({ dueInDays: 60 }),
+    });
+    expect(((await repeat.json()) as { status: string }).status).toBe("already");
+    const after = (await (await app.request(`/api/invoices/${invoice.id}`, { headers: fin })).json()) as InvoiceJson;
+    expect(new Date(after.dueAt ?? "").getTime()).toBe(dueAt);
+
+    // 账期收口：负数 / 小数 / 超 365 都是 400（0 = 见票即付是合法值）
+    const other = await seedDraft();
+    for (const bad of [-1, 1.5, 366]) {
+      const rejected = await app.request(`/api/invoices/${other.id}/confirm`, {
+        method: "POST",
+        headers: { "content-type": "application/json", ...fin },
+        body: JSON.stringify({ dueInDays: bad }),
+      });
+      expect(rejected.status).toBe(400);
+    }
+    const onReceipt = await app.request(`/api/invoices/${other.id}/confirm`, {
+      method: "POST",
+      headers: { "content-type": "application/json", ...fin },
+      body: JSON.stringify({ dueInDays: 0 }),
+    });
+    expect(((await onReceipt.json()) as { status: string }).status).toBe("issued");
   });
 
   it("voids a draft with reason; issued invoices are not voidable; repeat is idempotent", async () => {
