@@ -554,8 +554,15 @@ migration(记账/作废/两渠道建链接的 API 半边是切片 2 与 #193 渠
   幂等 already 不落审计)、`POST /api/credit-notes/:id/void`(draft → void;
   issued 终态不可作废 409 not_voidable)。审计 credit_note.created /
   confirmed / voided(detail 恒记 number + invoiceNumber + creditedCents)。
-- 贷项动作的 web 面(发票详情页的冲抵台账与动作按钮)随下一个 web 切片;
-  本切片 API 契约先行(web client zod 已同步 creditedCents)。
+- **贷项动作的 web 面(本切片)**:发票详情页的冲抵台账与动作——金额区新增
+  Credited 统计(> 0 才显示)、Credit notes 台账区(仅 issued 票渲染:草稿
+  行带 Confirm/Void 按钮,void 行划线留痕带 voidReason,有效合计行口说「只数
+  已确认」)、开贷项草稿对话框(reason 必填 = 更正的叙事本体;行编辑同发票
+  草稿纪律——数量/单价精确字符串解析,客户端不算合计,边界由服务端行锁校验)、
+  确认与作废对话框各自把 R-12-6 的后果说在提交前。六个 409 码逐码成句
+  (not_issued / invoice_voided / credit_exceeds_invoice /
+  numbering_not_configured / credit_note_voided / not_voidable),机器码不见
+  用户。纯 web 切片:零 API 改动、零 migration。
 
 ## 剩余(#192 保持 open,Part of #192)
 
@@ -569,5 +576,5 @@ migration(记账/作废/两渠道建链接的 API 半边是切片 2 与 #193 渠
    terms/due 的 web 面已落)、收款状态回写订单/批次(#241 发货门槛,读
    `computePaymentStatus`)、QuickBooks 推送(#181,含银行流水认领)、第一笔款
    到账转正式客户(R-02-5)等收款触发业务;
-4. PDF 存档(#128 统一 PDF 服务)、**分期**(拆期开票;红冲的贷项单内核已落,
-   剩贷项动作的 web 面)。
+4. PDF 存档(#128 统一 PDF 服务)、**分期**(拆期开票;红冲的贷项单内核与
+   贷项动作 web 面均已落)。
