@@ -118,11 +118,64 @@ describe("invoice detail page (#192 slice 4)", () => {
     expect(detail).toContain("reload to see its current state");
   });
 
-  it("the payment ledger is read-only and shows voided corrections — money rows are never deleted", () => {
+  it("the ledger shows voided corrections — money rows are never deleted", () => {
     expect(detail).toContain("PaymentsSection");
     expect(detail).toContain('data-testid="invoice-payments-row"');
     expect(detail).toContain("surchargeCents !== null");
     expect(detail).toContain("voided");
+  });
+});
+
+describe("payment actions (#192 remaining — the collection verbs' web face)", () => {
+  it("an issued invoice carries the three collection actions beside its ledger; drafts and voids get none", () => {
+    expect(detail).toContain('data.status === "issued"');
+    expect(detail).toContain('data-testid="invoice-payment-actions"');
+    expect(detail).toContain('data-testid="invoice-record-payment"');
+    expect(detail).toContain('data-testid="invoice-stripe-link"');
+    expect(detail).toContain('data-testid="invoice-paypal-link"');
+  });
+
+  it("the record dialog takes only the facts of an arrival, and says why link money is not recorded by hand", () => {
+    expect(detail).toContain("RecordPaymentDialog");
+    expect(detail).toContain('data-testid="invoice-record-amount"');
+    expect(detail).toContain('data-testid="invoice-record-method"');
+    expect(detail).toContain('data-testid="invoice-record-received-at"');
+    expect(detail).toContain('data-testid="invoice-record-note"');
+    expect(detail).toContain("double-count");
+    expect(detail).toContain("cannot be in the future");
+    expect(detail).toContain("parseDollarsToCents(");
+  });
+
+  it("voiding a booked payment demands a reason, and only live rows offer the verb", () => {
+    expect(detail).toContain("VoidPaymentDialog");
+    expect(detail).toContain('data-testid="invoice-payment-void"');
+    expect(detail).toContain('data-testid="invoice-payment-void-reason"');
+    expect(detail).toContain("row.voidedAt === null");
+    expect(detail).toContain("never deleted");
+  });
+
+  it("the link dialog hands finance the customer's URL with the surcharge split and a copy", () => {
+    expect(detail).toContain("PaymentLinkDialog");
+    expect(detail).toContain('data-testid="invoice-link-url"');
+    expect(detail).toContain('data-testid="invoice-link-copy"');
+    expect(detail).toContain("data.surchargeCents");
+    expect(detail).toContain("books the payment");
+  });
+
+  it("each payment gate has its own sentence; misconfiguration is a config fact, not a reload case", () => {
+    expect(detail).toContain('code === "not_issued"');
+    expect(detail).toContain('code === "invoice_voided"');
+    expect(detail).toContain('code === "payment_exists"');
+    expect(detail).toContain('code === "payment_voided"');
+    expect(detail).toContain('code === "nothing_to_collect"');
+    expect(detail).toContain('code === "surcharge_rule_unusable"');
+    expect(detail).toContain('"misconfigured"');
+  });
+
+  it("outcomes and refusals share the page's message line, said as what they are", () => {
+    expect(detail).toContain('kind: "ok"');
+    expect(detail).toContain('kind: "error"');
+    expect(detail).toContain('data-testid="invoice-flash"');
   });
 });
 

@@ -74,6 +74,30 @@ const paymentsLedgerSchema = z.object({
   payments: z.array(paymentRowSchema),
 });
 
+const paymentRecordedSchema = z.object({
+  id: z.string(),
+  paidCents: z.number().int(),
+  totalCents: z.number().int(),
+  paymentStatus: z.string(),
+});
+
+const paymentVoidedSchema = z.object({
+  status: z.string(),
+  paidCents: z.number().int(),
+  paymentStatus: z.string(),
+});
+
+/** A checkout answer's money disclosure: the URL the customer pays at, the
+ *  gross they will see, and its split — the principal is the invoice's lines,
+ *  the surcharge is the provider's fee (R-12-2/3), never part of the invoice. */
+const paymentLinkSchema = z.object({
+  url: z.string(),
+  amountCents: z.number().int(),
+  principalCents: z.number().int(),
+  surchargeCents: z.number().int(),
+  currency: z.string(),
+});
+
 export type Invoice = z.infer<typeof invoiceSchema>;
 export type InvoiceDetail = z.infer<typeof invoiceDetailSchema>;
 export type InvoiceLine = z.infer<typeof invoiceLineSchema>;
@@ -112,6 +136,48 @@ export type InvoiceVerbResult =
   | { ok: false; reason: "forbidden" | "notfound" | "unavailable" }
   | { ok: false; reason: "conflict"; code: string | null };
 
+/** The payment verbs' failure taxonomy — the invoice verb's gates plus the
+ *  payment-specific 409s (payment_exists, payment_voided) and, on the link
+ *  channels, a 500 misconfigured body that means the environment lacks the
+ *  provider (a config fact, not a reload case). */
+export type PaymentActionFailure =
+  | { ok: false; reason: "forbidden" | "notfound" | "unavailable" }
+  | { ok: false; reason: "conflict"; code: string | null }
+  | { ok: false; reason: "misconfigured" };
+
+export type PaymentRecordResult =
+  | { ok: true; data: { paidCents: number; totalCents: number; paymentStatus: string } }
+  | PaymentActionFailure;
+
+export type PaymentVoidResult =
+  | { ok: true; data: { outcome: string; paidCents: number; paymentStatus: string } }
+  | PaymentActionFailure;
+
+export type PaymentLinkResult =
+  | {
+      ok: true;
+      data: {
+        url: string;
+        amountCents: number;
+        principalCents: number;
+        surchargeCents: number;
+        currency: string;
+      };
+    }
+  | PaymentActionFailure;
+
+/** The manual booking's method — the server's PAYMENT_METHODS wordlist (the
+ *  ledger stays open-ended; a booked row's method renders whatever arrived). */
+export type PaymentMethod = "card" | "paypal" | "wire_ach";
+
+export interface PaymentRecordInput {
+  amountCents: number;
+  method: PaymentMethod;
+  /** Full ISO instant of when the money actually arrived; absent means now. */
+  receivedAtIso?: string;
+  note?: string;
+}
+
 export interface InvoiceAdapters {
   list(status?: InvoiceStatus): Promise<InvoiceListResult>;
   get(id: string): Promise<InvoiceGetResult>;
@@ -119,23 +185,39 @@ export interface InvoiceAdapters {
   updateLines(id: string, lines: InvoiceLineInput[]): Promise<InvoiceVerbResult>;
   confirm(id: string): Promise<InvoiceVerbResult>;
   voidInvoice(id: string, reason?: string): Promise<InvoiceVerbResult>;
+  recordPayment(id: string, input: PaymentRecordInput): Promise<PaymentRecordResult>;
+  voidPayment(paymentId: string, reason: string): Promise<PaymentVoidResult>;
+  stripeLink(id: string): Promise<PaymentLinkResult>;
+  paypalLink(id: string): Promise<PaymentLinkResult>;
+}
+
+/** The state verbs' shared failure mapping: 403/404/409, a 409 carrying the
+ *  server's gate code, everything else unavailable. Misconfiguration is the
+ *  link channels' own answer and never comes from here. */
+async function actionFailure(
+  res: Response,
+): Promise<
+  | { ok: false; reason: "forbidden" | "notfound" | "unavailable" }
+  | { ok: false; reason: "conflict"; code: string | null }
+> {
+  if (res.status === 403) return { ok: false, reason: "forbidden" };
+  if (res.status === 404) return { ok: false, reason: "notfound" };
+  if (res.status === 409) {
+    let code: string | null = null;
+    try {
+      const parsed = z.object({ error: z.string() }).safeParse(await res.json());
+      if (parsed.success) code = parsed.data.error;
+    } catch {
+      // an unparseable 409 body still reads as a conflict, code unknown
+    }
+    return { ok: false, reason: "conflict", code };
+  }
+  return { ok: false, reason: "unavailable" };
 }
 
 export function createInvoiceAdapters(fetchFn: typeof fetch = fetch): InvoiceAdapters {
   async function verb(res: Response): Promise<InvoiceVerbResult> {
-    if (res.status === 403) return { ok: false, reason: "forbidden" };
-    if (res.status === 404) return { ok: false, reason: "notfound" };
-    if (res.status === 409) {
-      let code: string | null = null;
-      try {
-        const parsed = z.object({ error: z.string() }).safeParse(await res.json());
-        if (parsed.success) code = parsed.data.error;
-      } catch {
-        // an unparseable 409 body still reads as a conflict, code unknown
-      }
-      return { ok: false, reason: "conflict", code };
-    }
-    if (!res.ok) return { ok: false, reason: "unavailable" };
+    if (!res.ok) return await actionFailure(res);
     try {
       const parsed = z.object({ status: z.string() }).safeParse(await res.json());
       if (!parsed.success) return { ok: false, reason: "unavailable" };
@@ -226,7 +308,99 @@ export function createInvoiceAdapters(fetchFn: typeof fetch = fetch): InvoiceAda
         return { ok: false, reason: "unavailable" };
       }
     },
+
+    async recordPayment(id: string, input: PaymentRecordInput): Promise<PaymentRecordResult> {
+      try {
+        const res = await fetchFn(`/api/invoices/${encodeURIComponent(id)}/payments`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            amountCents: input.amountCents,
+            method: input.method,
+            ...(input.receivedAtIso !== undefined ? { receivedAt: input.receivedAtIso } : {}),
+            ...(input.note !== undefined && input.note.trim() !== "" ? { note: input.note.trim() } : {}),
+          }),
+        });
+        if (!res.ok) return await actionFailure(res);
+        const parsed = paymentRecordedSchema.safeParse(await res.json());
+        if (!parsed.success) return { ok: false, reason: "unavailable" };
+        return {
+          ok: true,
+          data: {
+            paidCents: parsed.data.paidCents,
+            totalCents: parsed.data.totalCents,
+            paymentStatus: parsed.data.paymentStatus,
+          },
+        };
+      } catch {
+        return { ok: false, reason: "unavailable" };
+      }
+    },
+
+    async voidPayment(paymentId: string, reason: string): Promise<PaymentVoidResult> {
+      try {
+        const res = await fetchFn(`/api/payments/${encodeURIComponent(paymentId)}/void`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ reason: reason.trim() }),
+        });
+        if (!res.ok) return await actionFailure(res);
+        const parsed = paymentVoidedSchema.safeParse(await res.json());
+        if (!parsed.success) return { ok: false, reason: "unavailable" };
+        return {
+          ok: true,
+          data: {
+            outcome: parsed.data.status,
+            paidCents: parsed.data.paidCents,
+            paymentStatus: parsed.data.paymentStatus,
+          },
+        };
+      } catch {
+        return { ok: false, reason: "unavailable" };
+      }
+    },
+
+    async stripeLink(id: string): Promise<PaymentLinkResult> {
+      return paymentLink(
+        fetchFn,
+        `/api/invoices/${encodeURIComponent(id)}/stripe-checkout`,
+      );
+    },
+
+    async paypalLink(id: string): Promise<PaymentLinkResult> {
+      return paymentLink(
+        fetchFn,
+        `/api/invoices/${encodeURIComponent(id)}/paypal-checkout`,
+      );
+    },
   };
+}
+
+/** The two checkout channels answer in one shape: a 201 with the customer's
+ *  URL and the gross/principal/surcharge disclosure, or a 500 misconfigured
+ *  body naming the environment's gap — read from the body so a different 500
+ *  stays a generic unavailable. */
+async function paymentLink(fetchFn: typeof fetch, url: string): Promise<PaymentLinkResult> {
+  try {
+    const res = await fetchFn(url, { method: "POST" });
+    if (res.status === 500) {
+      try {
+        const parsed = z.object({ error: z.string() }).safeParse(await res.json());
+        if (parsed.success && parsed.data.error === "misconfigured") {
+          return { ok: false, reason: "misconfigured" };
+        }
+      } catch {
+        // a 500 with no JSON body is a server failure, not a config fact
+      }
+      return { ok: false, reason: "unavailable" };
+    }
+    if (!res.ok) return await actionFailure(res);
+    const parsed = paymentLinkSchema.safeParse(await res.json());
+    if (!parsed.success) return { ok: false, reason: "unavailable" };
+    return { ok: true, data: parsed.data };
+  } catch {
+    return { ok: false, reason: "unavailable" };
+  }
 }
 
 /**
@@ -267,4 +441,19 @@ export function parseQuantity(text: string): number | null {
   const value = Number(cleaned);
   if (!Number.isFinite(value) || value <= 0 || value > 999_999_999) return null;
   return value;
+}
+
+/**
+ * A datetime-local input's value → a full UTC ISO string (the API's
+ * `z.iso.datetime()`), or null when empty/unparseable — the field is
+ * optional, but junk typed into it is refused in the form, not by a round
+ * trip. `Date` reads a wall-clock value in the viewer's own timezone, so the
+ * instant is the one the finance person meant.
+ */
+export function parseLocalDateTimeToIso(text: string): string | null {
+  const trimmed = text.trim();
+  if (trimmed === "") return null;
+  const parsed = new Date(trimmed);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return parsed.toISOString();
 }
