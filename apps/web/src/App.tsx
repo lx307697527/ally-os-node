@@ -23,6 +23,7 @@ import { NumberingRules } from "./shared/pages/NumberingRules.tsx";
 import { RulesRegistry } from "./shared/pages/RulesRegistry.tsx";
 import { TaskDetail } from "./shared/pages/TaskDetail.tsx";
 import { Tasks } from "./shared/pages/Tasks.tsx";
+import { TeamUsers } from "./shared/pages/TeamUsers.tsx";
 import { TwoFactorSettings } from "./shared/pages/TwoFactorSettings.tsx";
 import { WorkflowTemplates } from "./shared/pages/WorkflowTemplates.tsx";
 import { ForgotPassword } from "./shared/pages/ForgotPassword.tsx";
@@ -143,6 +144,11 @@ export function App(): ReactElement {
               都在这张票上；payment.* 两类收款告警的深链落点（billing.md 白名单
               裁决的承载页）。行属门在服务端，无关人得到明确的「不可用」。 */}
           <Route path="/invoices/:invoiceId" element={<InvoiceDetail />} />
+          {/* 团队（#26）：用户生命周期管理面；服务端 users.manage 门——花名册、
+              创建邀请（初始角色不带特权角色，R-16-6 门是特权角色的唯一入口）、
+              改名、停用/启用（停用即全端登出，删除没有端点）。角色授予/撤销
+              复用 #23 端点，202 审批流与 403 owner_required 原样上屏。 */}
+          <Route path="/system/team" element={<TeamUsers />} />
           {/* 审计日志（#29）：System 区第一个页面；服务端 audit.read 门，
               无权限的账号在页面里得到明确的答复，不预设谁能进来。 */}
           <Route path="/system/audit" element={<AuditLog />} />

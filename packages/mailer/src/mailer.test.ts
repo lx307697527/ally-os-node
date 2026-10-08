@@ -5,6 +5,7 @@ import {
   escapeHtml,
   htmlToPlainText,
   LoggingMailer,
+  renderAccountInviteEmail,
   renderPasswordResetEmail,
   renderVerificationEmail,
   ResendMailer,
@@ -152,6 +153,36 @@ describe("renderPasswordResetEmail", () => {
     // 措辞不预设「有人为你发起」——按老系统 FEAT-566 AC-3,这封邮件可能在
     // 收件人毫不知情时被请求;正文要同时覆盖两种情形。
     expect(html).toContain("didn't request");
+  });
+});
+
+describe("renderAccountInviteEmail", () => {
+  const link = "https://web.example/reset-password?token=abc123";
+
+  it("escapes user input and keeps the setup link raw", () => {
+    const escaped = renderAccountInviteEmail({
+      to: "victim@example.com",
+      name: '<a href="http://evil.example">Free</a>',
+      link,
+      expiry: "24 hours",
+    });
+    expect(escaped.html).toContain("&lt;a href=");
+    const good = renderAccountInviteEmail({ to: "u@example.com", name: "Ann", link, expiry: "24 hours" });
+    expect(good.html).toContain(`href="${link}"`);
+  });
+
+  it("speaks invitation, not reset: no-password recipients must not be told someone reset something", () => {
+    const { subject, html, text } = renderAccountInviteEmail({
+      to: "u@example.com",
+      name: "Ann",
+      link,
+      expiry: "24 hours",
+    });
+    expect(subject).toBe("Set up your Ally OS account");
+    expect(html).toContain("account was created for you");
+    expect(html).not.toContain("reset was requested");
+    // 未预期的收件人被明确告知账号在设密码前不可用——不是置之不理的沉默
+    expect(text).toContain("stays unusable until a password is set");
   });
 });
 

@@ -210,6 +210,7 @@ describe.skipIf(!databaseUrl)("paypal checkout & webhook (#193, integration)", (
     },
     notifyUsers,
     stripe: undefined,
+    sendPasswordSetupEmail: async () => {},
     paypal: channel(fakeApi(state)),
   });
 
@@ -246,6 +247,7 @@ describe.skipIf(!databaseUrl)("paypal checkout & webhook (#193, integration)", (
     },
     notifyUsers,
     stripe: undefined,
+    sendPasswordSetupEmail: async () => {},
     paypal: undefined,
   });
 

@@ -113,6 +113,7 @@ describe.skipIf(!databaseUrl)("workflow instances (#220, integration)", () => {
   });
   const app = createApp({
     stripe: undefined,
+    sendPasswordSetupEmail: async () => {},
     paypal: undefined,
     logger,
     db,

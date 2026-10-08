@@ -57,6 +57,7 @@ describe("permission registry (#23)", () => {
     expect(effectivePermissions(["admin"], [])).toEqual(
       new Set<Permission>([
         "roles.assign",
+        "users.manage",
         "audit.read",
         "workflow.configure",
         "approval.configure",

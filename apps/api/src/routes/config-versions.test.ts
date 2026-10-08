@@ -102,6 +102,7 @@ describe.skipIf(!databaseUrl)("config version ledger (#226 slice 1, integration)
 
   const app = createApp({
     stripe: undefined,
+    sendPasswordSetupEmail: async () => {},
     paypal: undefined,
     logger,
     db,

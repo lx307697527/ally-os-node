@@ -81,6 +81,7 @@ describe.skipIf(!databaseUrl)("numbering rule endpoints (#225 slice 1, integrati
 
   const app = createApp({
     stripe: undefined,
+    sendPasswordSetupEmail: async () => {},
     paypal: undefined,
     logger,
     db,

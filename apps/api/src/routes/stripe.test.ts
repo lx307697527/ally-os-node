@@ -207,6 +207,7 @@ describe.skipIf(!databaseUrl)("stripe checkout & webhook (#193, integration)", (
     },
     notifyUsers,
     stripe: channel(gateway.gateway),
+    sendPasswordSetupEmail: async () => {},
     paypal: undefined,
   });
 
@@ -243,6 +244,7 @@ describe.skipIf(!databaseUrl)("stripe checkout & webhook (#193, integration)", (
     },
     notifyUsers: () => Promise.resolve(),
     stripe: undefined,
+    sendPasswordSetupEmail: async () => {},
     paypal: undefined,
   });
 

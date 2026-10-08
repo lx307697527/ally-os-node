@@ -128,6 +128,13 @@ const app = createApp({
     await pool.query("select 1");
   },
   authHandler: (request) => auth.handler(request),
+  // 邀请激活邮件（#26）：走 better-auth 的重置通道——requestPasswordReset 生成
+  // 令牌并触发 sendResetPassword 回调，回调按「有没有设过密码」把措辞分流成
+  // 邀请或重置。它对不存在地址也答成功（反枚举），发送失败只在回调里降级日志，
+  // 不 reject——建号不因邮件失败回滚。
+  sendPasswordSetupEmail: async (email) => {
+    await auth.api.requestPasswordReset({ body: { email } });
+  },
   resolveSession,
   socialProviders: googleOAuth === undefined ? [] : ["google"],
   authzStore,

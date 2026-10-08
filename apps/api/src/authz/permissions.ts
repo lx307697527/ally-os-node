@@ -43,7 +43,7 @@ export interface AuthzContext {
 }
 
 /** 权限点清单；随业务模块切片增加，新增必须先进这个注册表 */
-export const PERMISSIONS = ["roles.assign", "label_design", "audit.read", "workflow.configure", "approval.configure", "custom_fields.configure", "automations.configure", "numbering.configure", "rules.configure", "invoices.manage"] as const;
+export const PERMISSIONS = ["roles.assign", "users.manage", "label_design", "audit.read", "workflow.configure", "approval.configure", "custom_fields.configure", "automations.configure", "numbering.configure", "rules.configure", "invoices.manage"] as const;
 
 export type Permission = (typeof PERMISSIONS)[number];
 
@@ -56,6 +56,15 @@ export const permissionSchema = z.enum(PERMISSIONS);
  * - roles.assign：管理员（#232 §12「管理员：分配权限」）。owner 也持有：R-16-6
  *   要求授予 owner/admin/finance 级需老板确认，在审批流（#221）落地前，这类
  *   授予直接只允许 owner 本人执行（fail closed，见 routes/user-roles.ts）。
+ * - users.manage：老板与管理员（#26）。用户生命周期（花名册、创建邀请、改名、
+ *   停用/启用）是团队管理，与「分配权限」（roles.assign）分立：创建/停用不动
+ *   任何人的权限，roles.assign 的 R-16-6 审批语义不覆盖它们；反过来管理员也
+ *   不因能建号就能授特权角色——特权角色（owner/admin/finance）的唯一入口仍是
+ *   user-roles 端点的 R-16-6 门。#144 验收「团队管理只有管理员能做」；
+ *   #26 验收的「超级管理员」按 docs/permissions.md 映射表并入管理员（老
+ *   super_admin → admin），普通业务角色无此权限点。停用 owner 角色的账号是
+ *   例外：只有 owner 本人可执行（routes/users.ts 路由内再拦一层，R-16-6
+ *   同族裁决——老板的账号只有老板能动）。
  * - label_design：无角色默认携带——裁决原文「标签设计是独立权限点，不新增角色，
  *   管理员可授予任意角色的人」，只能单独授人。
  * - audit.read：老板与管理员（#29；#232 §12 老板「全部查看」+ 管理员是系统
@@ -96,8 +105,8 @@ export const permissionSchema = z.enum(PERMISSIONS);
  *   （「只看自己单子的发票」）随订单域（#231）的可见性门进场，不在此权限点。
  */
 export const ROLE_PERMISSIONS: Readonly<Record<Role, readonly Permission[]>> = {
-  owner: ["roles.assign", "audit.read", "workflow.configure", "approval.configure", "custom_fields.configure", "automations.configure", "numbering.configure", "rules.configure", "invoices.manage"],
-  admin: ["roles.assign", "audit.read", "workflow.configure", "approval.configure", "custom_fields.configure", "automations.configure", "numbering.configure", "rules.configure"],
+  owner: ["roles.assign", "users.manage", "audit.read", "workflow.configure", "approval.configure", "custom_fields.configure", "automations.configure", "numbering.configure", "rules.configure", "invoices.manage"],
+  admin: ["roles.assign", "users.manage", "audit.read", "workflow.configure", "approval.configure", "custom_fields.configure", "automations.configure", "numbering.configure", "rules.configure"],
   sales_lead: [],
   sales: [],
   customer_service: [],

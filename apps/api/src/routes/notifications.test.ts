@@ -31,6 +31,7 @@ describe.skipIf(!databaseUrl)("notification endpoints (#129, integration)", () =
   const { db, pool } = createDb(databaseUrl ?? "");
   const app = createApp({
     stripe: undefined,
+    sendPasswordSetupEmail: async () => {},
     paypal: undefined,
     logger,
     db,

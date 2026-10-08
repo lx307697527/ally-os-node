@@ -55,6 +55,12 @@ export const authUser = pgTable(
     // Better Auth two-factor 插件的 user 侧字段（#24）：TOTP 完成首次校验后置
     // true；管理员的强制门（authz/two-factor gate）读它放行或拦截。
     twoFactorEnabled: boolean("two_factor_enabled").notNull().default(false),
+    // 停用时间戳（#26）：null = 在职可登录；非 null = 已停用。停用不是软删除的
+    // 第二套状态，而是用户生命周期的唯一「除名」入口——删除用户没有端点（审计
+    // 不可删 + 业务外键级联会毁记录，裁决见 docs/teams.md），停用即吊销全部会话、
+    // 拒绝新登录。时间戳而非布尔：留「谁在何时停的」之外的事实（停用时刻本身
+    // 进 audit_events，这里只存机器可读的状态），也为将来的匿名化流程留原值。
+    disabledAt: timestamp("disabled_at", { withTimezone: true }),
     image: text("image"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),

@@ -120,6 +120,7 @@ describe.skipIf(!databaseUrl)("config drafts: draft → one-click publish (#226 
 
   const app = createApp({
     stripe: undefined,
+    sendPasswordSetupEmail: async () => {},
     paypal: undefined,
     logger,
     db,

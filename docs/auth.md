@@ -90,6 +90,17 @@ Better Auth 默认是自家 scrypt,不兼容则导入即等于强制全员重置
 服务)、同公司品牌/报价/订单的门户可见范围(R-02-6,等业务表)、
 `portal_binding_requests` 排队语义(等账户绑定模型)。
 
+## 已落地：账号停用与员工邀请的认证面（#26）
+
+团队生命周期（花名册/创建/改名/停用,`users.manage` 门）的完整裁决在
+docs/teams.md;这里只记认证侧的两处:
+
+| 部分 | 位置 | 说明 |
+| --- | --- | --- |
+| 停用登录门 | `apps/api/src/auth/auth.ts` `hooks.before` | `/sign-in/email` 入口查到停用行直接 403,`{ code: "account_disabled", message: "This account has been disabled. Contact an administrator." }`——code 给前端分支,message 登录页原样上屏。已知取舍:停用状态在无密码情况下可确认(内部员工系统的诚实 UX 优先于对已知邮箱的存在性掩蔽);有效账号与不存在地址仍走 better-auth 原路径 |
+| 会话失效 | `createSessionResolver` + `disabledAt` additionalFields | disabledAt 以 better-auth user additionalFields(type date、input false)进会话读取;解析器对停用用户一律视为无会话(每个 /api/* 请求 401)。停用端点删全部会话行是第一道防线,解析器兜竞态。认证端点改不了这个字段 |
+| 邀请措辞分流 | `sendResetPassword` 回调 | 同一条重置通道服务两个语义:收件人没有 credential 密码(管理员建号/影子账号)→ 邀请措辞(renderAccountInviteEmail,「account was created for you」);设过 → 重置措辞(#22 原语义)。判定只看凭据存在性,不另立状态列 |
+
 ## 已落地：Google OAuth 登录（#22 切片 4）
 
 老系统依据：FEAT-167 社交登录（提供商登记表是纯决策层 + 「本部署开了哪几家」

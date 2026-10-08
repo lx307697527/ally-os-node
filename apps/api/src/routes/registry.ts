@@ -35,6 +35,14 @@ export const API_ROUTES: readonly RouteDecl[] = [
   { method: "GET", path: "/api/users/:userId/roles", auth: { kind: "permission", permission: "roles.assign" } },
   { method: "POST", path: "/api/users/:userId/roles", auth: { kind: "permission", permission: "roles.assign" } },
   { method: "DELETE", path: "/api/users/:userId/roles/:role", auth: { kind: "permission", permission: "roles.assign" } },
+  // 用户生命周期（#26）：花名册、创建邀请、改名、停用/启用——团队管理面
+  // （users.manage，owner/admin 默认）；owner 角色目标的停用/启用在路由内
+  // 再拦一层 owner_required（老板的账号只有老板能动）
+  { method: "GET", path: "/api/users", auth: { kind: "permission", permission: "users.manage" } },
+  { method: "POST", path: "/api/users", auth: { kind: "permission", permission: "users.manage" } },
+  { method: "PATCH", path: "/api/users/:userId", auth: { kind: "permission", permission: "users.manage" } },
+  { method: "POST", path: "/api/users/:userId/disable", auth: { kind: "permission", permission: "users.manage" } },
+  { method: "POST", path: "/api/users/:userId/enable", auth: { kind: "permission", permission: "users.manage" } },
   // 站内通知（#129）：铃铛的单读摘要 + 已读/全读，全部只操作本人行
   { method: "GET", path: "/api/notifications/summary", auth: { kind: "session" } },
   { method: "POST", path: "/api/notifications/:id/read", auth: { kind: "session" } },
