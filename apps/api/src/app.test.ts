@@ -61,6 +61,7 @@ function makeApp(options: {
 }) {
   return createApp({
     stripe: undefined,
+    sendPasswordSetupEmail: async () => {},
     paypal: undefined,
     logger,
     db: unusedDb,
@@ -133,7 +134,7 @@ describe("session middleware (#22)", () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({
       user: { id: "u-1", email: "user@example.com", name: "User", emailVerified: true, twoFactorEnabled: true },
-      authz: { roles: ["admin"], permissions: ["roles.assign", "audit.read", "workflow.configure", "approval.configure", "custom_fields.configure", "automations.configure", "numbering.configure", "rules.configure"] },
+      authz: { roles: ["admin"], permissions: ["roles.assign", "users.manage", "audit.read", "workflow.configure", "approval.configure", "custom_fields.configure", "automations.configure", "numbering.configure", "rules.configure"] },
     });
   });
 

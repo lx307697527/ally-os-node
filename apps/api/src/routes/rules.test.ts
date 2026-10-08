@@ -114,6 +114,7 @@ describe.skipIf(!databaseUrl)("rule registry: adjudication as configuration (#23
 
   const app = createApp({
     stripe: undefined,
+    sendPasswordSetupEmail: async () => {},
     paypal: undefined,
     logger,
     db,

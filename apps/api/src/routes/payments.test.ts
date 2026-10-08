@@ -53,6 +53,7 @@ describe.skipIf(!databaseUrl)("payment endpoints (#192 slice 2, integration)", (
 
   const app = createApp({
     stripe: undefined,
+    sendPasswordSetupEmail: async () => {},
     paypal: undefined,
     logger,
     db,

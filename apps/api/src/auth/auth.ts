@@ -1,13 +1,14 @@
 import { randomUUID } from "node:crypto";
-import { betterAuth } from "better-auth";
+import { betterAuth, APIError } from "better-auth";
+import { createAuthMiddleware } from "better-auth/api";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { twoFactor } from "better-auth/plugins";
-import { and, eq, gt } from "drizzle-orm";
+import { and, eq, gt, sql } from "drizzle-orm";
 import type { Db } from "@ally/db";
 import { schema } from "@ally/db";
 import type { Logger } from "pino";
 import type { Mailer } from "@ally/mailer";
-import { renderPasswordResetEmail, renderVerificationEmail } from "@ally/mailer";
+import { renderAccountInviteEmail, renderPasswordResetEmail, renderVerificationEmail } from "@ally/mailer";
 import { verifyLegacyPassword } from "./legacy-password.ts";
 import type { ResolveSession } from "./session.ts";
 
@@ -105,19 +106,31 @@ export function createAuth(deps: AuthDeps) {
           base !== ""
             ? `${base}/reset-password?token=${encodeURIComponent(token)}`
             : url;
-        const content = renderPasswordResetEmail({
-          to: user.email,
-          name: user.name,
-          link,
-          expiry: RESET_PASSWORD_EXPIRY_LABEL,
-        });
+        // 邀请还是重置(#26):收件人从没设过密码(credential 密码为 null——影子
+        // 账号与管理员建号的形状)→ 这是「激活账号」,措辞按邀请写;给没设过
+        // 密码的人发「有人请求了重置」是惊吓不是邀请。同一条重置通道服务两个
+        // 语义,判定只看凭据存在性,不另立状态列(#25「认领不另设标记」同裁)。
+        const invited = !(await hasCredentialPassword(deps.db, user.id));
+        const content = invited
+          ? renderAccountInviteEmail({
+              to: user.email,
+              name: user.name,
+              link,
+              expiry: RESET_PASSWORD_EXPIRY_LABEL,
+            })
+          : renderPasswordResetEmail({
+              to: user.email,
+              name: user.name,
+              link,
+              expiry: RESET_PASSWORD_EXPIRY_LABEL,
+            });
         // 发送失败绝不阻塞重置请求(老系统 auth-send-email「永远 200」的同款
         // 裁定):响应已反枚举,请求方拿不到「发了/没发」的差别;没收到就再要一封。
         try {
           await deps.mailer.send({ to: user.email, ...content });
         } catch (err) {
           deps.logger.error(
-            { err, userId: user.id, to: user.email },
+            { err, userId: user.id, to: user.email, invited },
             "password reset email send failed — request still answers 200",
           );
         }
@@ -156,6 +169,41 @@ export function createAuth(deps: AuthDeps) {
     session: {
       expiresIn: SESSION_EXPIRES_IN_SECONDS,
       updateAge: SESSION_UPDATE_AGE_SECONDS,
+    },
+    // 停用字段进 Better Auth 的 user 模型（#26）：additionalFields 让
+    // getSession 把 disabled_at 一起读出来——会话解析器据此把停用用户的会话
+    // 当无效处理（每个 /api/* 请求结构性挡死），不靠「停用时删会话」单一防线。
+    // input: false：任何认证端点都改不了它（停用/启用只走 users 路由的授权面）；
+    // returned 默认 true：出现在本人会话响应里是自己的数据，无害。
+    user: {
+      additionalFields: {
+        disabledAt: { type: "date", required: false, defaultValue: null, input: false },
+      },
+    },
+    // 停用账号拒绝登录（#26）。钩在 /sign-in/email 入口：查到停用行直接 403
+    // account_disabled，不进密码校验、不建会话。已知取舍：这让「这个地址已被
+    // 停用」在无密码情况下可确认（存在性掩蔽让位于内部员工系统的诚实 UX——
+    // 被停用的人该得到明确的去向说明，不是一句和错密码无法区分的 401）；有效
+    // 账号与不存在地址仍走 better-auth 原路径，枚举者得不到「有效账号」的确认。
+    // 会话解析器停用检查是第二道防线：停用时刻已删全部会话，这里兜住竞态窗口。
+    hooks: {
+      before: createAuthMiddleware(async (ctx) => {
+        if (ctx.path !== "/sign-in/email") return;
+        const body = ctx.body as { email?: unknown } | undefined;
+        if (typeof body?.email !== "string" || body.email.trim() === "") return;
+        const rows = await deps.db
+          .select({ disabledAt: schema.authUser.disabledAt })
+          .from(schema.authUser)
+          .where(sql`lower(${schema.authUser.email}) = ${body.email.trim().toLowerCase()}`)
+          .limit(1);
+        if (rows[0]?.disabledAt != null) {
+          // code 给前端分支用,message 是登录页原样上屏的完整句子
+          throw new APIError("FORBIDDEN", {
+            code: "account_disabled",
+            message: "This account has been disabled. Contact an administrator.",
+          });
+        }
+      }),
     },
     advanced: {
       database: {
@@ -209,6 +257,9 @@ export function createSessionResolver(auth: Auth): ResolveSession {
   return async (headers) => {
     const data = await auth.api.getSession({ headers });
     if (!data) return null;
+    // 停用用户的会话一律无效（#26）：停用端点已删该用户全部会话行，这里兜住
+    // 删除与并发登录之间的竞态——拿着停用前 cookie 的请求拿到 401，不是授权上下文。
+    if (data.user.disabledAt instanceof Date) return null;
     return {
       session: data.session,
       user: {
@@ -220,6 +271,17 @@ export function createSessionResolver(auth: Auth): ResolveSession {
       },
     };
   };
+}
+
+/** 该用户是否已设过 credential 密码：null 密码（影子/邀请建号）= 还没激活过 */
+async function hasCredentialPassword(db: Db, userId: string): Promise<boolean> {
+  const rows = await db
+    .select({ password: schema.authAccount.password })
+    .from(schema.authAccount)
+    .where(and(eq(schema.authAccount.userId, userId), eq(schema.authAccount.providerId, "credential")))
+    .limit(1);
+  const password = rows[0]?.password;
+  return typeof password === "string" && password !== "";
 }
 
 /**

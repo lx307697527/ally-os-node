@@ -6,6 +6,7 @@ import { createDb, runMigrations, schema } from "@ally/db";
 import { createApp } from "../app.ts";
 import type { MailMessage } from "@ally/mailer";
 import { createAuth, createSessionResolver, createSessionTokenVerifier } from "./auth.ts";
+import { ensureShadowAccount } from "./shadow-account.ts";
 import { createAuthzStore } from "../authz/service.ts";
 
 // 集成测试：需要真实 PostgreSQL（Better Auth 走库读写 user/session/account）。
@@ -58,6 +59,7 @@ describe.skipIf(!databaseUrl)("auth: credential login (#22, integration)", () =>
   });
   const app = createApp({
     stripe: undefined,
+    sendPasswordSetupEmail: async () => {},
     paypal: undefined,
     logger,
     db,
@@ -427,6 +429,51 @@ describe.skipIf(!databaseUrl)("auth: credential login (#22, integration)", () =>
     const body = (await res.json()) as { status?: boolean };
     expect(body.status).toBe(true);
   });
+
+  // ---- 邀请与停用(#26;员工建号/停用的认证面)----
+
+  it("a passwordless account gets the invite wording, and the reset wording once a password exists", async () => {
+    // 无密码账号 = 管理员建号/影子账号的形状(#25):credential 密码为 null
+    const invited = await ensureShadowAccount(db, { email: `${randomUUID()}@example.com`, name: "Invited Staff" }, { logger });
+    createdUserIds.push(invited.user.id);
+
+    await requestReset(invited.user.email);
+    const invite = must(mailer.sent[mailer.sent.length - 1]);
+    expect(invite.subject).toBe("Set up your Ally OS account");
+    expect(invite.html).toContain(`${WEB_APP_URL}/reset-password?token=`);
+
+    // 激活 = 设一次密码;同一通道此后就是重置语义
+    const setup = await resetPassword(tokenFromLastMail(), "first-pass-phrase");
+    expect(setup.status).toBe(200);
+    expect((await signIn(invited.user.email, "first-pass-phrase")).status).toBe(200);
+
+    await requestReset(invited.user.email);
+    const reset = must(mailer.sent[mailer.sent.length - 1]);
+    expect(reset.subject).toBe("Reset your Ally OS password");
+  });
+
+  it("a disabled account cannot sign in and its live session dies; enabling restores both", async () => {
+    const { userId, email } = await signUpVerified();
+    const cookie = sessionCookie(await signIn(email, PASSWORD));
+    expect((await app.request("/api/me", { headers: { cookie } })).status).toBe(200);
+
+    // 停用直接落库(端到端的授权面在 routes/users.test.ts):旧会话当场失效、
+    // 新登录被拒
+    await db
+      .update(schema.authUser)
+      .set({ disabledAt: new Date() })
+      .where(eq(schema.authUser.id, userId));
+    expect(
+      (await app.request("/api/me", { headers: { cookie } })).status,
+    ).toBe(401);
+    const blocked = await signIn(email, PASSWORD);
+    expect(blocked.status).toBe(403);
+    expect(await blocked.json()).toMatchObject({ code: "account_disabled" });
+
+    // 启用后恢复:登录照常(会话行已删,重新登一条)
+    await db.update(schema.authUser).set({ disabledAt: null }).where(eq(schema.authUser.id, userId));
+    expect((await signIn(email, PASSWORD)).status).toBe(200);
+  });
 });
 
 describe.skipIf(!databaseUrl)("auth: google oauth (#22 slice 4, integration)", () => {
@@ -458,6 +505,7 @@ describe.skipIf(!databaseUrl)("auth: google oauth (#22 slice 4, integration)", (
   const appFactory = (auth: ReturnType<typeof createAuth>) =>
     createApp({
       stripe: undefined,
+      sendPasswordSetupEmail: async () => {},
       paypal: undefined,
       logger,
       db,

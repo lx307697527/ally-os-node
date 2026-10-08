@@ -31,6 +31,7 @@ function makeApp() {
   const { db, pool } = createDb(databaseUrl ?? "");
   const app = createApp({
     stripe: undefined,
+    sendPasswordSetupEmail: async () => {},
     paypal: undefined,
     logger,
     db,

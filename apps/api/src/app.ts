@@ -42,6 +42,7 @@ import { realtimeRoutes } from "./routes/realtime.ts";
 import { rulesRoutes } from "./routes/rules.ts";
 import { tasksRoutes } from "./routes/tasks.ts";
 import { userRolesRoutes } from "./routes/user-roles.ts";
+import { usersRoutes } from "./routes/users.ts";
 import { workflowInstancesRoutes } from "./routes/workflow-instances.ts";
 import { workflowTemplatesRoutes } from "./routes/workflow-templates.ts";
 // 配置版本台账（#226）：五族配置的快照契约与回滚实现在 families.ts 模块装载时注册——
@@ -93,6 +94,13 @@ export interface AppDeps {
    * verify-webhook-signature 就是它的认证。
    */
   paypal: PayPalChannel | undefined;
+  /**
+   * 给指定邮箱发「设密码激活」邮件（#26）：生产走 better-auth 的
+   * requestPasswordReset（重用 sendResetPassword 回调，按凭据存在性分流邀请/
+   * 重置措辞）。实现方**不得 reject**——发送失败只降级日志（与认证邮件回调
+   * 同裁定），建号不因邮件失败回滚。测试注入记录器。
+   */
+  sendPasswordSetupEmail: (email: string) => Promise<void>;
 }
 
 export function createApp(deps: AppDeps) {
@@ -140,6 +148,10 @@ export function createApp(deps: AppDeps) {
   // 不被自己拦住。此后注册的业务路由默认都在门后——新模块忘了接门也不开口子。
   app.use("/api/*", requireTwoFactorGate());
   app.route("/", userRolesRoutes(deps));
+  // 用户生命周期（#26）：花名册、创建邀请、改名、停用/启用（users.manage
+  // 权限点，owner/admin 默认）。角色本身的授予/撤销在 user-roles 端点
+  // （roles.assign + R-16-6 门）——建号面与授权面各开各的门，见 routes/users.ts
+  app.route("/", usersRoutes(deps));
   // 通知与反馈（#129）：本人数据、登录即可，无需权限点
   app.route("/", notificationsRoutes(deps));
   app.route("/", feedbackRoutes(deps));

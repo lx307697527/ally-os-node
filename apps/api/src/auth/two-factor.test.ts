@@ -48,6 +48,7 @@ describe.skipIf(!databaseUrl)("auth: two-factor (#24, integration)", () => {
   });
   const app = createApp({
     stripe: undefined,
+    sendPasswordSetupEmail: async () => {},
     paypal: undefined,
     logger,
     db,

@@ -129,6 +129,7 @@ describe.skipIf(!databaseUrl)("approvals route (#221, integration)", () => {
   });
   const app = createApp({
     stripe: undefined,
+    sendPasswordSetupEmail: async () => {},
     paypal: undefined,
     logger,
     db,

@@ -211,3 +211,33 @@ export function renderPasswordResetEmail(content: AuthEmailContent): {
     text: htmlToPlainText(html),
   };
 }
+
+/**
+ * 员工邀请邮件的正文（#26）：管理员建号后发出，收件人还没有设过密码——
+ * 链接走密码重置通道（better-auth 对无凭据账号当场建 credential，「认领/
+ * 激活 = 设一次密码」，#25 同款语义），但措辞按邀请写而不是「有人请求了
+ * 重置」——给从没设过密码的人发一封「重置」邮件是惊吓不是邀请。判定
+ * （有没有 credential 密码）在 apps/api 的 sendResetPassword 回调里做，
+ * 模板本身只知道渲染。
+ */
+export function renderAccountInviteEmail(content: AuthEmailContent): {
+  subject: string;
+  html: string;
+  text: string;
+} {
+  const name = content.name.trim() !== "" ? escapeHtml(content.name) : escapeHtml(content.to);
+  const html =
+    `<p>Hi ${name},</p>` +
+    `<p>An Ally OS account was created for you. ` +
+    `Open the link below to set your password and sign in:</p>` +
+    `<p><a href="${content.link}">Set up my account</a></p>` +
+    `<p>Or paste this link into your browser:<br>${content.link}</p>` +
+    `<p>This link expires in ${content.expiry} and can be used once. ` +
+    `If you weren't expecting this, you can ignore this email — ` +
+    `the account stays unusable until a password is set.</p>`;
+  return {
+    subject: "Set up your Ally OS account",
+    html,
+    text: htmlToPlainText(html),
+  };
+}

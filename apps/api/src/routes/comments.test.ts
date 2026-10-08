@@ -94,6 +94,7 @@ describe.skipIf(!databaseUrl)("comment endpoints (#110 slice 1, integration)", (
 
   const app = createApp({
     stripe: undefined,
+    sendPasswordSetupEmail: async () => {},
     paypal: undefined,
     logger,
     db,

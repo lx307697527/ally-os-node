@@ -103,6 +103,7 @@ export const RAIL_GROUPS: readonly RailGroup[] = [
     label: "System",
     note: "System administration — the audit log is here; users, roles and the configuration studio follow.",
     items: [
+      { to: "/system/team", label: "Team", nav: "team-users" },
       { to: "/system/audit", label: "Audit log", nav: "audit-log", icon: "ledger" },
       { to: "/system/deleted-records", label: "Deleted records", nav: "deleted-records", icon: "restore" },
       { to: "/system/approvals", label: "Approval lines", nav: "approval-lines", icon: "stages" },

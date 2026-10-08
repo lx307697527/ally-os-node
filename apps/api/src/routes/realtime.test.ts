@@ -48,6 +48,7 @@ describe.skipIf(!databaseUrl)("realtime token endpoint (#110 slice 2, integratio
 
   const app = createApp({
     stripe: undefined,
+    sendPasswordSetupEmail: async () => {},
     paypal: undefined,
     logger,
     db,
