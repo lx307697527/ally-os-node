@@ -31,6 +31,12 @@ export const NOTIFIED_EVENT_TYPES: readonly string[] = [
   // detail 事实、去处 null 是诚实的占位；有了承载页再进来。
   "approval.pending",
   "approval.reminder",
+  // 收款告警（#193，白名单随 #192 财务确认页落地）：payload 自带服务端拼好的
+  // title/detail 事实（billing/payment-alerts.ts 的既定产物），展示层不再二次
+  // 拼句；去处是那张票——财务在发票页核对并处理（确认草稿 / 看台账）。无锚点
+  // （unbookable 且票找不到）的行去处 null，点了只标已读——不猜去处。
+  "payment.attempt_failed",
+  "payment.unbookable",
 ];
 
 /** API summary 的一行（zod 校验后的形状，camelCase）。 */
@@ -91,6 +97,11 @@ function taskHref(aggregateId: string | null, commentId: string | null): string 
   return commentId === null ? `/tasks/${aggregateId}` : `/tasks/${aggregateId}?comment=${commentId}`;
 }
 
+/** 发票详情页的深链（#192 财务确认页）：聚合指向那张票。 */
+function invoiceHref(aggregateId: string | null): string | null {
+  return aggregateId === null ? null : `/invoices/${aggregateId}`;
+}
+
 export function describeNotification(row: NotificationRow): NotificationFace {
   switch (row.eventType) {
     case "task.assigned":
@@ -141,6 +152,15 @@ export function describeNotification(row: NotificationRow): NotificationFace {
             .filter((part): part is string => part !== null)
             .join(" · "),
         href: "/approvals",
+      };
+    case "payment.attempt_failed":
+    case "payment.unbookable":
+      // 收款告警（#193）：title/detail 是服务端从银行事实拼好的句子（两渠道
+      // 共用一份文案内核），展示层原样亮出；深链到那张票，没锚点就不猜。
+      return {
+        title: stringField(row.payload, "title") ?? row.eventType,
+        detail: stringField(row.payload, "detail") ?? "",
+        href: invoiceHref(row.aggregateId),
       };
     default:
       return {

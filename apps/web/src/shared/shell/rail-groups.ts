@@ -89,8 +89,8 @@ export const RAIL_GROUPS: readonly RailGroup[] = [
   {
     key: "billing",
     label: "Billing",
-    note: "Arrives with the finance module — invoices, receipts and refunds.",
-    items: [],
+    note: "The finance back office — invoices and their payment ledger; refunds and QuickBooks follow.",
+    items: [{ to: "/invoices", label: "Invoices", nav: "invoices" }],
   },
   {
     key: "production",

@@ -216,7 +216,40 @@ describe("describeNotification (白名单类型：文案与深链在 TS 不在�
       "comment.created",
       "approval.pending",
       "approval.reminder",
+      "payment.attempt_failed",
+      "payment.unbookable",
     ]);
+  });
+
+  it("收款告警亮服务端拼好的 title/detail，深链到那张票（#192 财务确认页落地）", () => {
+    for (const eventType of ["payment.attempt_failed", "payment.unbookable"]) {
+      const face = describeNotification(
+        row({
+          eventType,
+          aggregateType: "invoice",
+          aggregateId: "3c5e7f90-a1b2-4c3d-8e9f-0a1b2c3d4e5f",
+          payload: {
+            title: "A stripe payment arrived but could not be recorded",
+            detail: "A stripe payment of USD 100.00 arrived but could not be recorded.",
+            invoiceId: "3c5e7f90-a1b2-4c3d-8e9f-0a1b2c3d4e5f",
+            channel: "stripe",
+          },
+        }),
+      );
+      expect(face.title).toBe("A stripe payment arrived but could not be recorded");
+      expect(face.detail).toBe("A stripe payment of USD 100.00 arrived but could not be recorded.");
+      expect(face.href).toBe("/invoices/3c5e7f90-a1b2-4c3d-8e9f-0a1b2c3d4e5f");
+    }
+  });
+
+  it("无锚点的收款告警去处 null——不猜去处，点了只标已读", () => {
+    for (const eventType of ["payment.attempt_failed", "payment.unbookable"]) {
+      const face = describeNotification(
+        row({ eventType, aggregateType: "invoice", aggregateId: null, payload: { title: "t", detail: "d" } }),
+      );
+      expect(face.href).toBeNull();
+      expect(face.title).toBe("t");
+    }
   });
 });
 
