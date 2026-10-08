@@ -32,6 +32,9 @@ const invoiceSchema = z.object({
   status: z.enum(["draft", "issued", "void"]),
   currency: z.string(),
   subject: z.object({ type: z.string(), id: z.string() }).nullable(),
+  // 分期成员事实（#192 分期切片）：index 是创建时落定的序数，count 是成员数
+  // （含 void，读时派生）；展示「Part i of n」随分期 web 面切片
+  plan: z.object({ id: z.string(), index: z.number().int(), count: z.number().int() }).nullable(),
   totalCents: z.number().int(),
   // 有效贷项合计（#192 红冲切片）：paymentStatus 的应付口径是发票合计 − 它；
   // 贷项台账的展示随贷项动作 web 面切片

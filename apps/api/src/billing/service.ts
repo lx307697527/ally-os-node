@@ -30,7 +30,9 @@ import { allocateDocumentNumber } from "../numbering/service.ts";
  * closed），HTTP 面映射 409 numbering_not_configured。
  */
 
-/** 发票类型词表（pgEnum invoice_type 同款）；随触发点属主域 expand */
+/** 发票类型词表（pgEnum invoice_type 同款）；随触发点属主域 expand。
+ * `installment`（#192 分期切片）由 billing/installments.ts 的拆票接缝落——
+ * 它的触发事实是「一个约定总额被切成 n 期」，不是某次业务确认 */
 export const INVOICE_TYPES = [
   "deposit",
   "balance",
@@ -39,6 +41,7 @@ export const INVOICE_TYPES = [
   "label_design",
   "storage_fee",
   "customer_material",
+  "installment",
 ] as const;
 
 export type InvoiceType = (typeof INVOICE_TYPES)[number];
@@ -65,11 +68,18 @@ export interface InvoiceSubject {
 /** 账期天数的整数毫秒（dueAt = issuedAt + N 天，纯整数加法无日界换算） */
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
+/** 分期成员标注（#192 分期切片）：拆票接缝在创建事务里同时落成员身份 */
+export interface InvoicePlanMembership {
+  id: string;
+  index: number;
+}
+
 export interface CreateDraftInvoiceInput {
   invoiceType: InvoiceType;
   lines: InvoiceLineInput[];
   subject?: InvoiceSubject;
   source?: InvoiceSource;
+  plan?: InvoicePlanMembership;
   createdById: string;
 }
 
@@ -120,6 +130,8 @@ export async function createDraftInvoice(
         subjectId: input.subject?.id ?? null,
         sourceType: input.source?.type ?? null,
         sourceKey: input.source?.key ?? null,
+        planId: input.plan?.id ?? null,
+        planIndex: input.plan?.index ?? null,
         createdById: input.createdById,
         createdAt: now,
         updatedAt: now,

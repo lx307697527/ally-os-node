@@ -29,6 +29,7 @@ import { feedbackRoutes } from "./routes/feedback.ts";
 import { followsRoutes } from "./routes/follows.ts";
 import { healthRoutes } from "./routes/health.ts";
 import { invoicesRoutes } from "./routes/invoices.ts";
+import { invoicePlansRoutes } from "./routes/invoice-plans.ts";
 import { meRoutes } from "./routes/me.ts";
 import { notificationsRoutes } from "./routes/notifications.ts";
 import { numberingRulesRoutes } from "./routes/numbering-rules.ts";
@@ -225,6 +226,10 @@ export function createApp(deps: AppDeps) {
   // 一张新单据（invoices.manage 同门；服务接缝 billing/credits.ts 供 #239
   // 触发域进场复用）
   app.route("/", creditNotesRoutes(deps));
+  // 分期拆票（#192 分期切片）：一个约定总额一次切成 n 期草稿票（invoices.manage
+  // 同门；成员票走发票既有动词，零新动词语义；服务接缝 billing/installments.ts
+  // 供订单域 #231 按比例拆期进场复用）
+  app.route("/", invoicePlansRoutes(deps));
   // Stripe 渠道（#193）：财务建支付链接的过渡面（invoices.manage 同门；客户门户
   // #186 进场后复用同一 StripeGateway 接归属校验）
   app.route("/", stripeCheckoutRoutes(deps));

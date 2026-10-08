@@ -564,6 +564,60 @@ migration(记账/作废/两渠道建链接的 API 半边是切片 2 与 #193 渠
   numbering_not_configured / credit_note_voided / not_voidable),机器码不见
   用户。纯 web 切片:零 API 改动、零 migration。
 
+## 已落地:分期拆票内核(#192 分期切片)
+
+设计权威:#232 §10「分期、更正、贷项」的最后一个单据族。老系统对照(#88 手工
+时代):分期散在 `installment` 发票类型 + 母子票 `parent_invoice_id` 接缝 +
+「Part i of n」的屏幕推导里——序数从当前页行集算出来,三期计划印成
+"Part 1 of 1"(老系统 BUG-274),计划总额没有权威落点。本内核的裁决:
+
+### 数据模型(0039,expand-only)
+
+- **`invoice_plans`**:`label` 必填(这笔钱在还什么——分期是约定的叙事本体,
+  reason 之于贷项单同位)、可选 subject 锚点(invoices.subject 同裁多态开集)、
+  **`total_cents` 是创建事务里盖章的约定拆分额**(= 各期之和,之后恒不变——
+  它是「约定」的事实,不是派生状态;成员票是草稿、行可改、可 void,live 合计
+  会漂,约定额不跟着漂)。币种落计划行,成员票从计划抄录。无 source 幂等列
+  (当前唯一入口是财务手工拆票;订单域 #231 按比例拆期进场时 expand 唯一索引,
+  贷项单同裁)。
+- **invoices expand 两列**:`plan_id`(成员外键)+ `plan_index`(创建时按提交
+  顺序落定的稳定序数,1-based,永不重编号)。两列皆 null = 非分期票。
+- **`invoice_type` expand `installment`**(老系统第 8 类同款):它的触发事实
+  是「一个约定总额被切成 n 期」,不是某次业务确认——手工建票入口同样收这个
+  类型,但系统拆票走 `createInvoicePlan` 是唯一带成员身份的路径。
+
+### 四个口径裁决
+
+1. **计划是事实,票是文档**:一次拆票 = 计划行 + n 张 `installment` 类型单行
+   草稿票在**同一个事务**里生灭(第 3 期发号失败 → NoActiveRuleError → 整个
+   计划从未存在,无半张计划);每期是一张单行的票(quantity 1、单价 = 该期
+   金额,行合计生成列即该期金额,无二次算术),此后各自走发票的既有动词
+   (confirm 的账期、收款、void)——分期不引入第二套单据状态机。
+2. **「Part i of n」两半分开**:i(plan_index)是身份,n(成员数,**含 void**)
+   是成员关系的现状,读时 COUNT 派生(`countPlanMembers`,列表一次分组取齐
+   全体)——绝不从调用方手里的行集数出来(BUG-274 的教训反过来用)。被作废
+   的期仍是「这刀切过的事实」,序号不重排;在世口径由计划读面另答。
+3. **约定 vs 现状的漂移原样暴露**:计划读面给 `livePartCount` /
+   `liveInvoicedCents`(在世成员行合计之和)与 `uninvoicedCents`(约定额 −
+   在世已开;>0 有期被作废/未开足,<0 成员行被改到超过约定)——两种漂移都
+   必须看得见,不 clamp(effectiveDueCents 同裁)。
+4. **付款态不另立算术**:逐期的 paymentStatus 与发票读写面同一条权威算术
+   (computePaymentStatus + effectiveDueCents);计划合计 `paidCents` /
+   `outstandingCents` 只取在世成员,未收逐票 max(0, 有效应付 − 已收)——
+   一张票的超收不冲抵另一张票的欠款。全冲抵的成员票 vacuously paid。
+
+### 端点(全部 invoices.manage 门)
+
+- `POST /api/invoice-plans`:一次切成 n 期(2–12;一期不是分期,手工建票已有
+  那个入口;>12 是融资安排不是发票拆分)。body 只有 `label`、可选 subject
+  对、`parts[{ amountCents }]`——整数分、必为正、合计 ≤ int4;**没有「总额」
+  字段**:约定额是切出来的结果,不是谁另报的数(RULE-007)。409
+  numbering_not_configured(发号失败整计划回滚)。201 带各期 id/号/序数/金额。
+- `GET /api/invoice-plans/:id`:计划台账(约定额、逐期钱态、在世口径合计、
+  uninvoicedCents);404 反探测同发票。审计 `invoice_plan.created`(target =
+  计划行,detail 记 label/totalCents/partCount/partNumbers——一次动作一行,
+  全部期号可查;成员票的后续动词走既有词条)。
+
 ## 剩余(#192 保持 open,Part of #192)
 
 1. **触发点接线**(属主域各自进场):打样/调味费(#238)、定金(#231,比例
@@ -576,5 +630,6 @@ migration(记账/作废/两渠道建链接的 API 半边是切片 2 与 #193 渠
    terms/due 的 web 面已落)、收款状态回写订单/批次(#241 发货门槛,读
    `computePaymentStatus`)、QuickBooks 推送(#181,含银行流水认领)、第一笔款
    到账转正式客户(R-02-5)等收款触发业务;
-4. PDF 存档(#128 统一 PDF 服务)、**分期**(拆期开票;红冲的贷项单内核与
-   贷项动作 web 面均已落)。
+4. PDF 存档(#128 统一 PDF 服务)、**分期的 web 面**(拆票动作与计划台账上页;
+   内核与 API 已落,web client 的 plan 契约已同步)、订单域按比例拆期触发
+   (#231 进场时走 createInvoicePlan 服务接缝)。
