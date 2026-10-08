@@ -77,4 +77,20 @@ describe("decision-table grid editor rulings (#233 JDM editor)", () => {
     expect(editor).toContain("first — first matching row wins");
     expect(editor).toContain("collect — every matching row");
   });
+
+  it("逐格语法错穿到格子上:服务端点名的格子着 err 色并带原话,不许只躺面板里", () => {
+    // 定位与键合同在纯函数层(client),组件只做接线
+    expect(client).toContain("export function parseTableCellIssues(");
+    expect(client).toContain("export function locateTableCellIssues(");
+    expect(client).toContain("export function cellIssueKey(");
+    expect(editor).toContain("cellIssues?: ReadonlyMap<string, string>");
+    // 键由稳定句柄合成,与页面同源
+    expect(editor).toContain("cellIssueKey(row.key, column.key)");
+    // 被点名的格子:err 色描边 + aria-invalid + 原话进 title
+    expect(editor).toContain("outline-[var(--err-line)]");
+    expect(editor).toContain("aria-invalid");
+    // 图例说清语义:标记是「上一次保存被拒」,下次保存重新裁决
+    expect(editor).toContain('data-testid="rules-edit-table-cell-errors"');
+    expect(editor.replace(/\s+/g, " ")).toContain("the server refused on the last save");
+  });
 });

@@ -10,16 +10,19 @@ import {
   addTableColumn,
   addTableRow,
   buildRuleValue,
+  cellIssueKey,
   createRulesAdapters,
   emptyTableDraft,
   emptyValueDraft,
   filterRules,
   formatTableDraft,
   formatValueDraft,
+  locateTableCellIssues,
   moveTableColumn,
   moveTableRow,
   parseDecisionTableDisplay,
   parseRefs,
+  parseTableCellIssues,
   patchTableColumn,
   removeTableColumn,
   removeTableRow,
@@ -626,5 +629,93 @@ describe("decision-table editor draft helpers (#233 grid editor)", () => {
         rules: [],
       },
     });
+  });
+});
+
+describe("decision-table cell-issue locator (#233 grid editor)", () => {
+  // Mirror of the server's compile-probe wording (apps/api/src/rules/
+  // decision-table-schema.ts): InvalidDecisionTableError joins every per-cell
+  // message with "; " behind the "rules: invalid decision table: " envelope,
+  // and the route returns that whole string as issues[0].
+  const ENVELOPE = "rules: invalid decision table: ";
+  const badAction = `${ENVELOPE}rule "row_a" input cell "action" does not parse: {"type":"parserError","column":1,"row":1,"message":"extraneous input '=='"}`;
+  const twoBadCells = `${ENVELOPE}rule "row_a" input cell "action" does not parse: {"type":"parserError","column":1}; rule "row_b" output cell "route" does not parse: {"type":"parserError","column":3}`;
+
+  it("parses the server's per-cell wording into (rowId, columnId) refs", () => {
+    const refs = parseTableCellIssues([badAction]);
+    expect(refs).toEqual([
+      {
+        rowId: "row_a",
+        columnId: "action",
+        message: 'rule "row_a" input cell "action" does not parse: {"type":"parserError","column":1,"row":1,"message":"extraneous input \'==\'"}',
+      },
+    ]);
+  });
+
+  it("splits a joined refusal into one ref per named cell, envelope stripped", () => {
+    const refs = parseTableCellIssues([twoBadCells]);
+    expect(refs.map((ref) => [ref.rowId, ref.columnId])).toEqual([
+      ["row_a", "action"],
+      ["row_b", "route"],
+    ]);
+    expect(refs[0]?.message.startsWith('rule "row_a"')).toBe(true);
+    expect(refs[1]?.message.startsWith('rule "row_b"')).toBe(true);
+    expect(refs.some((ref) => ref.message.includes(ENVELOPE))).toBe(false);
+    expect(refs.some((ref) => ref.message.endsWith(";"))).toBe(false);
+  });
+
+  it("locates refs onto the current draft's stable handles", () => {
+    const draft = formatTableDraft(STORED_TABLE);
+    expect(draft).not.toBeNull();
+    if (draft === null) return;
+    const actionColumn = draft.columns.find((column) => column.id === "action");
+    const rowA = draft.rows.find((row) => row.id === "row_a");
+    expect(actionColumn).toBeDefined();
+    expect(rowA).toBeDefined();
+    if (actionColumn === undefined || rowA === undefined) return;
+    const located = locateTableCellIssues([badAction], draft);
+    expect(located).toEqual([
+      {
+        rowKey: rowA.key,
+        columnKey: actionColumn.key,
+        message: 'rule "row_a" input cell "action" does not parse: {"type":"parserError","column":1,"row":1,"message":"extraneous input \'==\'"}',
+      },
+    ]);
+    expect(cellIssueKey(located[0]?.rowKey ?? "", located[0]?.columnKey ?? "")).toBe(
+      `${rowA.key}::${actionColumn.key}`,
+    );
+  });
+
+  it("refs the grid cannot resolve (renamed/removed since the save) are dropped, not guessed", () => {
+    const draft = formatTableDraft(STORED_TABLE);
+    expect(draft).not.toBeNull();
+    if (draft === null) return;
+    expect(
+      locateTableCellIssues(
+        [`${ENVELOPE}rule "row_gone" input cell "action" does not parse: {"type":"parserError"}`],
+        draft,
+      ),
+    ).toEqual([]);
+    expect(
+      locateTableCellIssues(
+        [`${ENVELOPE}rule "row_a" input cell "col_gone" does not parse: {"type":"parserError"}`],
+        draft,
+      ),
+    ).toEqual([]);
+  });
+
+  it("wording that is not the compile probe's names no cell (client refusals stay panel-only)", () => {
+    const draft = formatTableDraft(STORED_TABLE);
+    expect(draft).not.toBeNull();
+    if (draft === null) return;
+    expect(
+      locateTableCellIssues(
+        [
+          'Duplicate column id "action" — ids must be unique across inputs and outputs.',
+          "every rule needs a non-empty _id",
+        ],
+        draft,
+      ),
+    ).toEqual([]);
   });
 });
