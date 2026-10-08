@@ -15,7 +15,9 @@ import { describe, expect, it } from "vitest";
 import {
   createInvoiceAdapters,
   formatMoney,
+  isInvoiceOverdue,
   parseDollarsToCents,
+  parseDueInDays,
   parseLocalDateTimeToIso,
   parseQuantity,
 } from "./invoices-client.ts";
@@ -186,6 +188,24 @@ describe("invoices client (#192 slice 4)", () => {
     const result = await adapters.confirm("inv-1");
     expect(seen[0]).toEqual({ url: "/api/invoices/inv-1/confirm", method: "POST" });
     expect(result).toEqual({ ok: true, data: { outcome: "issued" } });
+  });
+
+  it("confirm carries the agreed terms — dueInDays in the body only when finance gives one; 0 is a real value (due on receipt)", async () => {
+    const bodies: (string | undefined)[] = [];
+    const adapters = createInvoiceAdapters((input, init) => {
+      if (typeof input === "string" && init !== undefined) {
+        bodies.push(typeof init.body === "string" ? init.body : undefined);
+      }
+      return Promise.resolve(jsonRes({ status: "issued" }));
+    });
+    await adapters.confirm("inv-1", 30);
+    expect(JSON.parse(bodies[0] ?? "null")).toEqual({ dueInDays: 30 });
+
+    await adapters.confirm("inv-1", 0);
+    expect(JSON.parse(bodies[1] ?? "null")).toEqual({ dueInDays: 0 });
+
+    await adapters.confirm("inv-1");
+    expect(bodies[2]).toBeUndefined();
   });
 
   it("a 409 carries the server's state code so the page can say the gate", async () => {
@@ -445,5 +465,36 @@ describe("parseLocalDateTimeToIso", () => {
     expect(parseLocalDateTimeToIso("")).toBeNull();
     expect(parseLocalDateTimeToIso("   ")).toBeNull();
     expect(parseLocalDateTimeToIso("not a date")).toBeNull();
+  });
+});
+
+describe("parseDueInDays", () => {
+  it("whole days within the server's admission (0–365) become numbers — 0 is due on receipt", () => {
+    expect(parseDueInDays("30")).toBe(30);
+    expect(parseDueInDays("0")).toBe(0);
+    expect(parseDueInDays(" 365 ")).toBe(365);
+  });
+
+  it("empty, negative, fractional, over-365 and junk read as null — a doomed submission is refused in the form", () => {
+    expect(parseDueInDays("")).toBeNull();
+    expect(parseDueInDays("-1")).toBeNull();
+    expect(parseDueInDays("3.5")).toBeNull();
+    expect(parseDueInDays("366")).toBeNull();
+    expect(parseDueInDays("net 30")).toBeNull();
+  });
+});
+
+describe("isInvoiceOverdue", () => {
+  const now = new Date("2026-10-09T12:00:00.000Z");
+
+  it("past due and still owing is overdue — the scan's own rule, partial counts as owing", () => {
+    expect(isInvoiceOverdue({ dueAt: "2026-10-08T12:00:00.000Z", paymentStatus: "unpaid" }, now)).toBe(true);
+    expect(isInvoiceOverdue({ dueAt: "2026-10-08T12:00:00.000Z", paymentStatus: "partial" }, now)).toBe(true);
+  });
+
+  it("paid, not yet due and no-terms invoices never are — a $0 invoice is vacuously paid", () => {
+    expect(isInvoiceOverdue({ dueAt: "2026-10-08T12:00:00.000Z", paymentStatus: "paid" }, now)).toBe(false);
+    expect(isInvoiceOverdue({ dueAt: "2026-10-10T12:00:00.000Z", paymentStatus: "unpaid" }, now)).toBe(false);
+    expect(isInvoiceOverdue({ dueAt: null, paymentStatus: "unpaid" }, now)).toBe(false);
   });
 });

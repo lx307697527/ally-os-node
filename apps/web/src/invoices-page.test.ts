@@ -92,6 +92,7 @@ describe("invoice detail page (#192 slice 4)", () => {
 
   it("the confirm and void verbs speak the real routes; outcomes flow back as flash", () => {
     expect(detail).toContain("invoiceAdapters.confirm(props.invoice.id)");
+    expect(detail).toContain("invoiceAdapters.confirm(props.invoice.id, dueInDays)");
     expect(detail).toContain("invoiceAdapters.voidInvoice(");
     expect(detail).toContain('data-testid="invoice-confirm-go"');
     expect(detail).toContain('data-testid="invoice-void-go"');
@@ -176,6 +177,37 @@ describe("payment actions (#192 remaining — the collection verbs' web face)", 
     expect(detail).toContain('kind: "ok"');
     expect(detail).toContain('kind: "error"');
     expect(detail).toContain('data-testid="invoice-flash"');
+  });
+});
+
+describe("payment terms and due dates (#192 remaining — R-12-7's web face)", () => {
+  it("the confirm dialog asks for the terms: contract words as presets, a custom-days field beside them", () => {
+    expect(detail).toContain("Payment terms");
+    expect(detail).toContain('data-testid="invoice-confirm-terms"');
+    expect(detail).toContain('data-testid="invoice-confirm-custom-days"');
+    expect(detail).toContain("No agreed terms");
+    expect(detail).toContain("Due on receipt");
+    expect(detail).toContain("Net 15");
+    expect(detail).toContain("Net 60");
+    expect(detail).toContain("parseDueInDays(");
+  });
+
+  it("the terms choice says what it commits: the due preview and the scan's discipline, said on the dialog", () => {
+    expect(detail).toContain('data-testid="invoice-confirm-due-preview"');
+    expect(detail).toContain("86_400_000");
+    expect(detail).toContain("never chases the customer");
+  });
+
+  it("the due date is said where finance reads it — a Due stat on the detail, the date on every list row", () => {
+    expect(detail).toContain('data-testid="invoice-detail-due"');
+    expect(detail).toContain("data.dueAt !== null");
+    expect(list).toContain("row.dueAt !== null");
+  });
+
+  it("overdue is a display fact with the scan's own rule: past due and still owing", () => {
+    expect(detail).toContain("isInvoiceOverdue(");
+    expect(list).toContain("isInvoiceOverdue(");
+    expect(detail).toContain('overdue ? "text-err" : "text-ink"');
   });
 });
 

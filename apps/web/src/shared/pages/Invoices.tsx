@@ -14,7 +14,12 @@ import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { Button, Card, Heading, Paragraph } from "@ally/ui";
 
-import { createInvoiceAdapters, formatMoney, type InvoiceStatus } from "../lib/invoices-client.ts";
+import {
+  createInvoiceAdapters,
+  formatMoney,
+  isInvoiceOverdue,
+  type InvoiceStatus,
+} from "../lib/invoices-client.ts";
 
 const invoiceAdapters = createInvoiceAdapters();
 
@@ -118,6 +123,10 @@ export function Invoices(): ReactElement {
                     {row.status === "issued" && row.issuedAt !== null
                       ? ` · issued ${formatDay(row.issuedAt)}`
                       : ""}
+                    {/* R-12-7's web face: the agreed terms' due date, and the
+                        scan's own overdue rule read at render — display only. */}
+                    {row.dueAt !== null ? ` · due ${formatDay(row.dueAt)}` : ""}
+                    {isInvoiceOverdue(row) ? " · overdue" : ""}
                   </span>
                 </span>
                 <span className="text-right font-mono text-ui-sm text-ink">

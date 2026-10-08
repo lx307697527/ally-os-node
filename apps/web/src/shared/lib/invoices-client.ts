@@ -33,7 +33,7 @@ const invoiceSchema = z.object({
   paidCents: z.number().int(),
   paymentStatus: z.enum(["unpaid", "partial", "paid"]),
   issuedAt: z.string().nullable(),
-  // R-12-7：null = 未约定账期（不进逾期扫描）；展示随 web 面后续切片
+  // R-12-7：null = 未约定账期（不进逾期扫描）；web 面展示到期日 + 逾期派生标记
   dueAt: z.string().nullable(),
   voidedAt: z.string().nullable(),
   voidReason: z.string().nullable(),
@@ -185,7 +185,9 @@ export interface InvoiceAdapters {
   get(id: string): Promise<InvoiceGetResult>;
   payments(id: string): Promise<PaymentsResult>;
   updateLines(id: string, lines: InvoiceLineInput[]): Promise<InvoiceVerbResult>;
-  confirm(id: string): Promise<InvoiceVerbResult>;
+  /** `dueInDays` absent = no agreed terms (the server leaves dueAt null); 0
+   *  is a real value — due on receipt. */
+  confirm(id: string, dueInDays?: number): Promise<InvoiceVerbResult>;
   voidInvoice(id: string, reason?: string): Promise<InvoiceVerbResult>;
   recordPayment(id: string, input: PaymentRecordInput): Promise<PaymentRecordResult>;
   voidPayment(paymentId: string, reason: string): Promise<PaymentVoidResult>;
@@ -287,11 +289,18 @@ export function createInvoiceAdapters(fetchFn: typeof fetch = fetch): InvoiceAda
       }
     },
 
-    async confirm(id: string): Promise<InvoiceVerbResult> {
+    async confirm(id: string, dueInDays?: number): Promise<InvoiceVerbResult> {
       try {
-        const res = await fetchFn(`/api/invoices/${encodeURIComponent(id)}/confirm`, {
-          method: "POST",
-        });
+        const res = await fetchFn(
+          `/api/invoices/${encodeURIComponent(id)}/confirm`,
+          dueInDays === undefined
+            ? { method: "POST" }
+            : {
+                method: "POST",
+                headers: { "content-type": "application/json" },
+                body: JSON.stringify({ dueInDays }),
+              },
+        );
         return await verb(res);
       } catch {
         return { ok: false, reason: "unavailable" };
@@ -458,4 +467,35 @@ export function parseLocalDateTimeToIso(text: string): string | null {
   const parsed = new Date(trimmed);
   if (Number.isNaN(parsed.getTime())) return null;
   return parsed.toISOString();
+}
+
+/**
+ * A custom payment-terms text input → whole days 0–365, or null. Mirrors the
+ * confirm endpoint's zod admission (`dueInDays` int 0–365; 0 = due on
+ * receipt, 365 = the cap) so a doomed submission is refused in the form, not
+ * by a round trip.
+ */
+export function parseDueInDays(text: string): number | null {
+  const cleaned = text.trim();
+  if (!/^\d{1,3}$/.test(cleaned)) return null;
+  const value = Number(cleaned);
+  return value <= 365 ? value : null;
+}
+
+/**
+ * The overdue scan's rule as a display fact (R-12-7): past due and still
+ * owing. The server's `paymentStatus` is the paid half of the derivation —
+ * a $0 invoice is vacuously paid — so this reads exactly what the daily
+ * worker reads, at render time. Display-only: the reminder ledger, not the
+ * clock, decides who actually gets a bell.
+ */
+export function isInvoiceOverdue(
+  invoice: { dueAt: string | null; paymentStatus: string },
+  now: Date = new Date(),
+): boolean {
+  return (
+    invoice.dueAt !== null &&
+    invoice.paymentStatus !== "paid" &&
+    new Date(invoice.dueAt).getTime() < now.getTime()
+  );
 }
