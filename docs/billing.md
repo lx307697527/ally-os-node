@@ -503,6 +503,60 @@ migration(记账/作废/两渠道建链接的 API 半边是切片 2 与 #193 渠
 - 老任务处置见 `docs/cron-migration.md`(billing-invoice-overdue-sweep →
   invoice-overdue-reminders)。
 
+## 已落地:贷项单内核(#192 红冲切片)
+
+设计权威:#232 §10「分期、更正、**贷项**」。发票内核切片预留的承诺在此兑现:
+已发出的票行锁定不可改,红冲**不是对已发行行的改写,而是一张新单据**。
+老系统对照:billing.invoices 没有贷项概念,更正靠 `status='refunded'` 直接改写
+快照(#88 手工时代);credit memo 是 QuickBooks 的一等公民(#181 推送的路标)。
+
+### 数据模型(0038,expand-only)
+
+- **`credit_notes`**:`credit_note_status` 枚举(与发票同构的三态:
+  draft / issued / void)、硬外键 `invoice_id`(被冲抵对象无歧义,不需要多态
+  锚点)、`reason` 必填(贷项单是更正的叙事本体,无因之冲不可考)、`currency`
+  从原票抄录(自描述,收款行同裁)。编号走 numbering subject `credit_note`
+  (billing/registry.ts 注册,无生效规则 409 fail closed 同发票)。
+- **`credit_note_lines`**:与 invoice_lines 同构(三位小数、整数分、生成列
+  行合计、行序即行文序)。贷项行是「负向的行」,但金额照记非负——冲抵方向由
+  单据类型携带,读法不需要学会处理负数。
+- **无 source 幂等列**:当前唯一入口是财务手工创建(#239 变更单触发域进场时
+  expand 唯一索引,expand-only 不需要回填)。
+
+### 四个口径裁决
+
+1. **状态机与发票同构,draft → issued 是 R-12-6 同一道人闸**:贷项单和发票
+   一样是发给客户的钱面文件,不存在「系统自动冲抵」——草稿确认前不计入有效
+   应付(草稿贷项不能让发票提前变「paid」)。issued 是终态:开错的贷项单按
+   QuickBooks 同款模式用新发票冲回,不在本表翻烧饼。
+2. **冲抵边界是结构约束**:一张票名下**在世(draft + issued)贷项合计 ≤ 原票
+   合计**,由创建事务在发票行锁内校验(原票 issued 后行合计冻结、贷项只增或
+   经 void 缩小,边界自此无漂移窗口);草稿也占边界——两张草稿各自都在边界内、
+   先后确认就超冲的窗口在这里关死。超冲 409 `credit_exceeds_invoice`:把应付
+   冲成负数不是更正,是另一笔交易(退款走 #240)。
+3. **有效应付的唯一权威算术**:`effectiveDueCents = 发票合计 − 有效贷项合计`
+   (billing/credits.ts)。付款态派生(`computePaymentStatus` 的应付口径)、
+   Stripe/PayPal checkout 的结算额、逾期扫描的 outstanding 全部从这里取——
+   全冲抵的票 vacuously paid,结构性出局逾期扫描;链接/订单不能按原面额把
+   客户多收一遍。发票面金额(`totalCents`)**恒不变**,读面新增
+   `creditedCents`。
+4. **金额纪律三层防线与发票同款**:整数分、生成列行合计(PG numeric round 是
+   唯一舍入权威)、读面实时 SUM 不落快照——发票合计、有效贷项、有效收款三个
+   派生值各自结构性无漂移(bug554 家族的三重不可能)。
+
+### 端点(全部 invoices.manage 门)
+
+- `POST /api/invoices/:id/credit-notes`(开贷项草稿;409: not_issued /
+  invoice_voided / credit_exceeds_invoice / numbering_not_configured)、
+  `GET /api/invoices/:id/credit-notes`(台账:有效合计只数 issued,行含
+  void 留痕)、`GET /api/credit-notes/:id`(详情含行)。
+- `POST /api/credit-notes/:id/confirm`(draft → issued,冲抵自此计入;重复
+  幂等 already 不落审计)、`POST /api/credit-notes/:id/void`(draft → void;
+  issued 终态不可作废 409 not_voidable)。审计 credit_note.created /
+  confirmed / voided(detail 恒记 number + invoiceNumber + creditedCents)。
+- 贷项动作的 web 面(发票详情页的冲抵台账与动作按钮)随下一个 web 切片;
+  本切片 API 契约先行(web client zod 已同步 creditedCents)。
+
 ## 剩余(#192 保持 open,Part of #192)
 
 1. **触发点接线**(属主域各自进场):打样/调味费(#238)、定金(#231,比例
@@ -515,4 +569,5 @@ migration(记账/作废/两渠道建链接的 API 半边是切片 2 与 #193 渠
    terms/due 的 web 面已落)、收款状态回写订单/批次(#241 发货门槛,读
    `computePaymentStatus`)、QuickBooks 推送(#181,含银行流水认领)、第一笔款
    到账转正式客户(R-02-5)等收款触发业务;
-4. PDF 存档(#128 统一 PDF 服务)、分期/更正/贷项(红冲动词)。
+4. PDF 存档(#128 统一 PDF 服务)、**分期**(拆期开票;红冲的贷项单内核已落,
+   剩贷项动作的 web 面)。

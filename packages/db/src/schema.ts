@@ -1283,7 +1283,8 @@ export const rulesEffectDigestRuns = pgTable("rules_effect_digest_runs", {
 // draft → void（作废）。付款态不 expand 进本枚举（0023 时的预告被收款切片
 // 推翻，裁决见 payments 表注释）：invoice_status 只回答「单据走到哪一步」，
 // 「钱收了多少」是收款台账对实时 SUM 的回答。issued 行不可再改——更正/贷项
-// （红冲）是 #192 后续切片的新动词，不改写已发出的行。到期日的内部逾期半边
+// （红冲）是独立的贷项单（credit_notes，#192 红冲切片），不改写已发出的行。
+// 到期日的内部逾期半边
 // （due_at + 扫描台账）已落：**给客户的**到期前提醒（R-12-7 前半）随客户门户
 // 与渠道层接线——没有收件人的邮件不存在。
 export const invoiceType = pgEnum("invoice_type", [
@@ -1440,4 +1441,81 @@ export const payments = pgTable(
     // 「算了 0」不是「没有」：两态必须只能落其一（表注释第 4 条；NULL 直通 CHECK）
     check("payments_surcharge_positive", sql`${t.surchargeCents} > 0`),
   ],
+);
+
+// ── 贷项单内核（#192 红冲切片：issued 票的更正动词）───────────────────────────
+// #232 §10「分期、更正、贷项」。发票内核切片预留的承诺在此兑现：已发出的票行
+// 锁定不可改，红冲**不是对已发行行的改写，而是一张新单据**——贷项单引用原票，
+// 按「负向的行」陈述冲抵多少；原票面额恒不变（发票面不变裁决与附加费同源）。
+// 老系统对照：billing.invoices 没有贷项概念，更正靠 status='refunded' 直接改写
+// 快照（#88 手工时代）；credit memo 是 QuickBooks 的一等公民（#181 推送的路标）。
+//
+// 1. **状态机与发票同构**：draft → issued（财务确认，R-12-6 同一道人闸——贷项
+//    单和发票一样是发给客户的钱面文件，不存在「系统自动冲抵」）、draft → void。
+//    issued 是终态：开错的贷项单按 QuickBooks 同款模式用新发票冲回，不在本表
+//    翻烧饼。
+// 2. **冲抵边界是结构约束**：一张票名下有效（未 void）贷项合计 ≤ 原票合计，
+//    由创建事务在发票行锁内校验（原票 issued 后行合计冻结、贷项只增或经 void
+//    缩小，边界此后无漂移窗口）。超冲映射 409 credit_exceeds_invoice——把客户
+//    的应付冲成负数不是更正，是另一笔交易（退款走 #240）。
+// 3. **金额纪律三层防线与发票同款**：整数分、行合计生成列（PG numeric round
+//    是唯一舍入权威，JS 不复实现）、读面实时 SUM 不落快照——发票合计、有效
+//    贷项、有效收款三个派生值各自结构性无漂移（bug554 家族的三重不可能）。
+// 4. **无 source 幂等列**：贷项单当前唯一入口是财务手工创建（触发点——签后
+//    变更单 #239 的「按进度算建议退款」——属 phase-2 未进场）；触发域进场时
+//    expand (source_type, source_key) 唯一索引，届时不需要回填（expand-only）。
+export const creditNoteStatus = pgEnum("credit_note_status", ["draft", "issued", "void"]);
+
+export const creditNotes = pgTable(
+  "credit_notes",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    // 单据号：创建事务里经 numbering subject "credit_note" 分配（没有编号的
+    // 单据不存在，fail closed 同发票）
+    number: text("number").notNull(),
+    // 被冲抵的原票：硬外键（被冲抵对象无歧义，不需要多态锚点）；只对 issued
+    // 票开（draft 该改草稿、void 是死票），状态门在服务层
+    invoiceId: uuid("invoice_id")
+      .notNull()
+      .references(() => invoices.id),
+    status: creditNoteStatus("status").notNull().default("draft"),
+    // 冲抵事由必填：贷项单是更正的叙事本体（为什么冲、冲什么），无因之冲不可考
+    reason: text("reason").notNull(),
+    // 币种从原票抄录（自描述，#181 QuickBooks 推送的路标——收款行同裁）
+    currency: text("currency").notNull().default("USD"),
+    issuedAt: timestamp("issued_at", { withTimezone: true }),
+    issuedById: uuid("issued_by_id").references(() => authUser.id, { onDelete: "set null" }),
+    voidedAt: timestamp("voided_at", { withTimezone: true }),
+    voidedById: uuid("voided_by_id").references(() => authUser.id, { onDelete: "set null" }),
+    voidReason: text("void_reason"),
+    createdById: uuid("created_by_id").references(() => authUser.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("credit_notes_number_idx").on(t.number),
+    // 「这张票冲过哪些账」主读法；贷项单无删除路径（只 void），NO ACTION 即底线
+    index("credit_notes_invoice_id_idx").on(t.invoiceId),
+  ],
+);
+
+// 行项与 invoice_lines 同构：quantity 三位小数、整数分单价、生成列行合计、
+// 行序即行文序。贷项行是「负向的行」，但金额照记非负——冲抵方向由单据类型
+// 携带，读法（有效应付 = 发票合计 − 有效贷项合计）不需要学会处理负数。
+export const creditNoteLines = pgTable(
+  "credit_note_lines",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    creditNoteId: uuid("credit_note_id")
+      .notNull()
+      .references(() => creditNotes.id, { onDelete: "cascade" }),
+    lineNumber: integer("line_number").notNull(),
+    description: text("description").notNull(),
+    quantity: numeric("quantity", { precision: 12, scale: 3 }).notNull(),
+    unitPriceCents: integer("unit_price_cents").notNull(),
+    lineTotalCents: integer("line_total_cents")
+      .notNull()
+      .generatedAlwaysAs(sql`round(quantity * unit_price_cents)`),
+  },
+  (t) => [index("credit_note_lines_credit_note_id_idx").on(t.creditNoteId, t.lineNumber)],
 );

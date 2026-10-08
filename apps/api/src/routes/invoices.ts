@@ -19,6 +19,7 @@ import {
   updateDraftLines,
   voidInvoice,
 } from "../billing/service.ts";
+import { effectiveDueCents, sumCreditCents } from "../billing/credits.ts";
 import { computePaymentStatus, sumPaidCents } from "../billing/payments.ts";
 import { NoActiveRuleError } from "../numbering/service.ts";
 
@@ -113,6 +114,7 @@ function presentInvoice(
     updatedAt: Date;
   },
   totalCents: number,
+  creditedCents: number,
   paidCents: number,
   lines?: {
     id: string;
@@ -134,9 +136,12 @@ function presentInvoice(
         ? { type: row.subjectType, id: row.subjectId }
         : null,
     totalCents,
-    // 付款态是派生值（billing/payments.ts）：draft/void 票没有付款行，恒 unpaid
+    // 有效贷项合计（#192 红冲切片）：未 void 贷项单实时 SUM，原票面额不变
+    creditedCents,
+    // 付款态是派生值（billing/payments.ts）：应付口径是有效应付（发票合计 −
+    // 有效贷项）；draft/void 票没有付款行，恒 unpaid
     paidCents,
-    paymentStatus: computePaymentStatus(totalCents, paidCents),
+    paymentStatus: computePaymentStatus(effectiveDueCents(totalCents, creditedCents), paidCents),
     issuedAt: row.issuedAt,
     // null = 未约定账期（不进逾期扫描，R-12-7 的语义半边由数据自己说）
     dueAt: row.dueAt,
@@ -242,11 +247,29 @@ export function invoicesRoutes(deps: { db: Db; logger: Logger }) {
       .from(schema.payments)
       .where(isNull(schema.payments.voidedAt))
       .groupBy(schema.payments.invoiceId);
+    const creditedSums = await deps.db
+      .select({
+        invoiceId: schema.creditNotes.invoiceId,
+        credited: sql<string>`coalesce(sum(${schema.creditNoteLines.lineTotalCents}), 0)`,
+      })
+      .from(schema.creditNotes)
+      .innerJoin(
+        schema.creditNoteLines,
+        eq(schema.creditNoteLines.creditNoteId, schema.creditNotes.id),
+      )
+      .where(eq(schema.creditNotes.status, "issued"))
+      .groupBy(schema.creditNotes.invoiceId);
     const totals = new Map(lineSums.map((row) => [row.invoiceId, Number(row.total)]));
     const paids = new Map(paidSums.map((row) => [row.invoiceId, Number(row.paid)]));
+    const crediteds = new Map(creditedSums.map((row) => [row.invoiceId, Number(row.credited)]));
     return c.json({
       invoices: rows.map((row) =>
-        presentInvoice(row, totals.get(row.id) ?? 0, paids.get(row.id) ?? 0),
+        presentInvoice(
+          row,
+          totals.get(row.id) ?? 0,
+          crediteds.get(row.id) ?? 0,
+          paids.get(row.id) ?? 0,
+        ),
       ),
     });
   });
@@ -278,8 +301,9 @@ export function invoicesRoutes(deps: { db: Db; logger: Logger }) {
       .where(eq(schema.invoiceLines.invoiceId, row.id))
       .orderBy(asc(schema.invoiceLines.lineNumber));
     const totalCents = lines.reduce((sum, line) => sum + line.lineTotalCents, 0);
+    const creditedCents = await sumCreditCents(deps.db, row.id);
     const paidCents = await sumPaidCents(deps.db, row.id);
-    return c.json(presentInvoice(row, totalCents, paidCents, lines));
+    return c.json(presentInvoice(row, totalCents, creditedCents, paidCents, lines));
   });
 
   app.patch("/api/invoices/:id", requireInvoicesManage, async (c) => {

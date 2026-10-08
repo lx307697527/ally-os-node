@@ -69,7 +69,14 @@ export function paymentsRoutes(deps: { db: Db; logger: Logger }) {
       return c.json({ error: "invalid_request" }, 400);
     }
     let recorded:
-      | { id: string; number: string; totalCents: number; paidCents: number; paymentStatus: string }
+      | {
+          id: string;
+          number: string;
+          totalCents: number;
+          creditedCents: number;
+          paidCents: number;
+          paymentStatus: string;
+        }
       | null;
     try {
       recorded = await deps.db.transaction(async (tx) =>
@@ -102,6 +109,7 @@ export function paymentsRoutes(deps: { db: Db; logger: Logger }) {
         paymentStatus: recorded.paymentStatus,
         paidCents: recorded.paidCents,
         totalCents: recorded.totalCents,
+        creditedCents: recorded.creditedCents,
         ...(body.sourceType !== undefined && body.sourceKey !== undefined
           ? { sourceType: body.sourceType, sourceKey: body.sourceKey }
           : {}),
@@ -112,6 +120,7 @@ export function paymentsRoutes(deps: { db: Db; logger: Logger }) {
         id: recorded.id,
         paidCents: recorded.paidCents,
         totalCents: recorded.totalCents,
+        creditedCents: recorded.creditedCents,
         paymentStatus: recorded.paymentStatus,
       },
       201,
@@ -147,6 +156,7 @@ export function paymentsRoutes(deps: { db: Db; logger: Logger }) {
           number: string;
           amountCents: number;
           method: string;
+          creditedCents: number;
           paidCents: number;
           paymentStatus: string;
         }
@@ -173,11 +183,17 @@ export function paymentsRoutes(deps: { db: Db; logger: Logger }) {
           method: voided.method,
           paymentStatus: voided.paymentStatus,
           paidCents: voided.paidCents,
+          creditedCents: voided.creditedCents,
           reason: parsed.data.reason,
         },
       });
     }
-    return c.json({ status: voided.outcome, paidCents: voided.paidCents, paymentStatus: voided.paymentStatus });
+    return c.json({
+      status: voided.outcome,
+      paidCents: voided.paidCents,
+      creditedCents: voided.creditedCents,
+      paymentStatus: voided.paymentStatus,
+    });
   });
 
   return app;

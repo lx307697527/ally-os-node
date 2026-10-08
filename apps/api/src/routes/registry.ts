@@ -179,6 +179,12 @@ export const API_ROUTES: readonly RouteDecl[] = [
   { method: "POST", path: "/api/invoices/:id/payments", auth: { kind: "permission", permission: "invoices.manage" } },
   { method: "GET", path: "/api/invoices/:id/payments", auth: { kind: "permission", permission: "invoices.manage" } },
   { method: "POST", path: "/api/payments/:id/void", auth: { kind: "permission", permission: "invoices.manage" } },
+  // 贷项单（#192 红冲切片）：issued 票的更正动词，invoices.manage 同门
+  { method: "POST", path: "/api/invoices/:id/credit-notes", auth: { kind: "permission", permission: "invoices.manage" } },
+  { method: "GET", path: "/api/invoices/:id/credit-notes", auth: { kind: "permission", permission: "invoices.manage" } },
+  { method: "GET", path: "/api/credit-notes/:id", auth: { kind: "permission", permission: "invoices.manage" } },
+  { method: "POST", path: "/api/credit-notes/:id/confirm", auth: { kind: "permission", permission: "invoices.manage" } },
+  { method: "POST", path: "/api/credit-notes/:id/void", auth: { kind: "permission", permission: "invoices.manage" } },
   // Stripe 渠道（#193）：checkout 链接是财务面（invoices.manage 同门）；webhook
   // 是 provider 面——公开指「不过会话中间件」，认证 = Stripe-Signature 验签
   // （routes/stripe-webhook.ts），漏登记才是真的口子

@@ -30,6 +30,9 @@ const invoiceSchema = z.object({
   currency: z.string(),
   subject: z.object({ type: z.string(), id: z.string() }).nullable(),
   totalCents: z.number().int(),
+  // 有效贷项合计（#192 红冲切片）：paymentStatus 的应付口径是发票合计 − 它；
+  // 贷项台账的展示随贷项动作 web 面切片
+  creditedCents: z.number().int(),
   paidCents: z.number().int(),
   paymentStatus: z.enum(["unpaid", "partial", "paid"]),
   issuedAt: z.string().nullable(),
@@ -71,6 +74,7 @@ const paymentRowSchema = z.object({
 
 const paymentsLedgerSchema = z.object({
   totalCents: z.number().int(),
+  creditedCents: z.number().int(),
   paidCents: z.number().int(),
   paymentStatus: z.enum(["unpaid", "partial", "paid"]),
   payments: z.array(paymentRowSchema),
@@ -80,12 +84,14 @@ const paymentRecordedSchema = z.object({
   id: z.string(),
   paidCents: z.number().int(),
   totalCents: z.number().int(),
+  creditedCents: z.number().int(),
   paymentStatus: z.string(),
 });
 
 const paymentVoidedSchema = z.object({
   status: z.string(),
   paidCents: z.number().int(),
+  creditedCents: z.number().int(),
   paymentStatus: z.string(),
 });
 
@@ -148,11 +154,17 @@ export type PaymentActionFailure =
   | { ok: false; reason: "misconfigured" };
 
 export type PaymentRecordResult =
-  | { ok: true; data: { paidCents: number; totalCents: number; paymentStatus: string } }
+  | {
+      ok: true;
+      data: { paidCents: number; totalCents: number; creditedCents: number; paymentStatus: string };
+    }
   | PaymentActionFailure;
 
 export type PaymentVoidResult =
-  | { ok: true; data: { outcome: string; paidCents: number; paymentStatus: string } }
+  | {
+      ok: true;
+      data: { outcome: string; paidCents: number; creditedCents: number; paymentStatus: string };
+    }
   | PaymentActionFailure;
 
 export type PaymentLinkResult =
@@ -340,6 +352,7 @@ export function createInvoiceAdapters(fetchFn: typeof fetch = fetch): InvoiceAda
           data: {
             paidCents: parsed.data.paidCents,
             totalCents: parsed.data.totalCents,
+            creditedCents: parsed.data.creditedCents,
             paymentStatus: parsed.data.paymentStatus,
           },
         };
@@ -363,6 +376,7 @@ export function createInvoiceAdapters(fetchFn: typeof fetch = fetch): InvoiceAda
           data: {
             outcome: parsed.data.status,
             paidCents: parsed.data.paidCents,
+            creditedCents: parsed.data.creditedCents,
             paymentStatus: parsed.data.paymentStatus,
           },
         };
