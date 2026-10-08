@@ -102,10 +102,13 @@ non-2xx), so each row carries a `dedupe_key` and the `(user_id, dedupe_key)`
 partial unique index (migration 0034, expand-only) turns a redelivered fact into
 a no-op — at most one row per person per fact, the structural answer to retry
 spam. The realtime nudge goes only to users who actually got a NEW row.
-Deliberately NOT in the bell whitelist yet: the href-parity guard requires a
-real destination and there is no invoice page (#192 remaining ④) — the payload
-carries `title`/`detail` facts for the honest fallback face (same ruling as
-`approval.completed`), and the email digest reads the same facts.
+Bell whitelist (2026-10-08, #192 slice 4): the finance confirmation page
+(`/invoices/:id`) is the carrier page, so both types joined the whitelist — the
+face reuses the payload's `title`/`detail` facts (copy is assembled server-side
+from bank facts, RULE-010) and deep-links to the invoice via the aggregate
+(`aggregateType: "invoice"`); an unanchored row (unbookable with no invoice)
+keeps `href: null` and only marks read — no destination is guessed. The
+href-parity guard now checks `/invoices/:invoiceId` against App.tsx.
 
 Worker-side producer (#220 timeout slice, 2026-10-08): the workflow timeout scan
 (`workflow-timeout-reminders`, hourly at :50) inserts `workflow.state_overdue` rows

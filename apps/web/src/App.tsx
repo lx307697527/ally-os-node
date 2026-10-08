@@ -16,6 +16,8 @@ import { Approvals } from "./shared/pages/Approvals.tsx";
 import { Automations } from "./shared/pages/Automations.tsx";
 import { CustomFields } from "./shared/pages/CustomFields.tsx";
 import { DeletedRecords } from "./shared/pages/DeletedRecords.tsx";
+import { InvoiceDetail } from "./shared/pages/InvoiceDetail.tsx";
+import { Invoices } from "./shared/pages/Invoices.tsx";
 import { NotificationSettings } from "./shared/pages/NotificationSettings.tsx";
 import { NumberingRules } from "./shared/pages/NumberingRules.tsx";
 import { RulesRegistry } from "./shared/pages/RulesRegistry.tsx";
@@ -133,6 +135,14 @@ export function App(): ReactElement {
           {/* 审批待办（#221 切片 3）：配置点名给我的在飞请求；裁决语境随
               待办行走，详情记录仍过单据可见性门——两扇门在页面里都说话。 */}
           <Route path="/approvals" element={<Approvals />} />
+          {/* 发票（#192 切片 4：财务确认页）：invoices.manage 门后，待确认草稿
+              是财务的主读法——系统出的每张票都从这里核对后发出（R-12-6），
+              确认前不碰客户。 */}
+          <Route path="/invoices" element={<Invoices />} />
+          {/* 发票详情（#192 切片 4）：核对行、改草稿、确认发出、作废与收款台账
+              都在这张票上；payment.* 两类收款告警的深链落点（billing.md 白名单
+              裁决的承载页）。行属门在服务端，无关人得到明确的「不可用」。 */}
+          <Route path="/invoices/:invoiceId" element={<InvoiceDetail />} />
           {/* 审计日志（#29）：System 区第一个页面；服务端 audit.read 门，
               无权限的账号在页面里得到明确的答复，不预设谁能进来。 */}
           <Route path="/system/audit" element={<AuditLog />} />

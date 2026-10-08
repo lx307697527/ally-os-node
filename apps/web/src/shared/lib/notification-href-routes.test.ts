@@ -20,8 +20,29 @@ const REGISTERED: string[] = [...app.matchAll(/path="([^"]+)"/g)].map((m) => m[1
 
 const TASK_ID = "1f0e9c2a-3b4d-4e5f-8a9b-0c1d2e3f4a5b";
 const COMMENT_ID = "9a8b7c6d-5e4f-4a3b-2c1d-0e9f8a7b6c5d";
+const INVOICE_ID = "3c5e7f90-a1b2-4c3d-8e9f-0a1b2c3d4e5f";
+
+const PAYMENT_EVENTS: readonly string[] = ["payment.attempt_failed", "payment.unbookable"];
 
 function rowFor(eventType: string): NotificationRow {
+  if (PAYMENT_EVENTS.includes(eventType)) {
+    // 收款告警（#193）：聚合是发票，payload 带服务端拼好的 title/detail 与
+    // invoiceId（深链的原料）。
+    return {
+      id: "n-1",
+      eventType,
+      aggregateType: "invoice",
+      aggregateId: INVOICE_ID,
+      payload: {
+        title: "A stripe payment arrived but could not be recorded",
+        detail: "A stripe payment of USD 100.00 arrived but could not be recorded.",
+        invoiceId: INVOICE_ID,
+        channel: "stripe",
+      },
+      isRead: false,
+      createdAt: "2026-10-06T08:00:00.000Z",
+    };
+  }
   return {
     id: "n-1",
     eventType,
@@ -58,6 +79,9 @@ describe("notification hrefs land on real routes (#110 slice 1)", () => {
   it("App.tsx actually registered routes (the guard has something to check)", () => {
     expect(REGISTERED).toContain("/tasks/:taskId");
     expect(REGISTERED).toContain("/tasks");
+    // 收款告警的承载页（#192 财务确认页）
+    expect(REGISTERED).toContain("/invoices/:invoiceId");
+    expect(REGISTERED).toContain("/invoices");
   });
 
   it("every whitelisted event's face has a href that resolves — catch-all excluded", () => {
@@ -80,5 +104,12 @@ describe("notification hrefs land on real routes (#110 slice 1)", () => {
   it("the follower's comment notification deep-links to the comment too (#110 slice 4)", () => {
     const face = describeNotification(rowFor("comment.created"));
     expect(face.href).toBe(`/tasks/${TASK_ID}?comment=${COMMENT_ID}`);
+  });
+
+  it("a payment alert deep-links to the invoice it is about (#193 → #192)", () => {
+    for (const eventType of PAYMENT_EVENTS) {
+      const face = describeNotification(rowFor(eventType));
+      expect(face.href, `${eventType} lands on the invoice page`).toBe(`/invoices/${INVOICE_ID}`);
+    }
   });
 });
