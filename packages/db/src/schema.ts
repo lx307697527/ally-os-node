@@ -1813,3 +1813,61 @@ export const invoiceDocuments = pgTable(
     uniqueIndex("invoice_documents_key_idx").on(t.storageKey),
   ],
 );
+
+// ── 统一模板（#225 切片 2：配置工作室的模板配置面）───────────────────────────
+// 内容模板（邮件先行，短信随其基建进场后注册 channel 即用）的统一存储。与老
+// 系统的对应：`comms.email_templates` + `comms.email_template_versions`（DB 表
+// + `{{var}}` 占位符，渲染在调用方，缺失变量保留原样可诊断）；占位符与校验的
+// 语义内核在 @ally/templates，消费方接缝是 apps/api/src/templates/service.ts
+// 的 resolveAuthEmail（三封认证邮件的内置文案是兜底，不是唯一真相）。
+//
+// 1. **行身份 = (channel, template_type) 唯一**：一个用途一套生效内容，停用
+//    （is_active = false）= 消费方回退内置文案——「删模板」没有端点，停用就是
+//    它的诚实形态（配置的可逆性比 DELETE 强：内容与版本史都还在）。
+// 2. **不进 config-revisions（#226）**：与 pdf_template_config 同族裁决的延伸
+//    ——模板是即改即生效的展示面，没有「先审后上」的消费需求；版本化由下面的
+//    不可变版本表自己承担（#131 的「版本回滚」吃这张表），追溯由审计
+//    （template.created / template.updated / template.rolled_back）承担。
+// 3. **channel 是开集但注册制**：注册是「我真的会按这个 channel 消费」的承诺
+//    （numbering/registry.ts 同裁），未注册 channel 配不出死配置（fail closed）。
+export const systemTemplates = pgTable(
+  "system_templates",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    // 频道（开集 text，@ally/templates 注册表裁决形状）：email 先行
+    channel: text("channel").notNull(),
+    // 模板用途（开集 text）：account_invite / password_reset / email_verification / …
+    templateType: text("template_type").notNull(),
+    // 主题模板；不带主题的 channel（短信）恒为 null（@ally/templates 校验）
+    subjectTemplate: text("subject_template"),
+    bodyTemplate: text("body_template").notNull(),
+    // 停用 = 消费方回退内置文案，不是删除（版本史留档）
+    isActive: boolean("is_active").notNull().default(true),
+    // 行上的最新版本号 = system_template_versions 的最大 version（写入侧同事务同步）
+    version: integer("version").notNull().default(1),
+    createdById: uuid("created_by_id").references(() => authUser.id, { onDelete: "set null" }),
+    updatedById: uuid("updated_by_id").references(() => authUser.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex("system_templates_channel_type_idx").on(t.channel, t.templateType)],
+);
+
+// 不可变版本史：每次内容实效变更一行（回滚 = 旧内容落成一个新版本，不改写
+// 历史——config_revisions 的 rolled_back 同一语义）。代码从不 UPDATE/DELETE 本表
+// （审计表同款纪律）；行随主行 CASCADE 只服务测试清理。
+export const systemTemplateVersions = pgTable(
+  "system_template_versions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    templateId: uuid("template_id")
+      .notNull()
+      .references(() => systemTemplates.id, { onDelete: "cascade" }),
+    version: integer("version").notNull(),
+    subjectTemplate: text("subject_template"),
+    bodyTemplate: text("body_template").notNull(),
+    changedById: uuid("changed_by_id").references(() => authUser.id, { onDelete: "set null" }),
+    changedAt: timestamp("changed_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex("system_template_versions_template_version_idx").on(t.templateId, t.version)],
+);

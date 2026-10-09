@@ -49,6 +49,7 @@ import type { PayPalChannel } from "./billing/paypal.ts";
 import { realtimeRoutes } from "./routes/realtime.ts";
 import { rulesRoutes } from "./routes/rules.ts";
 import { tasksRoutes } from "./routes/tasks.ts";
+import { templatesRoutes } from "./routes/templates.ts";
 import { userRolesRoutes } from "./routes/user-roles.ts";
 import { usersRoutes } from "./routes/users.ts";
 import { workflowInstancesRoutes } from "./routes/workflow-instances.ts";
@@ -222,6 +223,9 @@ app.route("/", errorIngestRoutes(deps));
   // 可编号 subject 注册表（numbering/registry.ts）本切片为空——发票/报价/PO 等
   // 单据域（phase-2+）进场时注册；发号是属主域事务里的进程内调用，无 HTTP 面
   app.route("/", numberingRulesRoutes(deps));
+  // 内容模板（#225 切片 2）：配置工作室的模板配置面（templates.configure 权限点）。
+  // 消费方（认证邮件的模板解析）是进程内调用，无 HTTP 面——发号无端点的同一裁法
+  app.route("/", templatesRoutes(deps));
   // 实时连接令牌（#110 切片 2）：发还调用者自己会话的令牌给 WS auth 帧用
   app.route("/", realtimeRoutes(deps));
   // 审计日志查询（#29）：audit.read 权限点门（owner/admin 默认）

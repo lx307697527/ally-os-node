@@ -9,6 +9,12 @@ import { schema } from "@ally/db";
 import type { Logger } from "pino";
 import type { Mailer } from "@ally/mailer";
 import { renderAccountInviteEmail, renderPasswordResetEmail, renderVerificationEmail } from "@ally/mailer";
+import {
+  ACCOUNT_INVITE_TEMPLATE_TYPE,
+  EMAIL_VERIFICATION_TEMPLATE_TYPE,
+  PASSWORD_RESET_TEMPLATE_TYPE,
+  resolveAuthEmail,
+} from "../templates/service.ts";
 import { verifyLegacyPassword } from "./legacy-password.ts";
 import type { ResolveSession } from "./session.ts";
 
@@ -111,19 +117,21 @@ export function createAuth(deps: AuthDeps) {
         // 密码的人发「有人请求了重置」是惊吓不是邀请。同一条重置通道服务两个
         // 语义,判定只看凭据存在性,不另立状态列(#25「认领不另设标记」同裁)。
         const invited = !(await hasCredentialPassword(deps.db, user.id));
-        const content = invited
-          ? renderAccountInviteEmail({
-              to: user.email,
-              name: user.name,
-              link,
-              expiry: RESET_PASSWORD_EXPIRY_LABEL,
-            })
-          : renderPasswordResetEmail({
-              to: user.email,
-              name: user.name,
-              link,
-              expiry: RESET_PASSWORD_EXPIRY_LABEL,
-            });
+        // 措辞先查内容模板(#225 切片 2):管理员可覆盖内置文案;行不在/停用/
+        // 查行失败一律回退内置(resolveAuthEmail 自兜底,不抛)——认证邮件的
+        // 可用性优先于模板定制
+        const content = await resolveAuthEmail(
+          deps.db,
+          deps.logger,
+          invited ? ACCOUNT_INVITE_TEMPLATE_TYPE : PASSWORD_RESET_TEMPLATE_TYPE,
+          {
+            to: user.email,
+            name: user.name,
+            link,
+            expiry: RESET_PASSWORD_EXPIRY_LABEL,
+          },
+          invited ? renderAccountInviteEmail : renderPasswordResetEmail,
+        );
         // 发送失败绝不阻塞重置请求(老系统 auth-send-email「永远 200」的同款
         // 裁定):响应已反枚举,请求方拿不到「发了/没发」的差别;没收到就再要一封。
         try {
@@ -148,12 +156,19 @@ export function createAuth(deps: AuthDeps) {
           base !== ""
             ? `${base}/verify-email?token=${encodeURIComponent(token)}`
             : url;
-        const content = renderVerificationEmail({
-          to: user.email,
-          name: user.name,
-          link,
-          expiry: VERIFICATION_EXPIRY_LABEL,
-        });
+        // 措辞先查内容模板(#225 切片 2,同 sendResetPassword 的兜底语义)
+        const content = await resolveAuthEmail(
+          deps.db,
+          deps.logger,
+          EMAIL_VERIFICATION_TEMPLATE_TYPE,
+          {
+            to: user.email,
+            name: user.name,
+            link,
+            expiry: VERIFICATION_EXPIRY_LABEL,
+          },
+          renderVerificationEmail,
+        );
         // 发送失败绝不阻塞注册（老系统 auth-send-email「永远 200」的同款裁定）：
         // 邮件可以重发，卡死的注册没法接受。
         try {
