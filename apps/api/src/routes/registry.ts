@@ -52,6 +52,13 @@ export const API_ROUTES: readonly RouteDecl[] = [
   { method: "PUT", path: "/api/notifications/preferences", auth: { kind: "session" } },
   // 反馈上报（#129）：任何登录者可提交
   { method: "POST", path: "/api/feedback-reports", auth: { kind: "session" } },
+  // 文件内核（#31 切片 1）：门序在路由内逐 subject 裁决（可见性 404、
+  // 动词 403），登录即可到达；下载签名 URL 只发给有权限的用户
+  { method: "POST", path: "/api/files/presign", auth: { kind: "session" } },
+  { method: "POST", path: "/api/files/:id/complete", auth: { kind: "session" } },
+  { method: "GET", path: "/api/files", auth: { kind: "session" } },
+  { method: "GET", path: "/api/files/:id/url", auth: { kind: "session" } },
+  { method: "DELETE", path: "/api/files/:id", auth: { kind: "session" } },
   // 任务（#113 切片 1）：创建人/经办人本人数据，登录即可；团队全局视图的
   // 权限点随 RBAC 模块切片裁决
   { method: "GET", path: "/api/tasks", auth: { kind: "session" } },

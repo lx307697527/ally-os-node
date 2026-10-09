@@ -26,6 +26,7 @@ import { customFieldsRoutes } from "./routes/custom-fields.ts";
 import { deletedRecordsRoutes } from "./routes/deleted-records.ts";
 import { esignaturesRoutes } from "./routes/esignatures.ts";
 import { feedbackRoutes } from "./routes/feedback.ts";
+import { filesRoutes } from "./routes/files.ts";
 import { followsRoutes } from "./routes/follows.ts";
 import { healthRoutes } from "./routes/health.ts";
 import { invoicesRoutes } from "./routes/invoices.ts";
@@ -164,6 +165,10 @@ export function createApp(deps: AppDeps) {
   // 通知与反馈（#129）：本人数据、登录即可，无需权限点
   app.route("/", notificationsRoutes(deps));
   app.route("/", feedbackRoutes(deps));
+  // 文件内核（#31 切片 1）：预签名直传 + 权限签发下载，字节不经 API。可挂文件
+  // 的 subject 由属主域在 files/registry.ts 注册（feedback_report 是第一个），
+  // 准入参数（类型/大小/数量/下载 TTL）与「谁能传/谁看得到」逐域裁决
+  app.route("/", filesRoutes(deps));
   // 任务（#113 切片 1）：创建人/经办人本人数据，登录即可；notifyUsers =
   // 分配通知落库后的实时「催」（#110 切片 2）
   app.route("/", tasksRoutes(deps));
