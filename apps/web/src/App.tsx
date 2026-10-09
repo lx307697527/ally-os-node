@@ -20,6 +20,7 @@ import { InvoiceDetail } from "./shared/pages/InvoiceDetail.tsx";
 import { Invoices } from "./shared/pages/Invoices.tsx";
 import { NotificationSettings } from "./shared/pages/NotificationSettings.tsx";
 import { NumberingRules } from "./shared/pages/NumberingRules.tsx";
+import { RateLimits } from "./shared/pages/RateLimits.tsx";
 import { RulesRegistry } from "./shared/pages/RulesRegistry.tsx";
 import { TaskDetail } from "./shared/pages/TaskDetail.tsx";
 import { Tasks } from "./shared/pages/Tasks.tsx";
@@ -152,6 +153,11 @@ export function App(): ReactElement {
           {/* 审计日志（#29）：System 区第一个页面；服务端 audit.read 门，
               无权限的账号在页面里得到明确的答复，不预设谁能进来。 */}
           <Route path="/system/audit" element={<AuditLog />} />
+          {/* 限流拒绝台账（#27 切片 2）：被拦请求的管理可见面——验收第 3 条
+              「管理页面能查看被拦截的请求」；服务端 audit.read 同门（与审计
+              日志同一批读者）。台账是遥测不是闸门——429 的权威在计数器，
+              页面只回答「谁在撞、撞什么、撞多狠」，没有任何放行动词。 */}
+          <Route path="/system/rate-limits" element={<RateLimits />} />
           {/* 删除记录（#29 切片 2）：软删台账的查看与恢复；服务端 audit.read 同门
               （与审计日志同一批读者），恢复不改写历史——台账行原地补 restored_*，
               页面把这条说在前头。 */}
