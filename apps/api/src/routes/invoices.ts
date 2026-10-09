@@ -5,9 +5,11 @@ import type { Logger } from "pino";
 import { z } from "zod";
 import type { Db } from "@ally/db";
 import { schema } from "@ally/db";
+import type { Storage } from "@ally/storage";
 import type { AppEnv } from "../auth/session.ts";
 import { requirePermission } from "../authz/middleware.ts";
 import { recordAudit } from "../audit/audit-log.ts";
+import { archiveInvoiceDocument, getOrBackfillInvoicePdf } from "../billing/pdf.ts";
 import {
   confirmInvoice,
   createDraftInvoice,
@@ -174,7 +176,7 @@ function presentInvoice(
   };
 }
 
-export function invoicesRoutes(deps: { db: Db; logger: Logger }) {
+export function invoicesRoutes(deps: { db: Db; logger: Logger; storage: Storage }) {
   const app = new Hono<AppEnv>();
   const requireInvoicesManage = requirePermission("invoices.manage");
 
@@ -416,6 +418,13 @@ export function invoicesRoutes(deps: { db: Db; logger: Logger }) {
             : {}),
         },
       });
+      // 确认时刻存档（#128）：渲染 + 落桶 + 记账，幂等。存档失败不拦确认
+      // （发票状态是事实，PDF 是它的投影）——读路径发现 issued 无存档会补档
+      try {
+        await archiveInvoiceDocument(deps.db, deps.storage, id.data, actorId);
+      } catch (err) {
+        deps.logger.warn({ err, invoiceId: id.data }, "invoice document archive failed");
+      }
     }
     return c.json({ status: confirmed.outcome });
   });
@@ -468,6 +477,33 @@ export function invoicesRoutes(deps: { db: Db; logger: Logger }) {
       });
     }
     return c.json({ status: voided.outcome });
+  });
+
+  // 单据字节（#128）：同一份 PDF 服务端生成——后台预览、后续邮件附件、客户
+  // 门户下载共用一个面。draft 现渲现回（DRAFT 横幅进版面，不落桶）；issued
+  // 读确认时刻的存档原件（byte-for-byte，模板变更不影响已发出的票），确认时
+  // 存档失败的由本路径补档；void 无文档可回（作废票不是商业文件）。
+  app.get("/api/invoices/:id/pdf", requireInvoicesManage, async (c) => {
+    const id = z.uuid().safeParse(c.req.param("id"));
+    if (!id.success) {
+      return c.json({ error: "invalid_request" }, 400);
+    }
+    const actorId = c.get("user").id;
+    let document: Awaited<ReturnType<typeof getOrBackfillInvoicePdf>>;
+    try {
+      document = await getOrBackfillInvoicePdf(deps.db, deps.storage, id.data, actorId);
+    } catch (err) {
+      // 存档读回失败（实现缺 get 能力/桶故障）是部署问题，不是 404
+      deps.logger.error({ err, invoiceId: id.data }, "invoice pdf read failed");
+      return c.json({ error: "storage_unavailable" }, 500);
+    }
+    if ("state" in document) {
+      if (document.state === "not_found") return c.json({ error: "not_found" }, 404);
+      return c.json({ error: "invoice_void" }, 409);
+    }
+    c.header("Content-Type", "application/pdf");
+    c.header("Content-Disposition", `inline; filename="${document.fileName}"`);
+    return c.body(Buffer.from(document.bytes));
   });
 
   return app;
