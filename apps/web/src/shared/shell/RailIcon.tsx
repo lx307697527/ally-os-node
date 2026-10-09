@@ -20,7 +20,7 @@
 // the labels beside it.
 import type { ReactElement, ReactNode } from "react";
 
-export type RailIconName = "overview" | "ledger" | "tasks" | "approvals" | "hash" | "stages" | "bolt" | "fields" | "restore";
+export type RailIconName = "overview" | "ledger" | "tasks" | "approvals" | "hash" | "stages" | "bolt" | "fields" | "restore" | "shield";
 
 const GLYPHS: Record<RailIconName, ReactNode> = {
   // A gauge: the arc, its baseline and one needle — where things stand.
@@ -93,6 +93,11 @@ const GLYPHS: Record<RailIconName, ReactNode> = {
       <path d="M8.5 5.5 4.75 9.25 8.5 13" />
       <path d="M4.75 9.25h9.5a5 5 0 0 1 5 5v0a5 5 0 0 1-5 5h-6" />
     </>
+  ),
+  // A shield: the plate that takes the hit — abuse control, where the
+  // refused requests are counted and shown, not where they are fought.
+  shield: (
+    <path d="M12 3.5 5.25 6.25v5c0 4.5 2.9 7.6 6.75 9.25 3.85-1.65 6.75-4.75 6.75-9.25v-5z" />
   ),
 };
 

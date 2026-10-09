@@ -174,6 +174,10 @@ export const API_ROUTES: readonly RouteDecl[] = [
   // 错误事件读面（#28 切片 1）：前后端错误「同一个地方查看」，audit.read 同门
   { method: "GET", path: "/api/error-events", auth: { kind: "permission", permission: "audit.read" } },
   { method: "GET", path: "/api/error-events/summary", auth: { kind: "permission", permission: "audit.read" } },
+  // 限流拒绝台账读面（#27 切片 2）：被拦请求的管理可见面（验收第 3 条），
+  // audit.read 同门——台账是遥测不是闸门，读者与审计日志是同一批人
+  { method: "GET", path: "/api/rate-limit-denials", auth: { kind: "permission", permission: "audit.read" } },
+  { method: "GET", path: "/api/rate-limit-denials/summary", auth: { kind: "permission", permission: "audit.read" } },
   // 删除记录的查看与恢复（#29 切片 2）：audit.read 同门——恢复把全公司可见性
   // 已关闭的行重新打开，是合规面动词，不随消费域给行属开 Trash 入口
   { method: "GET", path: "/api/deleted-records", auth: { kind: "permission", permission: "audit.read" } },

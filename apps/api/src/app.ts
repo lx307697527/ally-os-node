@@ -38,6 +38,7 @@ import { meRoutes } from "./routes/me.ts";
 import { notificationsRoutes } from "./routes/notifications.ts";
 import { numberingRulesRoutes } from "./routes/numbering-rules.ts";
 import { paymentsRoutes } from "./routes/payments.ts";
+import { rateLimitDenialsRoutes } from "./routes/rate-limit-denials.ts";
 import { stripeCheckoutRoutes } from "./routes/stripe-checkout.ts";
 import { stripeWebhookRoutes } from "./routes/stripe-webhook.ts";
 import type { StripeChannel } from "./billing/stripe.ts";
@@ -228,6 +229,10 @@ app.route("/", errorIngestRoutes(deps));
   // audit.read 同门；写半边一在公开上报端点（本文件上方，会话门之前）、
   // 一在 onError 捕获
   app.route("/", errorEventsRoutes(deps));
+  // 限流拒绝台账读面（#27 切片 2）：被拦请求的管理可见面——验收第 3 条的
+  // API 半边，audit.read 同门。台账是遥测不是闸门：429 的权威在计数器，
+  // 这里只回答「谁在撞、撞什么、撞多狠」
+  app.route("/", rateLimitDenialsRoutes(deps));
   // 删除记录（#29 切片 2）：软删台账的查看与恢复，audit.read 同门。task 的
   // 恢复器在 records/task-restorer.ts 模块装载时注册（上面 import 的副作用）
   app.route("/", deletedRecordsRoutes(deps));
