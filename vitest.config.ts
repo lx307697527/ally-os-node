@@ -6,7 +6,8 @@ export default defineConfig({
     environment: "node",
     // 每文件临时库的 teardown（pool.end + drop database with (force)）在 postgres
     // 并行 DDL/连接风暴下可能超过默认 10s（#221 切片 2 把临时库文件 +1 后实测
-    // 复现）：teardown 慢 ≠ 测试失败，给足窗口让自愈发生，不吞真失败
-    hookTimeout: 30_000,
+    // 复现；#27 切片 1 文件总数再 +2 后 30s 也偶发不够）：teardown 慢 ≠ 测试失败，
+    // 给足窗口让自愈发生，不吞真失败
+    hookTimeout: 60_000,
   },
 });

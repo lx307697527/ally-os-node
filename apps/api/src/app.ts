@@ -53,6 +53,8 @@ import "./config-versions/families.ts";
 // 删除记录（#29 切片 2）：task 注册为第一个可恢复 subject——恢复端点
 // （routes/deleted-records.ts）依赖这批注册先于任何请求发生
 import "./records/task-restorer.ts";
+// 认证面限流（#27 切片 1）：公开写面的 PG 固定窗口计数
+import { authRateLimitMiddleware } from "./security/rate-limit.ts";
 
 // 依赖通过参数注入，测试时可以传假的实现，不需要真数据库。
 export interface AppDeps {
@@ -123,6 +125,11 @@ export function createApp(deps: AppDeps) {
 
   // 登录页要用的提供商列表：公开（未登录是常态），先于会话中间件注册
   app.route("/", authProvidersRoutes(deps));
+
+  // 认证面限流（#27 切片 1）：公开写面的固定窗口计数在 Better Auth 之前——
+  // 429 短路凭据填充与邮件轰炸；计数走 PG 表，多个 API 实例共享同一把钥匙
+  // （进程内 Map 是老系统明确不继承的形态）。规则册见 security/rate-limit.ts
+  app.use("/api/auth/*", authRateLimitMiddleware(deps));
 
   // 认证端点自己管理会话（未登录也要能登录），先于会话中间件注册
   app.on(["POST", "GET"], "/api/auth/*", (c) => deps.authHandler(c.req.raw));
