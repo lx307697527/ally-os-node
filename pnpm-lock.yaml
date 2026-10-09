@@ -166,6 +166,9 @@ importers:
       '@ally/rules':
         specifier: workspace:*
         version: link:../../packages/rules
+      '@ally/storage':
+        specifier: workspace:*
+        version: link:../../packages/storage
       drizzle-orm:
         specifier: ^0.45.3
         version: 0.45.3(@types/pg@8.23.1)(kysely@0.29.6)(pg@8.23.0)
