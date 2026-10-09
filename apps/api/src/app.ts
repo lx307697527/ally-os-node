@@ -32,6 +32,7 @@ import { feedbackRoutes } from "./routes/feedback.ts";
 import { filesRoutes } from "./routes/files.ts";
 import { followsRoutes } from "./routes/follows.ts";
 import { healthRoutes } from "./routes/health.ts";
+import { pdfTemplateConfigRoutes } from "./routes/pdf-template-config.ts";
 import { invoicesRoutes } from "./routes/invoices.ts";
 import { invoicePlansRoutes } from "./routes/invoice-plans.ts";
 import { meRoutes } from "./routes/me.ts";
@@ -266,6 +267,10 @@ app.route("/", errorIngestRoutes(deps));
   // 同门；成员票走发票既有动词，零新动词语义；服务接缝 billing/installments.ts
   // 供订单域 #231 按比例拆期进场复用）
   app.route("/", invoicePlansRoutes(deps));
+  // PDF 模板配置（#128）：品牌 + 公司信息 + 收款指示的展示事实（invoices.manage
+  // 同门——银行信息是财务的脸面）。渲染权威在 @ally/pdf；发票确认时刻存档，
+  // 已发出的票不受这里之后的影响
+  app.route("/", pdfTemplateConfigRoutes(deps));
   // Stripe 渠道（#193）：财务建支付链接的过渡面（invoices.manage 同门；客户门户
   // #186 进场后复用同一 StripeGateway 接归属校验）
   app.route("/", stripeCheckoutRoutes(deps));
