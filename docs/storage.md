@@ -11,9 +11,40 @@ endpoint 与凭证)+ 本内核的控制面。设计依据:#31 + #147 合并范�
 | 切片 | 内容 | 状态 |
 | --- | --- | --- |
 | 文件内核(切片 1) | `files` 表 + presign/complete/list/url/delete 五端点 + subject 注册表 + pending 清扫 + feedback_report 注册 | ✅ 本切片 |
-| Supabase → S3 对象迁移 | 按原路径批量复制 + 抽样校验数量与 hash(验收第 1 条) | 待做(需双方凭证,随切换窗口执行) |
+| Supabase → S3 对象迁移 | 按原路径批量复制 + 抽样校验数量与 hash(验收第 1 条) | ✅ 脚本就绪;**执行**需双方凭证,随切换窗口跑 |
 | 老调用点替换 | 老系统 12 处 `storage.from(...)` 对应的域(签署 PDF #236、单据 #229、标签图 #169、ops 文件 #147……) | 随各域迁移 |
 | 历史版本 | 替换文件保留历史版本(#147 ops 文件范围) | 待做(随首个需要"替换"的消费域) |
+
+## 迁移(Supabase Storage → S3)
+
+`apps/api/src/scripts/migrate-storage-to-s3.ts`:源是 Supabase Storage REST
+(service role:`/storage/v1/bucket` 枚举桶、`/object/list` 分页 + 目录递归、
+`/object/{bucket}/{path}` 下载),目标是应用侧同一份 `@ally/storage` 客户端
+(put/head 写、reader 的 get/list 校验)——用运行时的同一客户端写桶,「迁移
+完成」才是应用读得到的那份事实。核心在 `apps/api/src/storage-migration/`,
+源/目标都是注入端口,测试零网络。
+
+- **key 映射:`<桶名>/<原路径>`,老库路径一个字不动**(issue 迁移要点第 2
+  条)。老系统桶间同路径互不相干,单桶化后桶名做首段才不撞;各域接下载 API
+  时按同一规则从存量路径解析 key,没有第二张映射表。
+- **三档:默认 dry-run**(枚举 + head,报「将会复制/跳过」);`--apply`(复制,
+  目标已有同 key 且大小一致即跳过——断点续跑的机制;复制完自动数量对账 +
+  hash 抽样);`--verify`(只校验不写)。`--bucket` 圈单桶,`--sample`/
+  `--seed` 控抽样。
+- **校验 = 数量对账 + 确定性抽样**:目标按桶前缀枚举,源有目标无记
+  missing(fail),目标有源无记 extra(只报告——不拦验收第 1 条,但孤儿
+  得有名字);抽样 `min(sampleSize, n)` 个源对象两侧各下载一次对 sha256。
+  种子流 (mulberry32) + 部分 Fisher-Yates:同种子 + 同清单 = 同样本,重跑
+  校验同一批,报告可对照。抽样跳过本桶已报错的对象——失败已记账,再抽只是
+  重复计数。
+- **报告即产物**:JSON 走 stdout、日志走 stderr;逐对象错误带阶段
+  (list/key/head/download/put/verify),坏 key(路径穿越、空段)记 key 阶段
+  错误跳过,不中断全批;退出码 0/1/2。`ok` = 零错误 ∧ 零缺失 ∧ 零 hash
+  不一致。
+- **刻意不做**:无自动重试(可安全重跑,重跑只补差异,重试是徒增状态面);
+  不并发(切换窗口的对象量级是图片/PDF/单据,顺序搬完好过并发把源限流);
+  整对象进内存(无流式)——若某桶出现 GB 级备份文件,用 `--bucket` 圈出来
+  单独处理,别让它陪跑通用批次。
 
 ## 形状
 
