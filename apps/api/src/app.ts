@@ -8,6 +8,7 @@ import type { AppEnv, ResolveSession } from "./auth/session.ts";
 import { sessionMiddleware } from "./auth/session.ts";
 import { authzMiddleware, requireTwoFactorGate } from "./authz/middleware.ts";
 import type { AuthzStore } from "./authz/service.ts";
+import { captureServerError } from "./errors/capture.ts";
 import "./approval/registry.ts";
 // R-16-6 消费方接线（#221 切片 2）：user_role 的可见性门 + 批准即生效 outcome
 import "./authz/role-approval.ts";
@@ -25,6 +26,8 @@ import { configVersionsRoutes } from "./routes/config-versions.ts";
 import { customFieldsRoutes } from "./routes/custom-fields.ts";
 import { deletedRecordsRoutes } from "./routes/deleted-records.ts";
 import { esignaturesRoutes } from "./routes/esignatures.ts";
+import { errorEventsRoutes } from "./routes/error-events.ts";
+import { errorIngestRoutes } from "./routes/errors.ts";
 import { feedbackRoutes } from "./routes/feedback.ts";
 import { filesRoutes } from "./routes/files.ts";
 import { followsRoutes } from "./routes/follows.ts";
@@ -114,8 +117,15 @@ export function createApp(deps: AppDeps) {
   app.use("*", requestId());
   app.use("/api/*", cors({ origin: deps.corsOrigins, credentials: true }));
 
-  app.onError((err, c) => {
+  app.onError(async (err, c) => {
     deps.logger.error({ err, requestId: c.get("requestId") }, "unhandled error");
+    // 前后端错误进同一张表（#28 切片 1）：api 侧的 unhandled 500 在这里被
+    // 捕获（capture 内部 catch，遥测失败不再扰动 500 的响应路径）
+    await captureServerError(deps.db, deps.logger, err, {
+      requestId: c.get("requestId"),
+      url: new URL(c.req.url).pathname,
+      now: new Date(),
+    });
     // 不把内部错误细节返回给客户端
     return c.json({ error: "internal_error", requestId: c.get("requestId") }, 500);
   });
@@ -127,10 +137,15 @@ export function createApp(deps: AppDeps) {
   // 登录页要用的提供商列表：公开（未登录是常态），先于会话中间件注册
   app.route("/", authProvidersRoutes(deps));
 
-  // 认证面限流（#27 切片 1）：公开写面的固定窗口计数在 Better Auth 之前——
-  // 429 短路凭据填充与邮件轰炸；计数走 PG 表，多个 API 实例共享同一把钥匙
-  // （进程内 Map 是老系统明确不继承的形态）。规则册见 security/rate-limit.ts
-  app.use("/api/auth/*", authRateLimitMiddleware(deps));
+// 认证面限流（#27 切片 1）：公开写面的固定窗口计数在 Better Auth 之前——
+// 429 短路凭据填充与邮件轰炸；计数走 PG 表，多个 API 实例共享同一把钥匙
+// （进程内 Map 是老系统明确不继承的形态）。规则册见 security/rate-limit.ts
+app.use("/api/auth/*", authRateLimitMiddleware(deps));
+
+// 前端错误上报（#28 切片 1）：公开接收面挂会话中间件之前——报错最常见的
+// 时刻恰恰是会话不在/刚断的时刻，登录门会把最重要的样本挡在门外。自带
+// errors.ingest 限流（PG 内核的第一个非认证消费域）
+app.route("/", errorIngestRoutes(deps));
 
   // 认证端点自己管理会话（未登录也要能登录），先于会话中间件注册
   app.on(["POST", "GET"], "/api/auth/*", (c) => deps.authHandler(c.req.raw));
@@ -209,6 +224,10 @@ export function createApp(deps: AppDeps) {
   app.route("/", realtimeRoutes(deps));
   // 审计日志查询（#29）：audit.read 权限点门（owner/admin 默认）
   app.route("/", auditEventsRoutes(deps));
+  // 错误事件读面（#28 切片 1）：前后端错误「同一个地方查看」的读半边，
+  // audit.read 同门；写半边一在公开上报端点（本文件上方，会话门之前）、
+  // 一在 onError 捕获
+  app.route("/", errorEventsRoutes(deps));
   // 删除记录（#29 切片 2）：软删台账的查看与恢复，audit.read 同门。task 的
   // 恢复器在 records/task-restorer.ts 模块装载时注册（上面 import 的副作用）
   app.route("/", deletedRecordsRoutes(deps));

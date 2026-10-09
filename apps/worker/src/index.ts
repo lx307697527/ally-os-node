@@ -5,6 +5,7 @@ import { createS3Storage } from "@ally/storage";
 import { PgBoss } from "pg-boss";
 import pino from "pino";
 import { automationJobs } from "./automations/index.ts";
+import { errorJobs } from "./errors/index.ts";
 import { approvalJobs } from "./approval/index.ts";
 import { billingJobs } from "./billing/index.ts";
 import { filesJobs } from "./files/index.ts";
@@ -68,6 +69,7 @@ await registerJobs(
     ...rulesJobs({ db, pool, mailer, webAppUrl: env.WEB_APP_URL, logger }),
     ...notificationsJobs({ db, mailer, webAppUrl: env.WEB_APP_URL, logger }),
     ...workflowJobs({ db, pool, logger }),
+    ...errorJobs({ db, logger, alerter }),
     ...securityJobs({ db, logger }),
   ],
   {

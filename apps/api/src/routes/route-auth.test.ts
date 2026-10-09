@@ -88,10 +88,18 @@ describe("route authorization declarations (#23)", () => {
     );
     // /api/webhooks/stripe（#193）：公开指「不过会话中间件」，认证是 Stripe 签名
     // 本身（routes/stripe-webhook.ts）；/api/webhooks/paypal 同理，认证是
-    // verify-webhook-signature 活体验签（routes/paypal-webhook.ts）；漏登记才是
-    // 真的口子
+    // verify-webhook-signature 活体验签（routes/paypal-webhook.ts）；
+    // /api/errors（#28 切片 1）同理，会话门会把最重要的样本挡在门外，它的
+    // 「认证」是 errors.ingest 的 PG 限流 + zod 上限（routes/errors.ts）。
+    // 漏登记才是真的口子
     expect(publicPaths.sort()).toEqual(
-      ["/api/auth-providers", "/api/auth/*", "/api/webhooks/stripe", "/api/webhooks/paypal"].sort(),
+      [
+        "/api/auth-providers",
+        "/api/auth/*",
+        "/api/webhooks/stripe",
+        "/api/webhooks/paypal",
+        "/api/errors",
+      ].sort(),
     );
   });
 

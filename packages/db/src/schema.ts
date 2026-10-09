@@ -1639,6 +1639,59 @@ export const rateLimitDenials = pgTable(
   ],
 );
 
+// 错误事件（#28 切片 1）：一次发生一行，聚合是 fingerprint 上的查询投影不是
+// 存储形态——行数即发生次数，激增检测数行数即可。老系统的对应物（ingest-error
+// 写 error_logs、前端 errorTracker.ts 全局捕获）在老仓库迁移 HEAD 上已不存在，
+// 本表按 issue #28 的迁移要点重建：指纹分组、payload 裁剪、服务端聚合告警。
+//
+// 字段是错误分诊的最小集，刻意不做宽：fingerprint 服务端算（客户端声称的分组
+// 不可信）；message/stack/url/user_agent 各有长度上限（裁剪语义沿老 ingest-error
+// 的「trim payload」——遥测行不该成为免费存储）；没有 user 列：web 侧上报是
+// 无会话的公开面，api 侧的归因靠 request_id 与服务端日志互查，错误行不需要
+// PII。source 开集（与 tasks.subject_type 同一裁法）：'web' = 浏览器全局捕获，
+// 'api' = 服务端 unhandled 500；后续端（worker、portal）进场加值不動数据库。
+export const errorEvents = pgTable(
+  "error_events",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    fingerprint: text("fingerprint").notNull(),
+    source: text("source").notNull(),
+    message: text("message").notNull(),
+    stack: text("stack"),
+    url: text("url"),
+    userAgent: text("user_agent"),
+    requestId: text("request_id"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    // 分组读法：「这个错误最近发生了什么」+ 激增检测按窗口数行
+    index("error_events_fingerprint_created_at_idx").on(t.fingerprint, desc(t.createdAt)),
+    // 时间线读法（管理页最新在前）与清理扫描共用
+    index("error_events_created_at_idx").on(desc(t.createdAt)),
+  ],
+);
+
+// 激增告警台账：一次告警一行。window_start 唯一 = 幂等键——cron 重试或双
+// worker 并发检测同一窗口，撞唯一键的那个放弃发送，告警不重复。冷却期读法 =
+// 最近一行 alerted_at 的年龄；行不依赖 Slack 是否配置（未配置只发日志），检测
+// 事实先落库再投递，「告警通道哑了」不吞「确实激增过」的事实。
+export const errorSpikes = pgTable(
+  "error_spikes",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    windowStart: timestamp("window_start", { withTimezone: true }).notNull(),
+    eventCount: integer("event_count").notNull(),
+    // 定格告警当时的阈值：策略随时间会改，行自证「当时为什么算激增」
+    threshold: integer("threshold").notNull(),
+    alertedAt: timestamp("alerted_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("error_spikes_window_start_key").on(t.windowStart),
+    // 冷却检查与清理扫描都按 alerted_at
+    index("error_spikes_alerted_at_idx").on(t.alertedAt),
+  ],
+);
+
 // ── 文件内核（#31 切片 1：预签名直传 + 权限签发下载）────────────────────────
 // 对象存储的记账内核：老系统 12 处 storage.from(...) 直调分散在各域（feedback、
 // support、portal 单据、签署 PDF……），桶策略各自为政；新设计（#31 + #147 合并
