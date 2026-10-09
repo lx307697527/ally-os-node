@@ -91,20 +91,21 @@ async function nudgeBells(services: ApprovalReminderServices, userIds: string[])
   });
 }
 
-/** 点名 users ∪ 角色持有者；角色按 app_role 枚举过滤（与 api 侧同一防御） */
-async function resolveAdjudicatorIds(db: Db, level: { users: string[]; roles: string[] }): Promise<string[]> {
-  const eligible = level.roles.filter((role): role is (typeof schema.appRole.enumValues)[number] =>
+/**
+ * 一组角色的持有者；角色按 app_role 枚举过滤（与 api 侧同一防御）。抽取成
+ * roles 入参的纯查询是为了扫描内按角色集去重——点名 users 在调用侧并集。
+ */
+async function resolveAdjudicatorHolderIds(db: Db, roles: string[]): Promise<string[]> {
+  const eligible = roles.filter((role): role is (typeof schema.appRole.enumValues)[number] =>
     (schema.appRole.enumValues as readonly string[]).includes(role),
   );
-  const holders =
-    eligible.length === 0
-      ? []
-      : await db
-          .selectDistinct({ id: schema.authUser.id })
-          .from(schema.authUser)
-          .innerJoin(schema.userRole, eq(schema.userRole.userId, schema.authUser.id))
-          .where(inArray(schema.userRole.role, eligible));
-  return [...new Set([...level.users, ...holders.map((row) => row.id)])];
+  if (eligible.length === 0) return [];
+  const holders = await db
+    .selectDistinct({ id: schema.authUser.id })
+    .from(schema.authUser)
+    .innerJoin(schema.userRole, eq(schema.userRole.userId, schema.authUser.id))
+    .where(inArray(schema.userRole.role, eligible));
+  return holders.map((row) => row.id);
 }
 
 /** 对账一轮：见模块注释。返回摘要供任务日志与测试断言 */
@@ -153,6 +154,48 @@ export async function runApprovalReminderScan(services: ApprovalReminderServices
     .groupBy(schema.approvalActions.requestId);
   const enteredById = new Map(enteredRows.map((row) => [row.requestId, new Date(row.enteredAt)]));
 
+  // 本级已同意的表决人，一次批量取齐（逐行问库是一次扫描内的 N+1）；当前级过滤
+  // 在内存里做（stepIndex 随行带出）
+  const actedRows = await db
+    .select({
+      requestId: schema.approvalActions.requestId,
+      stepIndex: schema.approvalActions.stepIndex,
+      actorId: schema.approvalActions.actorId,
+    })
+    .from(schema.approvalActions)
+    .where(
+      and(
+        inArray(schema.approvalActions.requestId, pendingRows.map((row) => row.id)),
+        eq(schema.approvalActions.decision, "approved"),
+      ),
+    );
+  const actedByRequest = new Map<string, Map<number, Set<string>>>();
+  for (const actedRow of actedRows) {
+    let byStep = actedByRequest.get(actedRow.requestId);
+    if (byStep === undefined) {
+      byStep = new Map();
+      actedByRequest.set(actedRow.requestId, byStep);
+    }
+    let actors = byStep.get(actedRow.stepIndex);
+    if (actors === undefined) {
+      actors = new Set();
+      byStep.set(actedRow.stepIndex, actors);
+    }
+    actors.add(actedRow.actorId);
+  }
+
+  // 角色集 → 持有者的去重缓存：待办请求大量共享同一组配置角色，键排序归一
+  // （inArray 不看顺序），同名角色集只问一次库
+  const holdersCache = new Map<string, Promise<string[]>>();
+  const holdersFor = (roles: string[]): Promise<string[]> => {
+    const key = JSON.stringify([...roles].sort());
+    const cached = holdersCache.get(key);
+    if (cached !== undefined) return cached;
+    const pending = resolveAdjudicatorHolderIds(db, roles);
+    holdersCache.set(key, pending);
+    return pending;
+  };
+
   const nowMs = now().getTime();
   const nudged = new Set<string>();
   for (const row of pendingRows) {
@@ -175,7 +218,8 @@ export async function runApprovalReminderScan(services: ApprovalReminderServices
       nowMs - row.lastReminderAt.getTime() < APPROVAL_REMIND_AFTER_MS;
     if (remindedThisStep) continue;
 
-    const adjudicators = await resolveAdjudicatorIds(db, level);
+    const holders = await holdersFor(level.roles);
+    const adjudicators = [...new Set([...level.users, ...holders])];
     if (adjudicators.length === 0) {
       summary.skippedRequests += 1;
       services.logger.warn(
@@ -187,17 +231,7 @@ export async function runApprovalReminderScan(services: ApprovalReminderServices
     // 会签/票签（#221）：本级已同意的人不再催——票已交，等的是没交的人。any
     // 模式在首票前集合不变（首票即终局，请求离开在飞集）；全员已表决而请求
     // 仍停在本级 = 推进滞留（审批人集合在飞期间收缩等），催无可催，告警跳过。
-    const actedRows = await db
-      .select({ actorId: schema.approvalActions.actorId })
-      .from(schema.approvalActions)
-      .where(
-        and(
-          eq(schema.approvalActions.requestId, row.id),
-          eq(schema.approvalActions.stepIndex, row.currentStep),
-          eq(schema.approvalActions.decision, "approved"),
-        ),
-      );
-    const acted = new Set(actedRows.map((actedRow) => actedRow.actorId));
+    const acted = actedByRequest.get(row.id)?.get(row.currentStep) ?? new Set<string>();
     const waiting = adjudicators.filter((userId) => !acted.has(userId));
     if (waiting.length === 0) {
       summary.skippedRequests += 1;

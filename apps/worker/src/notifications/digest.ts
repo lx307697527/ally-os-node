@@ -29,6 +29,9 @@ export const NOTIFICATIONS_DIGEST_JOB = "notifications-digest";
 /** 一封摘要最多列出的条数；超出报「还有 N 条」并留到下次 */
 export const DIGEST_ITEM_CAP = 50;
 
+/** 发信并发：mailer 是慢 HTTP 调用，按小池并发发（按人隔离的失败语义不变） */
+const DIGEST_SEND_CONCURRENCY = 4;
+
 export interface DigestServices {
   db: Db;
   mailer: Mailer;
@@ -143,7 +146,8 @@ export async function runNotificationsDigestScan(services: DigestServices): Prom
 
   const delivered = new Map<string, number>();
   const failures: { userId: string; error: unknown }[] = [];
-  for (const [userId, bucket] of byUser) {
+  const entries = [...byUser.entries()];
+  const sendOne = async ([userId, bucket]: (typeof entries)[number]): Promise<void> => {
     const listed = bucket.rows.slice(0, DIGEST_ITEM_CAP);
     const message: MailMessage = {
       to: bucket.email,
@@ -171,6 +175,10 @@ export async function runNotificationsDigestScan(services: DigestServices): Prom
       services.logger.error({ err: error, userId }, "notification digest send failed");
       failures.push({ userId, error });
     }
+  };
+  // 小池分批发：按人隔离的失败语义不变，N 个收件人不再串行排队等最慢一封
+  for (let i = 0; i < entries.length; i += DIGEST_SEND_CONCURRENCY) {
+    await Promise.all(entries.slice(i, i + DIGEST_SEND_CONCURRENCY).map(sendOne));
   }
   if (failures.length > 0) {
     // 上抛让 pg-boss 重试；成功者已盖章，重试只补失败者（模块注释的按人隔离）

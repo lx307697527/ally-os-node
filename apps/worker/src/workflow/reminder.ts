@@ -171,6 +171,18 @@ export async function runWorkflowTimeoutScan(services: WorkflowReminderServices)
     .limit(200);
   if (dueRows.length === 0) return summary;
 
+  // 角色集 → 持有者的去重缓存：同模板同状态的到期实例共享同一组出边角色，逐行
+  // 问库是一次扫描内的 N+1；键排序归一（inArray 不看顺序），同名角色集只问一次
+  const holdersCache = new Map<string, Promise<string[]>>();
+  const holdersFor = (roles: string[]): Promise<string[]> => {
+    const key = JSON.stringify([...roles].sort());
+    const cached = holdersCache.get(key);
+    if (cached !== undefined) return cached;
+    const pending = resolveRoleHolderIds(db, roles);
+    holdersCache.set(key, pending);
+    return pending;
+  };
+
   const nudged = new Set<string>();
   for (const row of dueRows) {
     const dueAt = row.stateDueAt;
@@ -187,7 +199,7 @@ export async function runWorkflowTimeoutScan(services: WorkflowReminderServices)
     // 收件人 = 发起人 ∪ 能推当前状态的角色持有者（并集去重；发起人行随用户删除
     // 而 set null，集合可空性在下面统一裁）
     const starter = row.startedById;
-    const roleHolders = await resolveRoleHolderIds(db, outboundRoles(parsed.data, row.currentState));
+    const roleHolders = await holdersFor(outboundRoles(parsed.data, row.currentState));
     const recipients = [...new Set([...(starter === null ? [] : [starter]), ...roleHolders])];
     if (recipients.length === 0) {
       summary.skippedInstances += 1;
