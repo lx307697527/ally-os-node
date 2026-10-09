@@ -2,7 +2,10 @@
 // kernel: requests whose current level names this operator (by name or by
 // role), each carrying its decision context — who submitted, what exactly is
 // being approved (the payload), and whether agreeing requires the electronic
-// signature ceremony (#219's SignatureDialog, first consumer here).
+// signature ceremony (#219's SignatureDialog, first consumer here). Decided
+// signature levels show their wall below the history (#219's SignatureWall,
+// its first carried record): who signed, when, with which meaning, on which
+// record version.
 //
 // Two doors, said honestly (see docs/approval.md): being NAMED on a level
 // authorizes the decision, but the full request record still answers to the
@@ -19,6 +22,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button, Card, Heading, Paragraph } from "@ally/ui";
 
 import { SignatureDialog, meaningLabel } from "../components/SignatureDialog.tsx";
+import { SignatureWall } from "../components/SignatureWall.tsx";
 import {
   createApprovalAdapters,
   type ApprovalActInput,
@@ -256,6 +260,18 @@ function ReviewPanel(props: { row: ApprovalTodoRow; onDecided: (message: string)
                 </li>
               ))}
             </ul>
+          ) : null}
+          {view.actions.some((action) => action.signature !== null) ? (
+            // The signature wall (#219's read half): the request's Part 11.50
+            // display — name, time, meaning, record version — read from the
+            // real /api/esignatures endpoint per signed decision. Its server
+            // gate (request participants) is the same door this detail already
+            // opened, so no viewer here learns of a wall they cannot read.
+            <SignatureWall
+              refs={view.actions
+                .filter((action) => action.signature !== null)
+                .map((action) => ({ subjectType: "approval_action", subjectId: action.id }))}
+            />
           ) : null}
         </div>
       ) : detail.data?.ok === false && detail.data.reason === "notfound" ? (
