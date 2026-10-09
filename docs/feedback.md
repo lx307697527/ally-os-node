@@ -18,12 +18,24 @@ Status: submit path landed (slice 4, old FEAT-198). Queue/management is a later 
 
 ## What is deliberately NOT here yet
 
-- **Attachments** (old: ≤3 images ≤5MiB in a private bucket, keyed by submitter) —
-  needs `@ally/storage`; column + endpoint field land expand-only.
 - **Admin queue** (`/feedback-reports` page, `update_feedback_report` status flow,
   GitHub issue sync + reaper crons) — management domain.
 - **Fan-out notification** to admins on submit (old FEAT-637) — needs the
   notifications producer seam (see docs/notifications.md).
+- **Attachment UI in FeedbackDialog** — the API surface exists (#31 file kernel:
+  presign direct upload, ≤3 images ≤5MiB per report, subject
+  `feedback_report` in `apps/api/src/files/registry.ts`); the dialog is still
+  submit-only. Attach-before-submit vs attach-after (the kernel needs a report
+  id to attach to) is a UX decision that belongs with the management slice,
+  which revisits this dialog anyway.
+
+## Attachments (#31 file kernel)
+
+Evidence images (old: ≤3 images ≤5MiB in a private bucket) ride the generic file
+kernel, not a feedback-specific column: presign direct upload, HEAD-verified
+complete, short-lived signed download URLs, staff read via the `feedback.manage`
+permission point (old RLS admin/super_admin/ops, collapsed per
+docs/permissions.md), submitter always sees their own. See docs/storage.md.
 
 ## Frontend
 

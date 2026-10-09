@@ -43,7 +43,7 @@ export interface AuthzContext {
 }
 
 /** 权限点清单；随业务模块切片增加，新增必须先进这个注册表 */
-export const PERMISSIONS = ["roles.assign", "users.manage", "label_design", "audit.read", "workflow.configure", "approval.configure", "custom_fields.configure", "automations.configure", "numbering.configure", "rules.configure", "invoices.manage"] as const;
+export const PERMISSIONS = ["roles.assign", "users.manage", "label_design", "audit.read", "workflow.configure", "approval.configure", "custom_fields.configure", "automations.configure", "numbering.configure", "rules.configure", "invoices.manage", "feedback.manage"] as const;
 
 export type Permission = (typeof PERMISSIONS)[number];
 
@@ -103,10 +103,16 @@ export const permissionSchema = z.enum(PERMISSIONS);
  *   是分配权限与配置工作室（§12），发票是业务单据；要持有时走授权（R-16-6：
  *   授 finance 级需老板确认，user-roles 路由的 owner 门）。销售的记录级可见
  *   （「只看自己单子的发票」）随订单域（#231）的可见性门进场，不在此权限点。
+ * - feedback.manage：老板与管理员（#31，老 RLS 的 admin/super_admin/ops 三角色
+ *   按 docs/permissions.md 映射收敛：super_admin → admin、ops 的文件读面并入
+ *   管理员——ops_assistant 的裁决面是运营执行不是他人反馈的证据）。反馈的
+ *   管理队列（列表/流转/回写，#129 显式推迟）不在此权限点后面——这里是文件
+ *   内核的读门：持点者能看任意报告的附件（提交人恒可见自己的，不经过此点）。
+ *   队列面落地时若把 ops_assistant 纳入处理人，再扩默认集，不现在预授。
  */
 export const ROLE_PERMISSIONS: Readonly<Record<Role, readonly Permission[]>> = {
-  owner: ["roles.assign", "users.manage", "audit.read", "workflow.configure", "approval.configure", "custom_fields.configure", "automations.configure", "numbering.configure", "rules.configure", "invoices.manage"],
-  admin: ["roles.assign", "users.manage", "audit.read", "workflow.configure", "approval.configure", "custom_fields.configure", "automations.configure", "numbering.configure", "rules.configure"],
+  owner: ["roles.assign", "users.manage", "audit.read", "workflow.configure", "approval.configure", "custom_fields.configure", "automations.configure", "numbering.configure", "rules.configure", "invoices.manage", "feedback.manage"],
+  admin: ["roles.assign", "users.manage", "audit.read", "workflow.configure", "approval.configure", "custom_fields.configure", "automations.configure", "numbering.configure", "rules.configure", "feedback.manage"],
   sales_lead: [],
   sales: [],
   customer_service: [],

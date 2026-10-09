@@ -1691,3 +1691,57 @@ export const errorSpikes = pgTable(
     index("error_spikes_alerted_at_idx").on(t.alertedAt),
   ],
 );
+
+// ── 文件内核（#31 切片 1：预签名直传 + 权限签发下载）────────────────────────
+// 对象存储的记账内核：老系统 12 处 storage.from(...) 直调分散在各域（feedback、
+// support、portal 单据、签署 PDF……），桶策略各自为政；新设计（#31 + #147 合并
+// 范围）把字节面收敛成一个内核——文件行挂在多态 subject（subjectType/subjectId，
+// 与 comments/follows/esign 同一形态）上，合法 subject 类型与「谁能传/谁看得到」
+// 由 files/registry.ts 逐域注册裁决，上传走预签名 URL 直传（不经 API 字节面，不受
+// 请求体大小限制），下载按需铸短时效签名 URL（#31 验收「下载权限在 API 层校验」）。
+//
+// 与评论附件（comment_attachments）的两处结构差异，都源于「字节不经 API 手」：
+//   1. 记账与落桶的顺序反转。评论附件是先落桶后记账（BUG-325：落桶成功、记账
+//      丢失 → 永久孤儿）；直传做不到「先替客户端落桶」，顺序必须反转——presign
+//      先落 pending 行再发预签名，complete 用 HEAD 确认对象真的在（没上传过的
+//      key 答不上来）才转 ready。「客户端拿了预签名但永远没传」的 pending 行
+//      由 worker 清扫（file-uploads-cleanup），对象尽力删、行按年龄删。
+//   2. 字节数先声明后实测。presign 时客户端声明 sizeBytes（准入按声明值裁决，
+//      和评论附件挡「注定超限的请求」同一意图）；complete 时 HEAD 回实测值
+//      覆写——台账记的是 S3 里真实存在的大小，不是客户端说了什么。
+//
+// status 是行生命周期不是业务状态：pending = 预签名已发、对象未确认；ready =
+// 对象已核实。没有第三态——「删了」是行没了，不是状态值。
+export const fileStatus = pgEnum("file_status", ["pending", "ready"]);
+
+export const files = pgTable(
+  "files",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    subjectType: text("subject_type").notNull(),
+    subjectId: uuid("subject_id").notNull(),
+    status: fileStatus("status").notNull().default("pending"),
+    // 原文件名只服务展示与下载命名，进不了对象 key（与 comment_attachments
+    // 同一裁决：key 不含任何用户输入，uuid 既是唯一性也是防遍历）
+    fileName: text("file_name").notNull(),
+    contentType: text("content_type").notNull(),
+    // presign 时是声明值，complete 时被 HEAD 实测值覆写（见上）
+    sizeBytes: integer("size_bytes").notNull(),
+    // 对象世界的身份：唯一索引既防重名也当注册表（一个 key 只许一行引用）
+    storageKey: text("storage_key").notNull(),
+    // 不带 CASCADE：文件是证据不是社交内容（与 esign_signatures.signerId 同裁，
+    // 与 comment_attachments.uploadedBy 的 CASCADE 刻意相反）——挂着自己的账号
+    // 行删不掉，正常下线路径是停用（routes/users.ts）
+    uploadedBy: uuid("uploaded_by").notNull().references(() => authUser.id),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    // null = 从未 complete（pending 行的年龄即清扫扫描的列）
+    readyAt: timestamp("ready_at", { withTimezone: true }),
+  },
+  (t) => [
+    // 唯一读法：「这个 subject 的文件」
+    index("files_subject_idx").on(t.subjectType, t.subjectId),
+    uniqueIndex("files_key_idx").on(t.storageKey),
+    // 清扫扫描只看 pending 行：部分索引让 ready 的大多数不进扫描的索引范围
+    index("files_pending_created_idx").on(t.createdAt).where(sql`status = 'pending'`),
+  ],
+);

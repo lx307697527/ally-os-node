@@ -90,6 +90,12 @@ describe.skipIf(!databaseUrl)("comment endpoints (#110 slice 1, integration)", (
       storageObjects.delete(key);
       return Promise.resolve();
     },
+    head: (key: string) =>
+      Promise.resolve(
+        storageObjects.has(key)
+          ? { sizeBytes: storageObjects.get(key)?.body.byteLength ?? 0 }
+          : null,
+      ),
   };
 
   const app = createApp({

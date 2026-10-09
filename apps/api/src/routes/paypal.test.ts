@@ -198,6 +198,7 @@ describe.skipIf(!databaseUrl)("paypal checkout & webhook (#193, integration)", (
       signedGetUrl: () => Promise.reject(new Error("storage not used in this suite")),
       signedPutUrl: () => Promise.reject(new Error("storage not used in this suite")),
       delete: () => Promise.reject(new Error("storage not used in this suite")),
+      head: () => Promise.reject(new Error("storage not used in this suite")),
     },
     authzStore: {
       getRoles: (userId) =>
@@ -235,6 +236,7 @@ describe.skipIf(!databaseUrl)("paypal checkout & webhook (#193, integration)", (
       signedGetUrl: () => Promise.reject(new Error("storage not used in this suite")),
       signedPutUrl: () => Promise.reject(new Error("storage not used in this suite")),
       delete: () => Promise.reject(new Error("storage not used in this suite")),
+      head: () => Promise.reject(new Error("storage not used in this suite")),
     },
     authzStore: {
       getRoles: (userId) =>

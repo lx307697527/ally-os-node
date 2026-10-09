@@ -40,4 +40,18 @@ describe("createS3Storage", () => {
     // 与 put / signedGetUrl 共用同一份 assertSafeKey 裁决
     await expect(storage.delete("a/../b")).rejects.toThrow();
   });
+
+  it("head sits behind the same key gate as delete", async () => {
+    const storage = createS3Storage({
+      bucket: "docs",
+      region: "us-east-1",
+      endpoint: "http://localhost:9000",
+      accessKeyId: "k",
+      secretAccessKey: "s",
+      forcePathStyle: true,
+    });
+    // #31 文件内核引入 head（complete 端点的实测字节数）：坏 key 同样在客户端
+    // 就炸，不发请求
+    await expect(storage.head("a/../b")).rejects.toThrow();
+  });
 });

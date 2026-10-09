@@ -1,12 +1,14 @@
 import { parseEnv } from "@ally/config";
 import { createDb } from "@ally/db";
 import { createMailer } from "@ally/mailer";
+import { createS3Storage } from "@ally/storage";
 import { PgBoss } from "pg-boss";
 import pino from "pino";
 import { automationJobs } from "./automations/index.ts";
 import { errorJobs } from "./errors/index.ts";
 import { approvalJobs } from "./approval/index.ts";
 import { billingJobs } from "./billing/index.ts";
+import { filesJobs } from "./files/index.ts";
 import { jobs } from "./jobs/index.ts";
 import { notificationsJobs } from "./notifications/index.ts";
 import { rulesJobs } from "./rules/index.ts";
@@ -44,6 +46,17 @@ boss.on("error", (err) => {
   logger.error({ err }, "pg-boss error");
 });
 
+// 对象存储（#31 文件内核）：与 API 同一份 S3 协议客户端（桶与凭证来自 env）；
+// worker 只用它做生命周期清理（pending 上传的对象回收），不碰业务字节面
+const storage = createS3Storage({
+  bucket: env.S3_BUCKET,
+  region: env.S3_REGION,
+  endpoint: env.S3_ENDPOINT,
+  accessKeyId: env.S3_ACCESS_KEY_ID,
+  secretAccessKey: env.S3_SECRET_ACCESS_KEY,
+  forcePathStyle: env.S3_FORCE_PATH_STYLE,
+});
+
 await boss.start();
 await registerJobs(
   boss,
@@ -52,6 +65,7 @@ await registerJobs(
     ...automationJobs({ db, pool, boss, logger, mailer }),
     ...approvalJobs({ db, pool, logger }),
     ...billingJobs({ db, pool, logger }),
+    ...filesJobs({ db, storage, logger }),
     ...rulesJobs({ db, pool, mailer, webAppUrl: env.WEB_APP_URL, logger }),
     ...notificationsJobs({ db, mailer, webAppUrl: env.WEB_APP_URL, logger }),
     ...workflowJobs({ db, pool, logger }),

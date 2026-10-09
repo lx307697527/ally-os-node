@@ -150,6 +150,7 @@ describe.skipIf(!process.env.DATABASE_URL)("auth surface rate limiting (#27, int
         signedGetUrl: () => Promise.reject(new Error("storage not used in this suite")),
         signedPutUrl: () => Promise.reject(new Error("storage not used in this suite")),
         delete: () => Promise.reject(new Error("storage not used in this suite")),
+      head: () => Promise.reject(new Error("storage not used in this suite")),
       },
       stripe: undefined,
       paypal: undefined,

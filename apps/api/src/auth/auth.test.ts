@@ -76,6 +76,7 @@ describe.skipIf(!databaseUrl)("auth: credential login (#22, integration)", () =>
       signedGetUrl: () => Promise.reject(new Error("storage not used in this suite")),
       signedPutUrl: () => Promise.reject(new Error("storage not used in this suite")),
       delete: () => Promise.reject(new Error("storage not used in this suite")),
+      head: () => Promise.reject(new Error("storage not used in this suite")),
     },
     authzStore: createAuthzStore(db),
   
@@ -522,6 +523,7 @@ describe.skipIf(!databaseUrl)("auth: google oauth (#22 slice 4, integration)", (
         signedGetUrl: () => Promise.reject(new Error("storage not used in this suite")),
         signedPutUrl: () => Promise.reject(new Error("storage not used in this suite")),
         delete: () => Promise.reject(new Error("storage not used in this suite")),
+      head: () => Promise.reject(new Error("storage not used in this suite")),
       },
     notifyUsers: async () => {},});
   const app = appFactory(authWithGoogle);
