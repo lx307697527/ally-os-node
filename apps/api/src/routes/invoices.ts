@@ -235,44 +235,47 @@ export function invoicesRoutes(deps: { db: Db; logger: Logger; storage: Storage 
   app.get("/api/invoices", requireInvoicesManage, async (c) => {
     const status = z.enum(invoiceStatusValues).safeParse(c.req.query("status"));
     const where = status.success ? eq(schema.invoices.status, status.data) : undefined;
-    // 合计两次分组查询取齐（行合计、有效收款各自按票 SUM）+ 头行，共三条固定
-    // 查询不随票数增长——付款态进列表是本切片的财务主读法（哪些票没收齐钱）。
+    // 合计两次分组查询取齐（行合计、有效收款各自按票 SUM）+ 头行，查询条数固定
+    // 不随票数增长——付款态进列表是本切片的财务主读法（哪些票没收齐钱）。
+    // 五条互不依赖，一并发出（各占一个池连接，池 max=10，单请求 5 并发安全）。
     // 不用相关子查询：drizzle 在 sql`` 模板里渲染不带表限定的裸列名，多表关联
-    // 会被内层表影子化（实测 total 恒 0）。
-    const rows = await deps.db
-      .select()
-      .from(schema.invoices)
-      .where(where)
-      .orderBy(asc(schema.invoices.createdAt));
-    const lineSums = await deps.db
-      .select({
-        invoiceId: schema.invoiceLines.invoiceId,
-        total: sql<string>`coalesce(sum(${schema.invoiceLines.lineTotalCents}), 0)`,
-      })
-      .from(schema.invoiceLines)
-      .groupBy(schema.invoiceLines.invoiceId);
-    const paidSums = await deps.db
-      .select({
-        invoiceId: schema.payments.invoiceId,
-        paid: sql<string>`coalesce(sum(${schema.payments.amountCents}), 0)`,
-      })
-      .from(schema.payments)
-      .where(isNull(schema.payments.voidedAt))
-      .groupBy(schema.payments.invoiceId);
-    const creditedSums = await deps.db
-      .select({
-        invoiceId: schema.creditNotes.invoiceId,
-        credited: sql<string>`coalesce(sum(${schema.creditNoteLines.lineTotalCents}), 0)`,
-      })
-      .from(schema.creditNotes)
-      .innerJoin(
-        schema.creditNoteLines,
-        eq(schema.creditNoteLines.creditNoteId, schema.creditNotes.id),
-      )
-      .where(eq(schema.creditNotes.status, "issued"))
-      .groupBy(schema.creditNotes.invoiceId);
-    // 分期成员数（#192 分期切片）：全体 planId 一次分组，「n」恒读时派生
-    const planCounts = await countAllPlanMembers(deps.db);
+    // 会被内表影子化（实测 total 恒 0）。
+    const [rows, lineSums, paidSums, creditedSums, planCounts] = await Promise.all([
+      deps.db
+        .select()
+        .from(schema.invoices)
+        .where(where)
+        .orderBy(asc(schema.invoices.createdAt)),
+      deps.db
+        .select({
+          invoiceId: schema.invoiceLines.invoiceId,
+          total: sql<string>`coalesce(sum(${schema.invoiceLines.lineTotalCents}), 0)`,
+        })
+        .from(schema.invoiceLines)
+        .groupBy(schema.invoiceLines.invoiceId),
+      deps.db
+        .select({
+          invoiceId: schema.payments.invoiceId,
+          paid: sql<string>`coalesce(sum(${schema.payments.amountCents}), 0)`,
+        })
+        .from(schema.payments)
+        .where(isNull(schema.payments.voidedAt))
+        .groupBy(schema.payments.invoiceId),
+      deps.db
+        .select({
+          invoiceId: schema.creditNotes.invoiceId,
+          credited: sql<string>`coalesce(sum(${schema.creditNoteLines.lineTotalCents}), 0)`,
+        })
+        .from(schema.creditNotes)
+        .innerJoin(
+          schema.creditNoteLines,
+          eq(schema.creditNoteLines.creditNoteId, schema.creditNotes.id),
+        )
+        .where(eq(schema.creditNotes.status, "issued"))
+        .groupBy(schema.creditNotes.invoiceId),
+      // 分期成员数（#192 分期切片）：全体 planId 一次分组，「n」恒读时派生
+      countAllPlanMembers(deps.db),
+    ]);
     const totals = new Map(lineSums.map((row) => [row.invoiceId, Number(row.total)]));
     const paids = new Map(paidSums.map((row) => [row.invoiceId, Number(row.paid)]));
     const crediteds = new Map(creditedSums.map((row) => [row.invoiceId, Number(row.credited)]));
@@ -303,24 +306,26 @@ export function invoicesRoutes(deps: { db: Db; logger: Logger; storage: Storage 
     if (row === undefined) {
       return c.json({ error: "not_found" }, 404);
     }
-    const lines = await deps.db
-      .select({
-        id: schema.invoiceLines.id,
-        lineNumber: schema.invoiceLines.lineNumber,
-        description: schema.invoiceLines.description,
-        quantity: schema.invoiceLines.quantity,
-        unitPriceCents: schema.invoiceLines.unitPriceCents,
-        lineTotalCents: schema.invoiceLines.lineTotalCents,
-      })
-      .from(schema.invoiceLines)
-      .where(eq(schema.invoiceLines.invoiceId, row.id))
-      .orderBy(asc(schema.invoiceLines.lineNumber));
+    // 四条互不依赖（都只依赖 row.id/planId），一并发出省 3 个串行 RTT
+    const [lines, creditedCents, paidCents, planCount] = await Promise.all([
+      deps.db
+        .select({
+          id: schema.invoiceLines.id,
+          lineNumber: schema.invoiceLines.lineNumber,
+          description: schema.invoiceLines.description,
+          quantity: schema.invoiceLines.quantity,
+          unitPriceCents: schema.invoiceLines.unitPriceCents,
+          lineTotalCents: schema.invoiceLines.lineTotalCents,
+        })
+        .from(schema.invoiceLines)
+        .where(eq(schema.invoiceLines.invoiceId, row.id))
+        .orderBy(asc(schema.invoiceLines.lineNumber)),
+      sumCreditCents(deps.db, row.id),
+      sumPaidCents(deps.db, row.id),
+      // 「Part i of n」的 n 读时派生（成员数含 void），不从行集数出来
+      row.planId !== null ? countPlanMembers(deps.db, row.planId) : Promise.resolve(undefined),
+    ]);
     const totalCents = lines.reduce((sum, line) => sum + line.lineTotalCents, 0);
-    const creditedCents = await sumCreditCents(deps.db, row.id);
-    const paidCents = await sumPaidCents(deps.db, row.id);
-    // 「Part i of n」的 n 读时派生（成员数含 void），不从行集数出来
-    const planCount =
-      row.planId !== null ? await countPlanMembers(deps.db, row.planId) : undefined;
     return c.json(presentInvoice(row, totalCents, creditedCents, paidCents, planCount, lines));
   });
 

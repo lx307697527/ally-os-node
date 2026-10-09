@@ -146,8 +146,10 @@ export async function buildInvoicePdfModel(
   if (lines.length === 0) return null; // 空票不存在（创建面已收口），防御性一致
 
   const totalCents = lines.reduce((sum, line) => sum + line.lineTotalCents, 0);
-  const creditedCents = await sumCreditCents(db, invoiceId);
-  const paidCents = await sumPaidCents(db, invoiceId);
+  const [creditedCents, paidCents] = await Promise.all([
+    sumCreditCents(db, invoiceId),
+    sumPaidCents(db, invoiceId),
+  ]);
 
   return {
     number: row.number,

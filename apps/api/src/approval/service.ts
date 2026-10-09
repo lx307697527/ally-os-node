@@ -85,24 +85,31 @@ export function parseApprovalLevels(value: unknown): { ok: true; levels: Approva
 // ── 通知扇出（#221 多级通知扇出：轮到谁，谁就在铃铛里）──────────────────────
 
 /**
- * 一级的审批人集合（uuid）：点名 users ∪ 角色持有者。角色按 app_role 枚举过滤
- * （与 worker 侧规则提醒同一防御——api 的 Role 词表与库内枚举是两处定义）。
+ * 一组角色的持有者（uuid）：角色按 app_role 枚举过滤（与 worker 侧规则提醒同一
+ * 防御——api 的 Role 词表与库内枚举是两处定义）。抽取成纯查询是为了待办扫描能
+ * 按角色集去重（同名角色集只在一次扫描里问一次库）。
+ */
+async function resolveRoleHolders(db: Pick<Db, "select">, roles: readonly string[]): Promise<string[]> {
+  const eligible = roles.filter((role): role is (typeof schema.appRole.enumValues)[number] =>
+    (schema.appRole.enumValues as readonly string[]).includes(role),
+  );
+  if (eligible.length === 0) return [];
+  const holders = await db
+    .select({ id: schema.authUser.id })
+    .from(schema.authUser)
+    .innerJoin(schema.userRole, eq(schema.userRole.userId, schema.authUser.id))
+    .where(inArray(schema.userRole.role, eligible));
+  return holders.map((row) => row.id);
+}
+
+/**
+ * 一级的审批人集合（uuid）：点名 users ∪ 角色持有者。
  * 集合可能为空（配置只点了一个无人持有的角色）：校验面要求 users+roles ≥ 1，
  * 但「角色无人持有」合法存在——扇出跳过，待办页同样不显示（同一事实的两面）。
  */
 async function resolveAdjudicatorIds(db: Pick<Db, "select">, level: ApprovalLevel): Promise<string[]> {
-  const eligible = level.roles.filter((role): role is (typeof schema.appRole.enumValues)[number] =>
-    (schema.appRole.enumValues as readonly string[]).includes(role),
-  );
-  const holders =
-    eligible.length === 0
-      ? []
-      : await db
-          .select({ id: schema.authUser.id })
-          .from(schema.authUser)
-          .innerJoin(schema.userRole, eq(schema.userRole.userId, schema.authUser.id))
-          .where(inArray(schema.userRole.role, eligible));
-  return [...new Set([...level.users, ...holders.map((row) => row.id)])];
+  const holders = await resolveRoleHolders(db, level.roles);
+  return [...new Set([...level.users, ...holders])];
 }
 
 /**
@@ -856,6 +863,17 @@ export async function approvalTodo(
           .from(schema.approvalActions)
           .where(inArray(schema.approvalActions.requestId, pendingIds));
   const result: ApprovalTodoRow[] = [];
+  // 角色集 → 持有者查询的去重缓存：待办行大量共享同一组配置角色，逐行问库是
+  // 每页一次 N+1；同一调用内同名角色集只问一次库（Promise 缓存，失败原样上抛）
+  const holdersCache = new Map<string, Promise<string[]>>();
+  const holdersFor = (roles: readonly string[]): Promise<string[]> => {
+    const key = JSON.stringify(roles);
+    const cached = holdersCache.get(key);
+    if (cached !== undefined) return cached;
+    const pending = resolveRoleHolders(db, roles);
+    holdersCache.set(key, pending);
+    return pending;
+  };
   for (const row of rows) {
     const parsed = parseApprovalLevels(row.levels);
     const level = parsed.ok ? parsed.levels[row.currentStep] : undefined;
@@ -867,6 +885,14 @@ export async function approvalTodo(
       (actionRow) => actionRow.requestId === row.requestId && actionRow.stepIndex === row.currentStep,
     );
     const approvedCount = levelActions.filter((actionRow) => actionRow.decision === "approved").length;
+    // 与 requiredApprovals 同一口径：all 按**裁决时刻**的审批人集合（点名 ∪
+    // 角色持有者）；quorum 按配置票数；any 恒 1
+    const neededApprovals =
+      level.mode === "quorum"
+        ? (level.quorum ?? Number.MAX_SAFE_INTEGER)
+        : level.mode === "all"
+          ? [...new Set([...level.users, ...(await holdersFor(level.roles))])].length
+          : 1;
     result.push({
       requestId: row.requestId,
       configKey: row.configKey,
@@ -882,7 +908,7 @@ export async function approvalTodo(
       signatureMeaning: level.signatureMeaning,
       levelMode: level.mode,
       approvedCount,
-      neededApprovals: await requiredApprovals(db, level),
+      neededApprovals,
       viewerAlreadyActed: levelActions.some((actionRow) => actionRow.actorId === viewer.id),
     });
   }

@@ -1,4 +1,4 @@
-import { asc, eq, inArray, isNotNull, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNotNull, sql } from "drizzle-orm";
 import type { Db } from "@ally/db";
 import { schema } from "@ally/db";
 import {
@@ -7,7 +7,7 @@ import {
   createDraftInvoice,
 } from "./service.ts";
 import { computePaymentStatus } from "./payments.ts";
-import { effectiveDueCents, sumCreditCents } from "./credits.ts";
+import { effectiveDueCents } from "./credits.ts";
 
 /**
  * 分期拆票服务（#192 分期切片：一个约定总额切成 n 张草稿票）。
@@ -226,11 +226,31 @@ export async function getInvoicePlan(
       paidByInvoice.set(row.invoiceId, Number(row.paid));
     }
   }
-  // 有效贷项逐票取（credits.ts 的 issued 口径）；无贷项的票零查询缺省 0
-  for (const memberId of memberIds) {
-    const credited = await sumCreditCents(tx, memberId);
-    if (credited > 0) {
-      creditedByInvoice.set(memberId, credited);
+  // 有效贷项一次分组取齐（credits.ts 的 issued 口径，sumCreditCents 的逐票查询
+  // 在这里会随成员数翻倍）；无贷项的票零行缺省 0
+  if (memberIds.length > 0) {
+    const creditedRows = await tx
+      .select({
+        invoiceId: schema.creditNotes.invoiceId,
+        credited: sql<string>`coalesce(sum(${schema.creditNoteLines.lineTotalCents}), 0)`,
+      })
+      .from(schema.creditNotes)
+      .innerJoin(
+        schema.creditNoteLines,
+        eq(schema.creditNoteLines.creditNoteId, schema.creditNotes.id),
+      )
+      .where(
+        and(
+          inArray(schema.creditNotes.invoiceId, memberIds),
+          eq(schema.creditNotes.status, "issued"),
+        ),
+      )
+      .groupBy(schema.creditNotes.invoiceId);
+    for (const row of creditedRows) {
+      const credited = Number(row.credited);
+      if (credited > 0) {
+        creditedByInvoice.set(row.invoiceId, credited);
+      }
     }
   }
   const parts: PlanPart[] = memberRows.map((row) => {

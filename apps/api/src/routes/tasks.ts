@@ -303,15 +303,16 @@ export function tasksRoutes(deps: { db: Db; notifyUsers: (userIds: string[]) => 
             from: task.status,
             to: body.data.status,
           };
-          for (const userId of watcherIds) {
-            await tx.insert(schema.notifications).values({
+          // 一次多行 insert（逐人 insert 会按收件人数拉长事务）
+          await tx.insert(schema.notifications).values(
+            watcherIds.map((userId) => ({
               userId,
               eventType: "task.status_changed",
               aggregateType: "task",
               aggregateId: task.id,
               payload,
-            });
-          }
+            })),
+          );
           for (const userId of watcherIds) {
             if (!nudgedTo.includes(userId)) nudgedTo.push(userId);
           }

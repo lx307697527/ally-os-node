@@ -189,7 +189,33 @@ export function compileMachine(template: ParsedTemplate): ReturnType<typeof crea
   });
 }
 
+/**
+ * definition JSON → 解析结果的有界缓存。模板 definition 是静态快照（版本只增
+ * 不改），而实例读/推进路径（subjectFlow、transition）每次请求都全量重跑 zod +
+ * 建机 + 可达性遍历——同一份 JSON 的结果是纯函数，缓存掉的是重复劳动。键是
+ * JSON 串；超上限整体清空（模板版本数远低于上限，清空是廉价的尾部行为）。
+ * 缓存的 ParsedTemplate 跨请求共享同一实例，全部字段 Readonly、消费方不改变它。
+ */
+const parseCache = new Map<string, ParseResult>();
+const PARSE_CACHE_MAX = 500;
+
 export function parseWorkflowTemplate(raw: unknown): ParseResult {
+  let key: string | undefined;
+  try {
+    key = JSON.stringify(raw);
+  } catch {
+    key = undefined; // 循环引用等非常规输入不进缓存，直接走全量解析
+  }
+  if (key === undefined) return parseWorkflowTemplateUncached(raw);
+  const cached = parseCache.get(key);
+  if (cached !== undefined) return cached;
+  const fresh = parseWorkflowTemplateUncached(raw);
+  if (parseCache.size >= PARSE_CACHE_MAX) parseCache.clear();
+  parseCache.set(key, fresh);
+  return fresh;
+}
+
+function parseWorkflowTemplateUncached(raw: unknown): ParseResult {
   const parsed = workflowDefinitionSchema.safeParse(raw);
   if (!parsed.success) {
     return { ok: false, error: parsed.error.issues[0]?.message ?? "invalid definition" };
@@ -244,6 +270,22 @@ export function parseWorkflowTemplate(raw: unknown): ParseResult {
 }
 
 /**
+ * 模板对象 → 已编译机器的缓存：applyWorkflowEvent 每次推进都重建机器，而
+ * parseWorkflowTemplate 命中缓存时同一份 definition 恒返回同一 ParsedTemplate
+ * 实例——WeakMap 挂在实例上，推进路径的建机成本摊平成一次查表。键用对象身份
+ * 不用 JSON：模板生命周期由解析缓存管，这里只做衍生物的挂靠。
+ */
+const machineCache = new WeakMap<ParsedTemplate, ReturnType<typeof createMachine>>();
+
+function machineFor(template: ParsedTemplate): ReturnType<typeof createMachine> {
+  const cached = machineCache.get(template);
+  if (cached !== undefined) return cached;
+  const machine = compileMachine(template);
+  machineCache.set(template, machine);
+  return machine;
+}
+
+/**
  * 「当前状态 + 事件 → 下一状态」的唯一裁决口：事件未被当前状态接受时 XState
  * 原地不动，引擎据此答 event_not_allowed。状态名不存在（实例快照与状态列被
  * 外力改歪）按 unknown_state 拒绝，不静默当作初始态。
@@ -261,7 +303,7 @@ export function applyWorkflowEvent(
   if (transition === undefined) {
     return { ok: false, reason: "event_not_allowed" };
   }
-  const machine = compileMachine(template);
+  const machine = machineFor(template);
   const actor = createActor(machine, {
     snapshot: machine.resolveState({ value: currentState }),
   });

@@ -266,8 +266,9 @@ export function commentsRoutes(
           (userId) =>
             userId !== me.id && !mentionedIds.has(userId) && subject.viewers.some((v) => v.id === userId),
         );
-      for (const person of mentioned) {
-        await tx.insert(schema.notifications).values({
+      // 提及与关注扇出一次多行 insert（逐人 insert 会按收件人数拉长事务）
+      const notificationRows = [
+        ...mentioned.map((person) => ({
           userId: person.id,
           eventType: "comment.mentioned",
           aggregateType: parsed.data.subjectType,
@@ -278,10 +279,8 @@ export function commentsRoutes(
             actorName: me.name,
             excerpt: parsed.data.body.slice(0, EXCERPT_MAX),
           },
-        });
-      }
-      for (const userId of watcherIds) {
-        await tx.insert(schema.notifications).values({
+        })),
+        ...watcherIds.map((userId) => ({
           userId,
           eventType: "comment.created",
           aggregateType: parsed.data.subjectType,
@@ -292,7 +291,10 @@ export function commentsRoutes(
             actorName: me.name,
             excerpt: parsed.data.body.slice(0, EXCERPT_MAX),
           },
-        });
+        })),
+      ];
+      if (notificationRows.length > 0) {
+        await tx.insert(schema.notifications).values(notificationRows);
       }
       return { row, watcherIds };
     });
@@ -413,19 +415,22 @@ export function commentsRoutes(
           fields: ["body"],
         },
       });
-      for (const person of newlyMentioned) {
-        await tx.insert(schema.notifications).values({
-          userId: person.id,
-          eventType: "comment.mentioned",
-          aggregateType: comment.subjectType,
-          aggregateId: comment.subjectId,
-          payload: {
-            taskTitle: visible.title,
-            commentId: row.id,
-            actorName: me.name,
-            excerpt: parsed.data.body.slice(0, EXCERPT_MAX),
-          },
-        });
+      // 新增提及一次多行 insert（与创建面的扇出同一裁法）
+      if (newlyMentioned.length > 0) {
+        await tx.insert(schema.notifications).values(
+          newlyMentioned.map((person) => ({
+            userId: person.id,
+            eventType: "comment.mentioned",
+            aggregateType: comment.subjectType,
+            aggregateId: comment.subjectId,
+            payload: {
+              taskTitle: visible.title,
+              commentId: row.id,
+              actorName: me.name,
+              excerpt: parsed.data.body.slice(0, EXCERPT_MAX),
+            },
+          })),
+        );
       }
       return row;
     });
@@ -583,8 +588,23 @@ export function commentsRoutes(
       return c.json({ error: "invalid_request", code: "too_many_files" }, 400);
     }
 
-    const stagedKeys: string[] = [];
+    const staged = files.map(({ file, name }) => ({
+      file,
+      name,
+      key: `${ATTACHMENT_KEY_PREFIX}/${comment.id}/${randomUUID()}`,
+    }));
+    // 桶键先记全量：失败路径（上传中途失败/记账失败）都按全量尽力删，删是幂等的
+    const stagedKeys = staged.map((item) => item.key);
     try {
+      // 先落桶后记账（BUG-325 教训不变）。对象在事务**外**并行上传：串行 +
+      // 事务内上传会把评论行锁与连接按最慢一个对象的 RTT 排队；桶失败在这里
+      // 就短路，事务不欠账
+      await Promise.all(
+        staged.map(async (item) => {
+          const bytes = new Uint8Array(await item.file.arrayBuffer());
+          await deps.storage.put(item.key, bytes, item.file.type);
+        }),
+      );
       const written = await deps.db.transaction(async (tx) => {
         // 锁评论行：准许名额在锁内裁决，并发的两个 attach 不会各自数出余量
         const locked = await tx
@@ -598,37 +618,27 @@ export function commentsRoutes(
           .from(schema.commentAttachments)
           .where(eq(schema.commentAttachments.commentId, comment.id));
         if ((countRows[0]?.n ?? 0) + files.length > MAX_FILES_PER_COMMENT) return null;
-        const out: {
-          id: string;
-          fileName: string;
-          contentType: string;
-          sizeBytes: number;
-          createdAt: Date;
-        }[] = [];
-        for (const { file, name } of files) {
-          const key = `${ATTACHMENT_KEY_PREFIX}/${comment.id}/${randomUUID()}`;
-          const bytes = new Uint8Array(await file.arrayBuffer());
-          await deps.storage.put(key, bytes, file.type);
-          stagedKeys.push(key);
-          const inserted = await tx
-            .insert(schema.commentAttachments)
-            .values({
+        const inserted = await tx
+          .insert(schema.commentAttachments)
+          .values(
+            staged.map((item) => ({
               commentId: comment.id,
-              fileName: name,
-              contentType: file.type,
-              sizeBytes: file.size,
-              storageKey: key,
+              fileName: item.name,
+              contentType: item.file.type,
+              sizeBytes: item.file.size,
+              storageKey: item.key,
               uploadedBy: me.id,
-            })
-            .returning({
-              id: schema.commentAttachments.id,
-              fileName: schema.commentAttachments.fileName,
-              contentType: schema.commentAttachments.contentType,
-              sizeBytes: schema.commentAttachments.sizeBytes,
-              createdAt: schema.commentAttachments.createdAt,
-            });
-          const row = inserted[0];
-          if (row === undefined) throw new Error("attachment insert returned no row");
+            })),
+          )
+          .returning({
+            id: schema.commentAttachments.id,
+            fileName: schema.commentAttachments.fileName,
+            contentType: schema.commentAttachments.contentType,
+            sizeBytes: schema.commentAttachments.sizeBytes,
+            createdAt: schema.commentAttachments.createdAt,
+          });
+        // 审计一行/附件（与删除面的逐附件事件同粒度）
+        for (const row of inserted) {
           await recordAudit(tx, {
             actor: me.id,
             action: "comment.attachment_added",
@@ -641,11 +651,12 @@ export function commentsRoutes(
               sizeBytes: row.sizeBytes,
             },
           });
-          out.push(row);
         }
-        return out;
+        return inserted;
       });
       if (written === null) {
+        // 名额被并发请求抢先占满：对象已落桶但没记账，全量尽力删
+        await Promise.all(stagedKeys.map((key) => deps.storage.delete(key).catch(() => undefined)));
         return c.json({ error: "invalid_request", code: "too_many_files" }, 400);
       }
       return c.json({ attachments: written.map(attachmentJson) }, 201);
@@ -653,9 +664,7 @@ export function commentsRoutes(
       // 记账失败：把这次已落桶的对象尽力删掉，不留「有对象无行」的孤儿；
       // 删除自身失败只能留给 worker 回收（宁留字节不留死链的反面：宁留
       // 孤儿字节也不留指向不存在对象的死行）
-      for (const key of stagedKeys) {
-        await deps.storage.delete(key).catch(() => undefined);
-      }
+      await Promise.all(stagedKeys.map((key) => deps.storage.delete(key).catch(() => undefined)));
       throw err;
     }
   });

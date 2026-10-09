@@ -252,9 +252,12 @@ export async function summarizeInvoicePayments(
   tx: Pick<Db, "select">,
   invoiceId: string,
 ): Promise<InvoicePaymentSummary> {
-  const totalCents = await sumLineTotals(tx, invoiceId);
-  const creditedCents = await sumCreditCents(tx, invoiceId);
-  const paidCents = await sumPaidCents(tx, invoiceId);
+  // 三个合计互不依赖，一并发出（同一连接上并行，drizzle 在会话内排队执行）
+  const [totalCents, creditedCents, paidCents] = await Promise.all([
+    sumLineTotals(tx, invoiceId),
+    sumCreditCents(tx, invoiceId),
+    sumPaidCents(tx, invoiceId),
+  ]);
   return {
     totalCents,
     creditedCents,
