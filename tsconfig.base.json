@@ -5,7 +5,7 @@
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
     "types": ["node"],
-    // jsx 是给 .tsx 源用的（packages/pdf 的单据模板）；.ts 包不受影响
+    // jsx 是给 .tsx 源用的（apps/web、packages/ui 的组件源）；纯 .ts 的服务端包不受影响
     "jsx": "react-jsx",
 
     "strict": true,

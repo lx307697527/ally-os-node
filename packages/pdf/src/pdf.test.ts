@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { pdfSha256, stablePdfBytes } from "./deterministic.ts";
 import { formatMoney, formatQuantity, invoiceTypeLabel, NOT_STATED } from "./model.ts";
-import { renderInvoicePdf } from "./render.tsx";
+import { renderInvoicePdf } from "./render.ts";
 import { DEFAULT_PDF_TEMPLATE, pdfTemplateConfigSchema } from "./template.ts";
 import type { InvoicePdfModel } from "./model.ts";
 
