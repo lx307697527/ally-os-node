@@ -105,6 +105,7 @@ export const RAIL_GROUPS: readonly RailGroup[] = [
     items: [
       { to: "/system/team", label: "Team", nav: "team-users" },
       { to: "/system/audit", label: "Audit log", nav: "audit-log", icon: "ledger" },
+      { to: "/system/rate-limits", label: "Rate limits", nav: "rate-limits", icon: "shield" },
       { to: "/system/deleted-records", label: "Deleted records", nav: "deleted-records", icon: "restore" },
       { to: "/system/approvals", label: "Approval lines", nav: "approval-lines", icon: "stages" },
       { to: "/system/numbering", label: "Numbering rules", nav: "numbering-rules", icon: "hash" },
