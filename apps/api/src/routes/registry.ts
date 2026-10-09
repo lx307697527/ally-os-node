@@ -29,6 +29,9 @@ export const API_ROUTES: readonly RouteDecl[] = [
   // 公开：登录前可访问（健康检查在 /health、/ready，不在 /api/* 下，不列）
   { method: "*", path: "/api/auth/*", auth: { kind: "public" } },
   { method: "GET", path: "/api/auth-providers", auth: { kind: "public" } },
+  // 前端错误上报（#28 切片 1）：公开指「不过会话中间件」——报错最常见的时刻
+  // 恰恰是会话不在/刚断的时刻；它的认证是 errors.ingest 的 PG 限流 + zod 上限
+  { method: "POST", path: "/api/errors", auth: { kind: "public" } },
   // 登录即可
   { method: "GET", path: "/api/me", auth: { kind: "session" } },
   // 角色/权限管理（#23）：admin / owner（R-16-6 的高级角色门在路由内部再加一层）
@@ -161,6 +164,9 @@ export const API_ROUTES: readonly RouteDecl[] = [
   { method: "PATCH", path: "/api/rules/:key", auth: { kind: "session" } },
   // 审计日志查询（#29）：owner / admin（audit.read 权限点）
   { method: "GET", path: "/api/audit-events", auth: { kind: "permission", permission: "audit.read" } },
+  // 错误事件读面（#28 切片 1）：前后端错误「同一个地方查看」，audit.read 同门
+  { method: "GET", path: "/api/error-events", auth: { kind: "permission", permission: "audit.read" } },
+  { method: "GET", path: "/api/error-events/summary", auth: { kind: "permission", permission: "audit.read" } },
   // 删除记录的查看与恢复（#29 切片 2）：audit.read 同门——恢复把全公司可见性
   // 已关闭的行重新打开，是合规面动词，不随消费域给行属开 Trash 入口
   { method: "GET", path: "/api/deleted-records", auth: { kind: "permission", permission: "audit.read" } },

@@ -52,6 +52,13 @@
 | A27 | platform-collect-http-responses | `*/5 * * * *` | 收割 pg_net 异步 HTTP 响应 | **废弃**:pg-boss worker 同步执行并持有结果,不存在异步响应需要收割 |
 | A28 | marketing-abandoned-forms-cleanup | `20 3 * * *` | 半途表单提交数据清理 | 随营销/获客域(M1) |
 | A29 | billing-invoice-overdue-sweep | `0 13,14 * * *` | 发票逾期三档内部告警 + Slack 日报(FEAT-765;13/14 UTC 双触发、函数内只在纽约 09:00 做事) | **已落地**(#192 due 扫描切片,2026-10-09):任务名 `invoice-overdue-reminders`、每日 13:10 UTC 单触发。档位节奏(stage 1/7/30)刻意不搬——24h 再催与 approval/workflow 催办一致;Slack 日报不搬——业务提醒走通知域,Slack 通道留给 job 失败告警 |
+本表之外随 issue 重建的两个任务（老仓库迁移 HEAD 的任务表上没有——issue #28 描述的是更早的状态，error-spike-alert / database-cleanup 的错误日志部分在 HEAD 前已不存在，切换日老库无需 unschedule）：
+
+| 任务 | cron(UTC) | 干什么 | 来源与落地 |
+|---|---|---|---|
+| error-spike-alert | `*/5 * * * *` | 错误事件 5 分钟窗口数行过阈值（20）→ Slack 告警，30 分钟冷却，台账幂等 | issue #28 切片 1（2026-10-09）随错误追踪域登记，检测节奏按老语义重建（定时检测、30 分钟冷却、Slack） |
+| error-events-cleanup | `*/10 * * * *` | 错误事件留 30 天、激增台账留 90 天（老 database-cleanup 的错误日志部分） | 同上；老任务本体已不在 HEAD，保留期按 #27 切片 1 同性质遥测的取数（30 天） |
+
 
 ## 表 B:issue #32 正文所列线上任务(旧时代任务名,2026-09-30 快照)
 
