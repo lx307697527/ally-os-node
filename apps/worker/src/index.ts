@@ -11,6 +11,7 @@ import { notificationsJobs } from "./notifications/index.ts";
 import { rulesJobs } from "./rules/index.ts";
 import { registerJobs, type JobFailureAlerter } from "./runner.ts";
 import { createSlackAlerter, formatJobFailure } from "./slack.ts";
+import { securityJobs } from "./security/index.ts";
 import { workflowJobs } from "./workflow/index.ts";
 
 const env = parseEnv(process.env);
@@ -53,6 +54,7 @@ await registerJobs(
     ...rulesJobs({ db, pool, mailer, webAppUrl: env.WEB_APP_URL, logger }),
     ...notificationsJobs({ db, mailer, webAppUrl: env.WEB_APP_URL, logger }),
     ...workflowJobs({ db, pool, logger }),
+    ...securityJobs({ db, logger }),
   ],
   {
     logger,

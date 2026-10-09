@@ -1574,3 +1574,67 @@ export const creditNoteLines = pgTable(
   },
   (t) => [index("credit_note_lines_credit_note_id_idx").on(t.creditNoteId, t.lineNumber)],
 );
+
+// ── 限流（#27 切片 1：PG 限流内核，公开写面的固定窗口计数）──────────────────
+// 反滥用内核的第一半（限流；honeypot / captcha / IP 黑名单随公开表单域进场）。
+// 老系统 FEAT-019 phase 3 的直系后裔，两处刻意差异：
+//   1. 老的限流器住在业务事务里，拒绝时整个事务回滚、连拒绝记录都留不下
+//      （Postgres 没有自治事务）；新的限流器是 API 中间件，自己的读写自成
+//      一笔——拒绝记录（rate_limit_denials）因此可以持久留存，「被拦截的
+//      请求」有了可查的台账（验收第 3 条的数据面）。
+//   2. 老拒绝尝试不计数（回滚把增量也吃了），计数器停在阈值上；新实现拒绝
+//      照计数——超限的请求反正都被拒，继续计数既诚实（窗口内真实到达量）
+//      也让 denied 行的 count_at_denial 与计数器一致可对账。
+// 存表不存内存是结构裁决不是实现细节：多实例共享计数是验收第 1 条，进程内
+// Map（老系统 _shared/rateLimit.ts）在第二个实例起就失效——明确不继承的形态。
+export const rateLimitCounters = pgTable(
+  "rate_limit_counters",
+  {
+    // 标识类型开集（text 不用枚举，与 tasks.subject_type 同一裁法）：'ip' =
+    // 按来源地址计数；后续按账号/邮箱计数（如密码喷洒第二道）时加值不動数据库
+    identifierType: text("identifier_type").notNull(),
+    // 标识值原样存储（IP 不归一化、截断 100 字符——老系统 request_client_ip 的
+    // 同一裁决：来源可能是 v4/v6/链式头，归一化等有真实样本再做）
+    identifier: text("identifier").notNull(),
+    // 动作名（如 auth.sign-in）：一把钥匙一个策略，名字即文档
+    action: text("action").notNull(),
+    // 窗口起点：按 epoch 对齐的固定窗口桶（date_bin 语义）；清理按年龄扫此列
+    windowStart: timestamp("window_start", { withTimezone: true }).notNull(),
+    requestCount: integer("request_count").notNull().default(0),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    // 计数的主键即并发的锁：同窗口并发写撞这条主键，ON CONFLICT 原子递增，
+    // 两个实例不会各读到「19」然后都放行（验收第 1 条的结构保证）
+    primaryKey({ columns: [t.identifierType, t.identifier, t.action, t.windowStart] }),
+    // 清理扫描按年龄
+    index("rate_limit_counters_window_start_idx").on(t.windowStart),
+  ],
+);
+
+// 拒绝台账：一次拒绝一行（app 层限流器才可能有的面——老的拒绝记录随事务回滚
+// 蒸发，只剩一条 warning 日志）。行只存事实（谁、对哪个动作、窗口内第几次被
+// 拒、哪个请求），不存请求体——限流面的数据最小化：来源 IP 本身是普通运维
+// 事实，但它关联的请求内容没必要进台账。request_id 与服务端日志互查。
+export const rateLimitDenials = pgTable(
+  "rate_limit_denials",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    identifierType: text("identifier_type").notNull(),
+    identifier: text("identifier").notNull(),
+    action: text("action").notNull(),
+    windowStart: timestamp("window_start", { withTimezone: true }).notNull(),
+    // 拒绝时刻该窗口的计数（> limit）：台账自证「为什么拒」，limit 同行存储
+    // 让行自描述——策略阈值随时间会改，行定格的是拒绝当时的事实
+    countAtDenial: integer("count_at_denial").notNull(),
+    limitValue: integer("limit_value").notNull(),
+    requestId: text("request_id"),
+    deniedAt: timestamp("denied_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    // 管理面主读法：最近被拦的请求在前（#27 验收第 3 条的读路径）
+    index("rate_limit_denials_denied_at_idx").on(t.deniedAt),
+    // 「这个来源最近都被拦了什么」的对账读法
+    index("rate_limit_denials_identifier_idx").on(t.identifierType, t.identifier, t.deniedAt),
+  ],
+);

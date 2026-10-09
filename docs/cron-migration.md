@@ -44,7 +44,7 @@
 | A19 | core-audit-roll | `0 0 * * *` | 审计表分区滚动 | 随审计日志 #29(新系统表是否分区由 #29 设计定) |
 | A20 | comms-partition-roll | `0 0 * * *` | 通信表分区滚动 | 随通信域 |
 | A21 | marketing-interaction-roll | `0 0 * * *` | 营销互动表分区滚动 | 随营销/获客域(M1) |
-| A22 | platform-rate-limits-cleanup | `20 3 * * *` | 限流计数清理 | 随反滥用 #27 |
+| A22 | platform-rate-limits-cleanup | `20 3 * * *` | 限流计数清理 | **已落地**(#27 切片 1,2026-10-09):任务名 `rate-limit-cleanup`、每 10 分钟。每日定点改高频小扫描——删除是纯年龄扫描,跑空白来;计数器留 1 天、拒绝台账留 30 天(docs/abuse-prevention.md) |
 | A23 | platform-cleanup-funnel | `25 4 * * *` | 漏斗事件过期清理 | 随营销/获客域(M1) |
 | A24 | scheduling-sweep-appointment-tokens | `30 3 * * *` | 过期预约令牌清扫 | 随自建预约 #207 |
 | A25 | platform-backup-history-cleanup | `35 3 * * *` | 备份历史过期清理 | 随备份 #33 |

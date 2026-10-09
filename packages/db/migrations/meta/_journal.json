@@ -281,6 +281,13 @@
       "when": 1791497818070,
       "tag": "0039_special_switch",
       "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "7",
+      "when": 1791508332550,
+      "tag": "0040_bored_plazm",
+      "breakpoints": true
     }
   ]
 }
