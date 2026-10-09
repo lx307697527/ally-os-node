@@ -26,10 +26,14 @@
 
 ## 新坑
 
-(66) **本机 eslint 默认 4GB 堆 OOM**：`pnpm verify` 在 lint 阶段 280s 后 mark-compact 失败 exit 134；`NODE_OPTIONS=--max-old-space-size=8192` 下秒级全绿。CI 不受影响；本机跑 verify / pre-push 钩子（钩子继承 git 进程环境）都需前缀注入，例如 `NODE_OPTIONS="--max-old-space-size=8192" git push`。仓库脚本保持不动（不为一台机器改 lint 命令）。
+(66) **本机 eslint 默认 4GB 堆 OOM**：`pnpm verify` 在 lint 阶段 280s 后 mark-compact 失败 exit 134；`NODE_OPTIONS=--max-old-space-size=8192` 下秒级全绿。CI 不受影响（CI 步骤本就带 `NODE_OPTIONS=…4096`）；本机跑 verify / pre-push 钩子（钩子继承 git 进程环境）都需前缀注入，例如 `NODE_OPTIONS="--max-old-space-size=8192" git push`。仓库脚本保持不动（不为一台机器改 lint 命令）。
+
+(67) **`pool.end()` 优雅关闭与 `drop database with (force)` 的竞态会以 unhandled error 形式击穿 CI**（本切片推送后 main 上真实发生，run 37974397465）：160 个测试文件与全部用例通过，vitest 却捕获 2 个 `57P01 terminating connection due to administrator command`（payments/workflow-templates 两个临时库）退出 1。机制：afterAll 里 `pool.end()` 的 Terminate 还在途，`drop … with (force)` 先杀掉后端，被杀空闲连接的错误经 pg 转发到 **pool 的 'error' 事件**——无监听器即 uncaught exception，vitest 记为 unhandled error。这是夹具形态的既有竞态（时序敏感，非本切片引入；并发的 Promise.all 查询改变时序使其显形）。修复一行：`createDb` 给 pool 挂空 'error' 监听器（pg 文档建议形态；坏客户端由池下次 acquire 自愈，查询面错误照常上抛）。**因果用一次性脚本双跑验证**：无修复=同款 unhandled crash，有修复=clean exit。
+
+- **顺带观察（未动）**：main 上 #330、#331、landing 三个 Deploy run 先后 failure，均挂在 **Terraform validate / Docker 构建**（基础设施层，测试任务本身通过）——与本切片无关，属 infra 域待办（#226/#34 方向）。
 
 ## 状态
 
-- 已直接推送 main（两个提交：perf(api) / perf(worker)+会话日志），无 PR、无 issue 挂钩、无租约遗留
+- 已直接推送 main（perf(api) / perf(worker)+会话日志），首推 CI 测试任务败于新坑 (67)，修复以 fix commit 补推；无 PR、无 issue 挂钩、无租约遗留
 - compose Postgres 起于本地（5432），复测后留存
 - 下一候选：回迁移主线（#131 吃内核或 #34 app 层，然后 #227）
