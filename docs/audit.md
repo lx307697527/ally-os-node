@@ -136,6 +136,12 @@
   操作者，schema 里 `recorded_by_id` 同裁），detail 另记 `eventType` 与渠道
   `method`（card / paypal）——审计与记账同事务写入，不存在「钱记了、审计没了」
   的中间态）、
+  `pdf.template_updated`
+  （PDF 模板配置 #128；target 恒为 `pdf_template_config`（单例行，无行 id 可
+  指），detail 记 `changes` 逐字段 `from`/`to`（嵌套路径点名到叶子：
+  `company.phone`、`paymentInstructions.bankName` 等）——「谁在何时改了发给
+  客户的单据长什么样」沿这条行可查；no-op PATCH 不落此行。模板的即时生效
+  只影响之后渲染的单据，已存档的票带 `template_snapshot` 自证，不受影响）、
   `invoice.payment_link_created`
   （收款链接/订单创建 #193；target = 发票行 id，detail 记 `invoiceNumber`/
   `amountCents`（实扣 gross）/`principalCents`/`surchargeCents`/`currency`——

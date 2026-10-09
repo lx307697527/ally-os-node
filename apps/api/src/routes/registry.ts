@@ -190,6 +190,13 @@ export const API_ROUTES: readonly RouteDecl[] = [
   { method: "PATCH", path: "/api/invoices/:id", auth: { kind: "permission", permission: "invoices.manage" } },
   { method: "POST", path: "/api/invoices/:id/confirm", auth: { kind: "permission", permission: "invoices.manage" } },
   { method: "POST", path: "/api/invoices/:id/void", auth: { kind: "permission", permission: "invoices.manage" } },
+  // 单据字节（#128）：draft 现渲、issued 读确认时刻的存档原件（同一份服务端
+  // 生成面——预览/邮件附件/门户下载共用），invoices.manage 同门
+  { method: "GET", path: "/api/invoices/:id/pdf", auth: { kind: "permission", permission: "invoices.manage" } },
+  // PDF 模板配置（#128）：品牌 + 公司信息 + 收款指示，invoices.manage 同门
+  //（银行信息是财务的脸面）；GET/PATCH 同门，PATCH no-op 幂等不留审计
+  { method: "GET", path: "/api/pdf-template-config", auth: { kind: "permission", permission: "invoices.manage" } },
+  { method: "PATCH", path: "/api/pdf-template-config", auth: { kind: "permission", permission: "invoices.manage" } },
   // 收款台账（#192 切片 2）：发票锚定的记账/读法与更正动词，invoices.manage
   // 同门（#232 §12 财务「认领收款」）。#193 的 webhook 记账是进程内接缝
   // （billing/payments.ts recordPayment），不走这扇财务门

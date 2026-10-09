@@ -651,6 +651,31 @@ migration(记账/作废/两渠道建链接的 API 半边是切片 2 与 #193 渠
    terms/due 的 web 面已落)、收款状态回写订单/批次(#241 发货门槛,读
    `computePaymentStatus`)、QuickBooks 推送(#181,含银行流水认领)、第一笔款
    到账转正式客户(R-02-5)等收款触发业务;
-4. PDF 存档(#128 统一 PDF 服务)、订单域按比例拆期触发(#231 进场时走
-   createInvoicePlan 服务接缝,web 的拆票动作届时补 subject 上下文)。
-   分期的 web 面(拆票动作 + 计划台账上页)已随本期落地。
+4. 订单域按比例拆期触发(#231 进场时走 createInvoicePlan 服务接缝,web 的
+   拆票动作届时补 subject 上下文)。分期的 web 面(拆票动作 + 计划台账上页)
+   已随本期落地。发票 PDF 的生成与存档已随 #128 首切片落地,见下节。
+
+## 发票 PDF(#128 统一 PDF 服务,首切片)
+
+同一份 PDF 服务端生成——后台预览、后续邮件附件、客户门户下载共用一个面,内容
+保证一致。渲染权威在 `@ally/pdf`(React 模板 + 确定性字节);发票是首个承载
+单据,收据/报价/估算/PO/贸易信用参考按同一形态逐切片进场。
+
+- **模板配置**:`GET/PATCH /api/pdf-template-config`(`invoices.manage` 门)。
+  品牌色 + 公司信息 + 收款指示(银行三件套),zod 权威在 `@ally/pdf`;行不在 =
+  未配置 = 包内缺省(银行字段印 "TO BE CONFIGURED" 显眼占位)。PATCH 收完整
+  对象,no-op 幂等不留审计,真变更记 `pdf.template_updated`(逐字段 from/to)。
+  即改即生效,不进 config-revisions(#226)——需要版本化时在同一裁决下重估。
+- **存档在确认时刻钉版**:财务确认发出(R-12-6)→ 渲染 + 落桶
+  (`invoices/<invoice_id>.pdf`)+ 记账 `invoice_documents`(一发票一份存档,
+  唯一索引)。存档失败不拦确认(发票状态是事实,PDF 是它的投影),读路径发现
+  issued 无存档时用当前模板补档——补上后永不重生成,模板改了、渲染代码修了,
+  已发出的票 byte-for-byte 不变。存档行带 `template_snapshot`(当时按什么配置
+  渲染的自证)与 `content_sha256`(规范化字节的 SHA-256)。
+- **读路径**:`GET /api/invoices/:id/pdf`(同门)。draft 现渲现回(DRAFT 横幅
+  进版面,不落桶——存档语义只属于发出的票);issued 读存档原件;void 无文档
+  可回(409)。
+- **确定性**:@react-pdf/renderer 的输出里 /CreationDate 与 trailer /ID 每次渲
+  染都变;`@ally/pdf` 的 `stablePdfBytes` 把两处锚定替换成常量,同模型同模板 →
+  同字节 → 同哈希。版式由快照哈希钉住(packages/pdf/src/pdf.test.ts),有意改
+  版式时更新哈希并在 PR 里说明。

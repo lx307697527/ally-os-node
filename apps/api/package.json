@@ -13,6 +13,7 @@
     "@ally/config": "workspace:*",
     "@ally/db": "workspace:*",
     "@ally/mailer": "workspace:*",
+    "@ally/pdf": "workspace:*",
     "@ally/realtime": "workspace:*",
     "@ally/storage": "workspace:*",
     "@gorules/zen-engine": "^2.1.2",

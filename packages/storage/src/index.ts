@@ -23,6 +23,16 @@ export interface Storage {
    * 基础设施故障吞成 null 会让 complete 把没落桶的文件记成已就位。
    */
   head(key: string): Promise<{ sizeBytes: number } | null>;
+  /**
+   * 读回对象字节（#128 PDF 服务切片，**可选能力**）：服务端生成的正式单据
+   * 存档后由系统自己读回分发（发票 PDF 端点流字节、后续邮件附件），与
+   * 「浏览器直传、用户下载走预签名 URL」的附件流是两条路。接口上可选是
+   * 刻意的——上传内核的最小面不被读路径绑架，既有实现与 38 处测试假实现
+   * 不用跟着长方法；需要读回的调用方经 readStoredBytes 收窄并 fail closed
+   * （实现缺能力 = 部署配置错误 → 500，不是 404）。对象不存在返回 null；
+   * 其他失败原样抛（与 head 同一裁法）。
+   */
+  get?(key: string): Promise<Uint8Array | null>;
 }
 
 export interface S3StorageOptions {
@@ -82,7 +92,28 @@ export function createS3Storage(opts: S3StorageOptions): Storage {
         throw err;
       }
     },
+    async get(key) {
+      try {
+        const out = await client.send(
+          new GetObjectCommand({ Bucket: opts.bucket, Key: assertSafeKey(key) }),
+        );
+        const body = await out.Body?.transformToByteArray();
+        return body ?? null;
+      } catch (err) {
+        if (isNotFound(err)) return null;
+        throw err;
+      }
+    },
   };
+}
+
+/**
+ * 读回能力的收窄口（#128）：接口上 get 可选，需要读回的调用方统一走这里
+ * ——实现没提供就是部署错误，typed error 让路由层映射 500 而不是悄悄降级。
+ */
+export async function readStoredBytes(storage: Storage, key: string): Promise<Uint8Array | null> {
+  if (!storage.get) throw new Error("storage implementation does not support get");
+  return await storage.get(key);
 }
 
 /** S3 客户端把 404 包成 MetadataKey 含 "NotFound" / name 含 "NotFound" 的错误 */

@@ -1745,3 +1745,71 @@ export const files = pgTable(
     index("files_pending_created_idx").on(t.createdAt).where(sql`status = 'pending'`),
   ],
 );
+
+// ── 统一 PDF 生成服务（#128 首切片）────────────────────────────────────────────
+// 老系统对照：pdf_template_config + company_payment_instructions 两张表 +
+// 服务端 invoice-pdf edge function（存档 billing.invoice_documents，一发票一份
+// active）。本内核的裁决：
+//
+// 1. **模板只装「单据长什么样」，不装「单据上有什么数」**：品牌色 + 我方公司
+//    信息 + 收款指示（银行三件套），全部是展示事实；业务字段由渲染模型
+//    （@ally/pdf 的 InvoicePdfModel）逐字段白名单携带。zod 权威定义在
+//    @ally/pdf，这里落平铺列（配置面就地编辑、审计逐字段 from/to 都跟列走）。
+// 2. **单例行（id = 1）**：全部署一份品牌与收款信息（老系统同款形态）。行不在
+//    = 未配置，渲染用 @ally/pdf 的 DEFAULT_PDF_TEMPLATE（银行字段印
+//    "TO BE CONFIGURED"，显眼占位不会被误发给客户）；PATCH 是 upsert。
+//    不进 config-revisions（#226）：模板是即改即生效的品牌事实，没有
+//    「先审后上」与回滚的消费需求——需要时再 expand，配置工作室的
+//    模板管理面（#225 剩余）进场时同一裁决下重估。
+// 3. **存档是正式单据的一部分**：发票确认发出（R-12-6）时渲染 + 落桶 +
+//    记账，一张发票一行存档（唯一索引 = 「一发票一份 active」，老系统同一
+//    不变量）；历史文件不再重新生成——读回走存档对象本身，模板改了、
+//    渲染代码修了，已发出的票 byte-for-byte 不变。
+export const pdfTemplateConfig = pgTable("pdf_template_config", {
+  // 单例行：恒为 1
+  id: integer("id").primaryKey(),
+  brandColor: text("brand_color").notNull(),
+  companyName: text("company_name").notNull(),
+  companyAddressLines: jsonb("company_address_lines").$type<string[]>().notNull(),
+  companyEmail: text("company_email").notNull(),
+  companyPhone: text("company_phone"),
+  bankName: text("bank_name").notNull(),
+  bankAccountName: text("bank_account_name").notNull(),
+  bankAccountNumber: text("bank_account_number").notNull(),
+  bankRoutingNumber: text("bank_routing_number"),
+  paymentReferenceNote: text("payment_reference_note"),
+  updatedById: uuid("updated_by_id").references(() => authUser.id, { onDelete: "set null" }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const invoiceDocuments = pgTable(
+  "invoice_documents",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    // 存档跟着发票行：发票行在测试外不删（作废走 void 不删行），CASCADE 只是
+    // 测试清理的顺手路径（与 invoice_lines 同裁）
+    invoiceId: uuid("invoice_id")
+      .notNull()
+      .references(() => invoices.id, { onDelete: "cascade" }),
+    // 对象世界的身份（files.storageKey 同裁）：key 不含用户输入，发票 uuid
+    // 既是唯一性也是防遍历
+    storageKey: text("storage_key").notNull(),
+    // 规范化字节（@ally/pdf stablePdfBytes 后）的 SHA-256：确认回读一致的钉子
+    contentSha256: text("content_sha256").notNull(),
+    sizeBytes: integer("size_bytes").notNull(),
+    // 存档时刻的模板快照：「这张票当时按什么配置渲染的」自证，审计可读
+    templateSnapshot: jsonb("template_snapshot").notNull(),
+    // 确认发出的是人（R-12-6）；系统补档（读路径回填）记当时操作者，同列
+    generatedById: uuid("generated_by_id").references(() => authUser.id, {
+      onDelete: "set null",
+    }),
+    archivedAt: timestamp("archived_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    // 一发票一份存档（老系统 record_invoice_document 的同一不变量）：确认是
+    // 幂等动词、存档也幂等——重复确认/并发回填 ON CONFLICT 让路
+    uniqueIndex("invoice_documents_invoice_id_idx").on(t.invoiceId),
+    uniqueIndex("invoice_documents_key_idx").on(t.storageKey),
+  ],
+);

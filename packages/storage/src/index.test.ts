@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { assertSafeKey, createS3Storage, createS3StorageReader, validateStoragePrefix } from "./index.ts";
+import {
+  assertSafeKey,
+  createS3Storage,
+  createS3StorageReader,
+  readStoredBytes,
+  validateStoragePrefix,
+  type Storage,
+} from "./index.ts";
 
 describe("assertSafeKey", () => {
   it("accepts normal keys", () => {
@@ -92,5 +99,27 @@ describe("validateStoragePrefix", () => {
 
   it.each(["", "/abs", "a/../b", "./a"])("rejects %j", (prefix) => {
     expect(() => validateStoragePrefix(prefix)).toThrow();
+  });
+});
+
+describe("readStoredBytes (#128)", () => {
+  it("narrowly requires the optional get capability", async () => {
+    await expect(readStoredBytes({} as Storage, "invoices/x.pdf")).rejects.toThrow(
+      "does not support get",
+    );
+  });
+
+  it("passes through bytes and null from an implementation with get", async () => {
+    const bytes = new Uint8Array([1, 2, 3]);
+    const storage: Storage = {
+      put: () => Promise.resolve(),
+      signedGetUrl: () => Promise.resolve("u"),
+      signedPutUrl: () => Promise.resolve("u"),
+      delete: () => Promise.resolve(),
+      head: () => Promise.resolve(null),
+      get: (key) => Promise.resolve(key === "invoices/x.pdf" ? bytes : null),
+    };
+    expect(await readStoredBytes(storage, "invoices/x.pdf")).toBe(bytes);
+    expect(await readStoredBytes(storage, "invoices/missing.pdf")).toBe(null);
   });
 });
