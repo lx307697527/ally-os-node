@@ -1,0 +1,644 @@
+<!doctype html>
+<html lang="en">
+<head>
+<!-- [FEAT-622 / #4081] Site-wide ad tracking, the same one file the other two entry
+     documents load. FIRST in <head> and deliberately neither async nor defer, so
+     Google Consent Mode's denied-by-default state is in the data layer before the
+     container looks at it. Relative path for the same reason as ../shared/demo-role.js
+     below: this file is served one level under the site root. The script installs
+     nothing unless the hostname is production. See public/shared/tracking.js. -->
+<script src="../shared/tracking.js"></script>
+<!-- [FEAT-859 / #5775] First / last touch + visitor id. See ../shared/lead-attribution.js. -->
+<script src="../shared/lead-attribution.js"></script>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Ally Nutra — Schedule</title>
+<link href="https://fonts.googleapis.com/css2?family=Roboto+Slab:wght@400;500;600&family=Roboto:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<!-- AN-DEMO role (feature/nav-system-unification) — this page never
+     loaded it before, so the ?role= param arriving from Home.jsx's
+     scheduleUrl(role) link was inert here: no switcher pill, and the new
+     home-link logo below had no way to re-resolve to the current role.
+     Same relative path reasoning as public/quote/index.html: this file is
+     served one level under the site root. -->
+<script defer src="../shared/demo-role.js"></script>
+<style>
+/* ── AllyNutra tokens — AN-DESIGN-001 canonical hex, same vocabulary as
+   public/quote/index.html. */
+:root{
+  --ally-navy:#1E3A5F; --ally-navy-2:#2E5D9E;
+  --ally-amber:#F0A829; --ally-amber-deep:#9A6B12;
+  --text-primary:#18181B; --text-body:#18181B; --text-secondary:#71717A; --text-meta:#71717A;
+  --surface-page:#ECEAE6; --surface-card:#FFFFFF;
+  --border-default:#E4E4E7; --border-hairline:#E4E4E7;
+  --radius:6px; --radius-lg:8px;
+  --font-display:'Roboto Slab',Georgia,'Times New Roman',serif;
+  --font-text:'Roboto',Helvetica,Arial,sans-serif;
+  --font-num:'JetBrains Mono',ui-monospace,'SF Mono',Menlo,Consolas,monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{font-family:var(--font-text);background:var(--surface-page);color:var(--text-body);-webkit-font-smoothing:antialiased}
+button{font-family:inherit;cursor:pointer}
+a:focus-visible,button:focus-visible{outline:2px solid var(--ally-amber);outline-offset:1px}
+
+/* ── marketing header (Item 3, owner directive: the top nav appears on
+   every standalone surface). Same hand copy of src/components/Header.jsx's
+   nav (via global.css's .main-nav family) that public/client/index.html's
+   .mknav already is, and that public/quote/index.html now also carries —
+   see that file's own copy of this comment for the two places it
+   deliberately diverges from client.html's version (a stale, broken
+   background-hover on the dropdown panel, and a non-token hex on the call
+   button — neither reproduced here). global.css remains the source of
+   truth; this file has no build step, so keeping this in sync is manual.
+   Border-bottom reuses this file's own footer.rev's existing
+   rgba(255,255,255,.1) hairline-on-navy value, not quote/index.html's
+   --ally-navy-line token (this file never defined that token, and each
+   static file keeps its own established navy-on-navy/white-on-navy line
+   treatment rather than force-unifying one that was never shared). */
+/* AN-DESIGN-001 sweep, Item 4 (2026-08) — was max-width:1120px, padding
+   14px 24px, gap:14px in a flex row, border rgba(255,255,255,.1). Owner
+   called it "very off" vs. the SPA (Header.jsx/.site-header/.header-inner
+   in global.css) — measured, it was worse than any single suspect named:
+   nav sat left-heavy right after the logo (centerX ~554 of 720 at
+   1440px) instead of true-centered (~712), on top of the border/width/
+   height/gap mismatches. Now an exact mirror of .container(1280,24px
+   H-only) + .header-inner(height:76,gap:24) collapsed into one rule, with
+   the same 1fr/auto/1fr centering grid .header-inner uses — not a new
+   layout language. */
+header.mk{background:var(--ally-navy);border-bottom:1px solid rgba(255,255,255,.08);flex:none}
+header.mk .row{max-width:1280px;margin:0 auto;padding:0 24px;height:76px;box-sizing:border-box;display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:24px}
+.mk-logo{display:flex;align-items:center;flex-shrink:0}
+.mk-logo img{height:46px;width:auto;display:block}
+.mknav{display:flex;align-items:center;gap:6px;font-size:14px}
+.mknav .mknav-brand{display:inline-flex;align-items:center;gap:7px;font-weight:500;color:var(--ally-amber);padding:8px 14px;white-space:nowrap}
+.mknav a{position:relative;display:inline-flex;align-items:center;gap:7px;color:rgba(255,255,255,.75);font-weight:500;text-decoration:none;cursor:pointer;padding:8px 14px;border-radius:var(--radius);transition:color .15s;white-space:nowrap;flex-shrink:0}
+.mknav a svg{width:16px;height:16px;flex:none}
+.mknav a:hover{color:#fff}
+.mknav a::after{content:'';position:absolute;left:14px;right:14px;bottom:4px;height:2px;border-radius:1px;background:var(--ally-amber);transform:scaleX(0);transform-origin:left;transition:transform .15s ease}
+.mknav a:hover::after,.mknav a:focus-visible::after{transform:scaleX(1)}
+@media (prefers-reduced-motion:reduce){.mknav a::after{transition:none}}
+.mknav-dropdown{position:relative}
+.mknav-caret{width:10px;height:10px;flex:none;margin-left:1px;transition:transform .15s}
+@media (prefers-reduced-motion:reduce){.mknav-caret{transition:none}}
+.mknav-panel{position:absolute;top:100%;left:0;margin-top:4px;background:#fff;border:1px solid var(--border-default);border-radius:var(--radius);min-width:250px;padding:8px;box-shadow:0 10px 30px rgba(0,0,0,.15);z-index:200;display:none}
+@media (hover:hover){.mknav-dropdown:hover .mknav-panel{display:block}.mknav-dropdown:hover .mknav-caret{transform:rotate(180deg)}}
+.mknav-panel a{position:relative;display:flex;align-items:center;gap:10px;padding:12px 18px;color:var(--ally-navy);font-weight:500;border-radius:var(--radius)}
+.mknav-panel a::after{content:'';position:absolute;left:18px;right:18px;bottom:6px;height:2px;border-radius:1px;background:var(--ally-amber-deep);transform:scaleX(0);transform-origin:left;transition:transform .18s ease}
+.mknav-panel a:hover::after,.mknav-panel a:focus-visible::after{transform:scaleX(1)}
+@media (prefers-reduced-motion:reduce){.mknav-panel a::after{transition:none}}
+@media (max-width:1100px){.mknav{display:none}}
+
+/* AN-DESIGN-001 nav-uniformity/scheduling-revert sweep, Group 2B — single
+   centered column, no side panel. The panel this replaced only existed to
+   visualise answers to the format/volume/timeline questions (now removed);
+   with nothing left to summarise, keeping an empty panel would be more
+   confusing than no panel. Width (672px) is Tailwind's max-w-2xl, matching
+   src/pages/Schedule.tsx:28's own container exactly. Colour treatment stays
+   this repo's own AN-DESIGN-001 light-surface vocabulary rather than
+   ally-nutra's literal bqa-theme navy page — same choice public/quote/
+   index.html already made for the same booking content. */
+.shell{max-width:672px;margin:32px auto 0;padding:0 24px}
+
+/* ── The booking embed does NOT share the prose's reading measure [BUG-445 / #4398] ──
+   `.shell` is 672px because that is a comfortable line length for the heading
+   and paragraph above the widget. The booking card used to sit inside it, and
+   inherited it: 672 − 48 (shell padding) − 68 (card padding) − 2 (border) left
+   the iframe **552px**, identically at 1440, 1280, 1100 and 900 viewports.
+
+   iClosed's own layout flips at EXACTLY 900px — measured to the pixel against
+   the live widget, 899 stacked and 900 side-by-side — so a desktop visitor got
+   the phone layout with the time-slot column clipped at the card edge. The page
+   was 348px short.
+
+   ⚠️ 1208, and the number moved once already — read this before changing it.
+   [BUG-445 p1] shipped 1008 (iframe 958) on the reading that 900 was simply
+   "the width the side-by-side layout needs". [BUG-448 / #4402] then read
+   iClosed's own shipped CSS and found 900 is the width at which they switch an
+   extra bordered ~256px panel ON:
+
+       @media(min-width:900px){ .custom-900\:flex{display:flex}
+                                .custom-900\:w-\[256px\]{width:256px}
+                                .custom-900\:border-r{border-right-width:1px} }
+
+   So 900 is an ACTIVATION width, and anything in the band 900..1156 turns that
+   panel on while giving it no room — which is the ORIGINAL defect's shape, a
+   column clipped at the card edge. p1's 958 sat inside that band. 1208 − 48 −
+   2 = 1158, i.e. past 900 + 256, matching `.iclosed-embed-shell`'s 1160 in the
+   React app. ⚠️ Do NOT tidy this back toward 900 or 1008; both are inside the
+   band. `bug445p2-schedule-embed-clears-activation.test.js` refuses that range
+   explicitly rather than only checking `> 900`.
+
+   ⚠️ Widening `.shell` instead would have been the smaller diff and the wrong
+   fix: it trades a clipped widget for unreadable 900px-long lines of prose. */
+.embed-shell{max-width:1208px;margin:18px auto 60px;padding:0 24px}
+
+/* ── Never leave the embed INSIDE the activation band [BUG-448 p2 / #4411] ──
+   Same rule as `.iclosed-embed-shell` in the React app, and the same reason:
+   the 1208 above clears 900 + 256 only where the viewport can give it, and
+   below that the iframe slid back into 900…1156 where iClosed's extra ~256px
+   panel switches on without room. Measured after BUG-445 p2: viewport 1100 →
+   iframe 1050, viewport 1008 → iframe 958 — both inside it.
+
+   1206 is where `viewport - 48 - 2` first reaches 1156, so 1205 down is capped
+   under 900 (930 - 48 - 2 = 880) and the widget stacks instead.
+
+   ⚠️ This page uses its EXACT threshold while the React sheet is stuck on 1280.
+   That is not an inconsistency to tidy: `canonical-breakpoints.test.js` scans
+   `src/styles` only, so the ratchet that forces 1280 there does not reach here,
+   and matching it would make this page worse for symmetry alone. */
+@media (max-width:1205px){
+  .embed-shell{max-width:930px}
+}
+.card{border:1px solid var(--border-default);border-radius:var(--radius-lg);background:var(--surface-card);padding:32px 34px 30px}
+@media(max-width:600px){.card{padding:26px 20px 24px}}
+
+/* ── The booking frame must never be wider than the phone [BUG-429 / #4377] ──
+   The iframe used to carry `min-width:320px`. Inside `.shell` (24px padding)
+   inside `.card` (20px below 600px) that needs about 364px of viewport before
+   it fits, and below that it did not shrink — it overhung. Nothing on this
+   page scrolls sideways (measured: scrollWidth == clientWidth at every width),
+   so the overhang was CLIPPED: at 320px, 46px of the widget's right-hand side
+   — the time-slot column — was unreachable by any gesture. A visitor on an
+   iPhone SE or a 360px Android could not book.
+
+   ⚠️ NOT a regression from #4169 / BUG-424. That change touched this frame's
+   HEIGHT only; the min-width predates it. Verified by measuring the pre-#4169
+   file at the same fourteen widths and getting identical numbers.
+
+   The floor is gone, and the gutters are trimmed below 400px so the widget
+   keeps as much width as the device can give it: iClosed lays out its own
+   content inside, and every pixel we spend on padding is one it does not get.
+   ⚠️ What happens INSIDE the frame is cross-origin and cannot be measured from
+   here — see this page's own note and BUG-429. */
+@media(max-width:400px){
+  .shell{padding:0 12px}
+  /* [BUG-445] The embed container gets the same 24px back that BUG-429 gave
+     `.shell`; a second container that did not would reintroduce the overhang
+     that issue closed. */
+  .embed-shell{padding:0 12px}
+  .card{padding:22px 12px 20px}
+}
+
+.backbtn{display:inline-flex;align-items:center;gap:7px;background:none;border:none;color:var(--text-secondary);font:inherit;font-size:13.5px;font-weight:600;padding:0;margin-bottom:22px}
+.backbtn:hover{color:var(--ally-navy)}
+.backbtn svg{width:15px;height:15px}
+
+.qeyebrow{font-family:var(--font-num);font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--ally-amber-deep);font-weight:700;margin-bottom:10px}
+h1.pagehead{font-family:var(--font-display);font-weight:600;font-size:28px;line-height:1.25;color:var(--ally-navy);margin-bottom:10px}
+.bodycopy{font-size:14.5px;color:var(--text-secondary);margin-bottom:22px}
+
+/* ?product= banner — display-only, never forwarded to iClosed. See
+   docs/features/calendly-meetings.md:31-35 (ally-os) for why:
+   Schedule.tsx:50-58 shows it to the visitor and nothing else reads it. */
+.banner{display:flex;gap:12px;align-items:flex-start;padding:14px 16px;background:rgba(240,168,41,.05);border:1px solid rgba(240,168,41,.35);border-radius:var(--radius-lg);margin-bottom:22px}
+.banner svg{flex:none;margin-top:1px;width:18px;height:18px;color:var(--ally-amber-deep)}
+.banner-title{font-size:13.5px;font-weight:600;color:var(--ally-navy)}
+.banner-sub{font-size:12.5px;color:var(--text-secondary);margin-top:2px}
+
+.embedcard{overflow:hidden;border-radius:var(--radius-lg);border:1px solid var(--border-default);background:var(--surface-card)}
+
+.tick{width:50px;height:50px;border-radius:50%;background:rgba(14,143,126,.12);color:#007767;display:grid;place-items:center;font-size:21px}
+.whatnext{border-top:1px solid var(--border-default);padding-top:17px;margin-top:20px}
+.whatnext h5{font-family:var(--font-num);font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:var(--text-meta);margin-bottom:10px}
+.whatnext li{list-style:none;font-size:13.5px;padding-left:24px;position:relative;margin-bottom:9px;color:var(--text-body)}
+.whatnext li b{color:var(--ally-navy)}
+.whatnext li::before{content:'';position:absolute;left:6px;top:9px;width:6px;height:6px;border-radius:50%;background:var(--ally-amber)}
+
+.foot{margin-top:22px;display:flex;gap:9px;align-items:center;flex-wrap:wrap}
+.btn{font:inherit;font-weight:700;font-size:14px;padding:11px 22px;border-radius:var(--radius);border:1px solid transparent}
+.btn-outline{background:transparent;color:var(--ally-navy);border-color:var(--border-default)}
+.btn-sm{font-size:12.5px;padding:8px 15px}
+
+footer.rev{background:var(--ally-navy);border-top:1px solid rgba(255,255,255,.1);padding:14px 24px;text-align:center;font-family:var(--font-num);font-size:10.5px;letter-spacing:.06em;color:rgba(255,255,255,.65);text-transform:uppercase}
+
+/* ── Real site footer (AN-DESIGN-001 sweep, Group B item 11) — same static
+   copy of src/components/Footer.jsx as public/quote/index.html now carries;
+   kept in sync by hand across both files, same as the .mknav-vs-.main-nav
+   duplication in public/client/index.html. */
+.site-footer{background:var(--ally-navy);color:rgba(255,255,255,.7);padding:56px 24px 28px}
+.ftwrap{max-width:1120px;margin:0 auto}
+.footer-grid{display:grid;grid-template-columns:1.6fr 1fr 1fr 1fr;gap:40px;padding-bottom:32px;border-bottom:1px solid rgba(255,255,255,.1)}
+.footer-logo-img{height:41px;width:auto;display:block;margin-bottom:16px}
+.footer-grid p{font-size:13.5px;color:rgba(255,255,255,.62);max-width:300px}
+.footer-col h5{color:#fff;font-size:12.5px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;margin-bottom:16px}
+.footer-col ul{list-style:none}
+.footer-col li{margin-bottom:9px;font-size:14px}
+.footer-col a{color:rgba(255,255,255,.68);text-decoration:none;transition:color .15s}
+.footer-col a:hover{color:var(--ally-amber)}
+.footer-bottom{display:flex;justify-content:space-between;flex-wrap:wrap;gap:10px;padding-top:20px;font-size:12.5px;color:rgba(255,255,255,.5)}
+@media (max-width:900px){.footer-grid{grid-template-columns:1fr 1fr;gap:32px}}
+@media (max-width:600px){.footer-grid{grid-template-columns:1fr}.footer-bottom{flex-direction:column}}
+</style>
+</head>
+<body>
+<!-- [FEAT-622 / #4081] Google Tag Manager, for a visitor with JavaScript off. It
+     cannot live in shared/tracking.js and cannot be gated on the hostname the way
+     everything else is, because by definition it only runs when no script runs.
+     Written down rather than left to be found: on a non-production host a visitor
+     with JavaScript disabled still loads this frame. -->
+<noscript>
+<iframe src="https://www.googletagmanager.com/ns.html?id=GTM-PKQVSCPB"
+height="0" width="0" style="display:none;visibility:hidden"></iframe>
+</noscript>
+
+<header class="mk" id="siteHeader"></header>
+
+<div class="shell"><div class="card" id="main"></div></div>
+<div class="embed-shell" id="embed"></div>
+
+<footer class="site-footer" id="siteFooter"></footer>
+<footer class="rev" id="footTag"></footer>
+
+<script>
+/* ════════════════════════════════════════════════════════════════════════
+   /schedule, reverted to match production exactly (AN-DESIGN-001 sweep,
+   Group 2B). The previous version of this file added a format gate and two
+   questions (order volume, timeline) that do not exist in the real
+   src/pages/Schedule.tsx — verified directly against
+   Ally-Nutra-LLC-New/ally-nutra's origin/main, read-only, before writing
+   this file (git show origin/main:<path>, never the working tree — the
+   local checkout used for that read was itself several weeks stale and
+   would have reported the wrong booking provider).
+
+   TARGET SHAPE (src/pages/Schedule.tsx): back button · eyebrow · h1 · one
+   line of body copy · an optional ?product= banner · the iClosed embed.
+   Nothing else. No gate, no questions, no details form — none of those
+   exist in production, so none of them survive here either.
+
+   Every string below is production's own, with its source line:
+     - "Schedule your call"                                  Schedule.tsx:38-40
+     - "Let's find a time to talk."                            Schedule.tsx:41-43
+     - "A 30-minute discovery call with our team — pick a
+        slot that works for you." (THIRTY, not twenty — an
+        earlier investigation read a snapshot from 2026-08-18
+        that said 20; commit 3293c5a2 (2026-08-21) reverted
+        the copy back to 30, and that is what origin/main
+        says today)                                            Schedule.tsx:46-48
+     - "Following up on your quote request" / "Product: …"     Schedule.tsx:50-58
+     - "Your call is booked"                                   ThankYouBooked.tsx:152-154
+     - "A calendar invite is on its way to your inbox with
+        the meeting link and everything you need."             ThankYouBooked.tsx:156-159
+     - "Not there in a few minutes? Check spam or promotions."  ThankYouBooked.tsx:161-165
+     - the three "What happens next" items, verbatim,
+        unchanged from the previous version of this file        ThankYouBooked.tsx:326-328
+
+   NOT carried forward, and why:
+     - Phone. iclosedEvents.ts / buildIClosedBookingUrl support an
+       `iclosedPhone` param, but Schedule.tsx never passes one (only
+       `{ name, email }`, Schedule.tsx:75) — so this file doesn't either.
+       DELIBERATE — do not "fix" this by wiring a phone field back in.
+     - UTM/ad-attribution forwarding — SUPERSEDED by [FEAT-859]: this page
+       now forwards the visitor's saved attribution from
+       ../shared/lead-attribution.js (see buildIClosedUrl).
+     - An autoplaying VSL on the booked step. ThankYouBooked.tsx has a real
+       one; this mockup has no video asset to embed. Faking it with a
+       placeholder box (the previous version of this file did exactly that)
+       is worse than admitting the gap, so it is simply not here.
+   ════════════════════════════════════════════════════════════════════════ */
+
+/* apps/landing/src/lib/iclosedBooking.js already implements this correctly
+   for the SPA (ES module, imported by Contact.jsx's #book-a-call — the
+   in-repo mechanical precedent this file follows). This page has no build
+   step and cannot import it, so the same constants/logic are duplicated
+   here rather than referenced — do not let the two drift apart silently. */
+const ICLOSED_CONSULTATION_URL = 'https://app.iclosed.io/e/allynutra/ally-nutra-consultation';
+const ICLOSED_ORIGIN = 'https://app.iclosed.io';
+const ICLOSED_BOOKING_MESSAGE_TYPE = 'iclosed.call_scheduled';
+
+/* ── The frame's height, and why there is no right constant [BUG-424 / #4154] ──
+
+   This page used to hard-write height:780px on the iframe. The document inside
+   it was 854px, so the last calendar row — 27-30 for September 2026 — sat 74px
+   outside the visible area with nothing to say so.
+
+   780 was not merely the wrong number; no number is right. Measured against the
+   live widget on 2026-09-21, iClosed's height changes with the STEP the visitor
+   is on (392 -> 484.5 -> 490px during one load) and with the WIDTH it is given,
+   discontinuously: 490px laid out side-by-side at >=900px, 877px stacked at
+   <=860px. This page's column is ~552px wide, which is why it lands on the tall
+   stacked layout while /work-with-us lands on the short one — one constant, two
+   opposite defects. The companion fix for the SPA's shared component is
+   BUG-423 / #4153.
+
+   iClosed announces the real height itself, in the message this file already
+   mentions as noise to filter. Two properties of it are load-bearing and
+   neither is guessable, so both were captured rather than assumed:
+
+     { type: 'iclosed.widget_height', height: '392px' }
+     { type: 'iclosed.widget_height', height: '484.5px' }
+
+   `height` is a STRING with a px suffix — Number('392px') is NaN, so a parser
+   written from the obvious assumption silently never resizes anything — and it
+   can be FRACTIONAL, rounded UP because rounding down leaves half a pixel of
+   the last row clipped, which is this very issue.
+
+   ⚠️ This mirrors `readIClosedWidgetHeight` in apps/landing/src/lib/
+   iclosedBooking.js, deliberately duplicated for the same reason the constants
+   above are: this page has no build step and cannot import it. Keep the two in
+   step — a change to one is a change to both. */
+const ICLOSED_HEIGHT_MESSAGE_TYPE = 'iclosed.widget_height';
+
+/* A reading outside this range is DISCARDED, not clamped, so the frame keeps
+   whatever height it had. The direction is deliberate: a booking frame that is
+   somewhat too tall is the defect being fixed here, while one collapsed to
+   nothing is a dead booking surface. The bounds sit outside every height
+   measured on the live widget (392 smallest, 889.5 largest). */
+const ICLOSED_MIN_HEIGHT = 320;
+const ICLOSED_MAX_HEIGHT = 4000;
+
+/** The placeholder height, used until iClosed reports one and kept if it never does. */
+const ICLOSED_FALLBACK_HEIGHT = 780;
+
+/** The height iClosed reports, in whole CSS pixels, or null if this message carries none. */
+function readIClosedWidgetHeight(data){
+  if (!data || typeof data !== 'object') return null;
+  if (data.type !== ICLOSED_HEIGHT_MESSAGE_TYPE) return null;
+  const raw = data.height;
+  if (typeof raw !== 'number' && typeof raw !== 'string') return null;
+  // parseFloat, not Number: Number('392px') is NaN and px is what iClosed sends.
+  const parsed = parseFloat(raw);
+  if (!isFinite(parsed)) return null;
+  const height = Math.ceil(parsed);
+  if (height < ICLOSED_MIN_HEIGHT || height > ICLOSED_MAX_HEIGHT) return null;
+  return height;
+}
+
+function esc(s){
+  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+/** iclosedName/iclosedEmail from this page's own address — see the "NOT carried forward"
+    note above — plus [FEAT-859 / #5775] the visitor's saved attribution: ad tags, first
+    touch (`ft_*`), visitor id (`an_vid`), Meta's browser cookies. Those come from
+    ../shared/lead-attribution.js, the persistence layer this page lacked when the note
+    above was written; ids and ad tags only. */
+function buildIClosedUrl(name, email){
+  const u = new URL(ICLOSED_CONSULTATION_URL);
+  if (name) u.searchParams.set('iclosedName', name);
+  if (email) u.searchParams.set('iclosedEmail', email);
+  let saved = null;
+  try {
+    saved = window.AllyLeadAttribution ? window.AllyLeadAttribution.iclosedParams() : null;
+  } catch (e) {
+    saved = null;
+  }
+  if (saved) {
+    for (const key of Object.keys(saved)) {
+      if (saved[key]) u.searchParams.set(key, saved[key]);
+    }
+  }
+  return u.toString();
+}
+
+/* Read once, on load — exactly what Schedule.tsx:15-19 does with
+   useSearchParams(). No on-page form ever writes to these. */
+const QP = new URLSearchParams(window.location.search);
+const NAME = QP.get('name') || '';
+const EMAIL = QP.get('email') || '';
+const PRODUCT = QP.get('product') ? decodeURIComponent(QP.get('product')) : null;
+
+/* `frameHeight` is remembered across renders on purpose. `render()` rebuilds
+   #main's innerHTML, so stepping to the booked screen and back via "Run it
+   again" destroys the iframe and builds a new one; without this the new frame
+   would drop to the placeholder height and wait for iClosed to report again. */
+const S = { step: 0, frameHeight: null };
+
+const ICON_BACK = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>';
+const ICON_INFO = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>';
+
+function renderSchedule(){
+  return `
+    <button type="button" class="backbtn" data-back>${ICON_BACK}Back</button>
+    <div class="qeyebrow">Schedule your call</div>
+    <h1 class="pagehead">Let's find a time to talk.</h1>
+    <p class="bodycopy">A 30-minute discovery call with our team — pick a slot that works for you.</p>
+    ${PRODUCT ? `
+    <div class="banner">
+      ${ICON_INFO}
+      <div>
+        <p class="banner-title">Following up on your quote request</p>
+        <p class="banner-sub">Product: ${esc(PRODUCT)}</p>
+      </div>
+    </div>` : ''}
+  `;
+}
+
+/* [BUG-445 / #4398] The embed renders into `#embed`, OUTSIDE `.card`, so it is
+   sized by `.embed-shell` (1008px) rather than by the prose's 672px measure.
+   `buildIClosedUrl` is called here rather than passed in, so this function owns
+   the one thing it renders. */
+function renderEmbed(){
+  const src = buildIClosedUrl(NAME, EMAIL);
+  return `
+    <div class="embedcard">
+      <iframe id="iclosedFrame" src="${src}" title="Select a date and time" style="width:100%;min-width:0;height:${S.frameHeight || ICLOSED_FALLBACK_HEIGHT}px;border:0;display:block"></iframe>
+    </div>
+  `;
+}
+
+function renderBooked(){
+  return `
+    <div style="display:flex;align-items:center;gap:15px">
+      <div class="tick">✓</div>
+      <div>
+        <h1 class="pagehead" style="font-size:22px;margin-bottom:2px">Your call is booked</h1>
+        <p class="bodycopy" style="margin-bottom:0">A calendar invite is on its way to your inbox with the meeting link and everything you need.</p>
+      </div>
+    </div>
+    <p style="font-size:13px;color:var(--text-secondary);margin-top:12px">Not there in a few minutes? Check spam or promotions.</p>
+    <div class="whatnext">
+      <h5>What happens next</h5>
+      <li><b>Check your inbox</b> — Your invite has the meeting link — add it to your calendar now so it is not lost.</li>
+      <li><b>Watch the video above</b> — About 90 seconds on how we work. It makes the call far more useful.</li>
+      <li><b>Bring your product idea</b> — Format, target volume, timeline — whatever you have. Rough is fine.</li>
+    </div>
+    <div class="foot"><button class="btn btn-outline btn-sm" data-restart>Run it again</button></div>
+  `;
+}
+
+function render(){
+  document.getElementById('main').innerHTML = S.step === 0 ? renderSchedule() : renderBooked();
+  /* [BUG-445] Written on every render, exactly as it was when it lived inside
+     `#main` — this change moved the embed, it did not change how often it is
+     rebuilt. The height handler still resizes the frame IN PLACE rather than
+     calling render(), for the reason recorded at that listener: a rebuild
+     reloads the widget and loses the slot the visitor had already picked. */
+  document.getElementById('embed').innerHTML = S.step === 0 ? renderEmbed() : '';
+  document.getElementById('footTag').textContent = S.step === 0
+    ? 'Static HTML prototype · copy/behaviour matched to production · the iClosed calendar below is real — booking through it books an actual call with Josh or Shaun'
+    : 'Static HTML prototype · matches ThankYouBooked.tsx, minus the VSL (no video asset in this repo)';
+}
+
+/* The real booking signal. Same exact-match check as apps/landing's own
+   isIClosedBookingMessage (src/lib/iclosedBooking.js) and production's
+   isIClosedBookingMessage (iclosedEvents.ts) — a prefix test would fire on
+   the ~60 iclosed.widget_height noise messages iClosed sends per visit. */
+window.addEventListener('message', (e) => {
+  if (e.origin !== ICLOSED_ORIGIN) return;
+  let data = e.data;
+  if (typeof data === 'string') {
+    try { data = JSON.parse(data); } catch { return; }
+  }
+
+  /* Height first, and it RETURNS: these are ~60 of the ~64 messages a visit
+     produces, so letting them fall through would run the booking test sixty
+     times for nothing. The frame is resized in place rather than re-rendered —
+     render() would rebuild the iframe and reload the widget, losing the slot
+     the visitor had already picked. */
+  const reported = readIClosedWidgetHeight(data);
+  if (reported !== null) {
+    S.frameHeight = reported;
+    const frame = document.getElementById('iclosedFrame');
+    if (frame) frame.style.height = reported + 'px';
+    return;
+  }
+
+  if (data && typeof data === 'object' && data.type === ICLOSED_BOOKING_MESSAGE_TYPE) {
+    /* [FEAT-899] One booking, one hand-over: iClosed repeats the message. */
+    if (S.bookedCallToken) return;
+    S.bookedCallToken = bookedCallToken();
+    S.step = 1;
+    render();
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+    /* [FEAT-820 p3 / #5613] Then on to the thank-you page, as /work-with-us does (owner,
+       2026-09-30: "schedule a call should also land on the thank you booked page"). The
+       pause is only for the visitor to read the confirmation: nothing in iClosed's frame
+       reports the booking any more (its container GTM-K66NLG5N is empty, and Meta hears
+       of bookings from the server, meta-capi-cron). 2500 ms is THANK_YOU_REDIRECT_MS in
+       src/views/WorkWithUs.jsx; this page cannot import it.
+       [FEAT-899 / #6022] The move carries the booking's single-use token as `previewId`:
+       this is a separate document, so the SPA's in-memory hand-over cannot reach the
+       thank-you page. The early redirect script the SPA's index.html loads first (the
+       same path a redirect from iClosed would take; this page does not load it) reads it
+       there, wipes the address before any tag loads, and hands it to
+       src/lib/bookedCall.js, which counts the booking once (and reports it to Google Ads
+       when the last paid click was Google). */
+    const address = thankYouBookedAddress(S.bookedCallToken);
+    setTimeout(() => { window.location.assign(address); }, 2500);
+  }
+});
+
+/** [FEAT-899] A fresh single-use token for this booking — nothing from iClosed's message.
+    It must pass the redirect script's id check: letters, digits, `_`, `-`, 8–64 long. */
+function bookedCallToken(){
+  let id = '';
+  try {
+    if (window.crypto && typeof window.crypto.randomUUID === 'function') id = window.crypto.randomUUID();
+  } catch (e) {
+    id = '';
+  }
+  if (!id) id = Date.now().toString(36) + Math.random().toString(36).slice(2, 12);
+  return 'sch_' + id;
+}
+
+/** [FEAT-899] Where the booked visitor goes, carrying the token and nothing else. */
+function thankYouBookedAddress(token){
+  return '/thank-you-booked?previewId=' + encodeURIComponent(token);
+}
+
+document.addEventListener('click', (e) => {
+  let t;
+  if (t = e.target.closest('[data-back]')) {
+    if (window.history.length > 1) window.history.back();
+    return;
+  }
+  if (t = e.target.closest('[data-restart]')) { S.step = 0; render(); return; }
+});
+
+/* Item 3, owner directive: the top nav appears on every standalone
+   surface. This page is not embedded anywhere in the SPA (confirmed by
+   grep — no iframe/inline-embed component references it), so unlike
+   public/quote/index.html's renderSiteHeader/renderSiteFooter this one
+   needs no isEmbedded() gate; it always renders. Same getRole()-driven
+   pattern otherwise — see public/quote/index.html's copy of this comment
+   for why DOMContentLoaded, not inline. */
+function renderSiteHeader(){
+  const role = (window.ANDemo && window.ANDemo.getRole) ? window.ANDemo.getRole() : 'visitor';
+  const roleRoot = `../${role}/`;
+  const base = `${roleRoot}#`;
+  document.getElementById('siteHeader').innerHTML = `
+    <div class="row">
+      <a class="mk-logo" style="text-decoration:none" href="${roleRoot}"><img src="../logo-white.png" alt="Ally Nutra" width="783" height="627"></a>
+      <nav class="mknav">
+        <a class="mknav-brand" style="text-decoration:none" href="${base}/home"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="6" width="12" height="4" rx="2"/><line x1="8" y1="6" x2="8" y2="10"/></svg><span>Ally Nutra</span></a>
+        <div class="mknav-dropdown">
+          <a href="${base}/services">Services<svg class="mknav-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 9 12 15 18 9"/></svg></a>
+          <div class="mknav-panel">
+            <a href="${base}/services">All services</a>
+            <a href="${base}/contract-manufacturing">Contract manufacturing</a>
+            <a href="${base}/private-label">Private label supplements</a>
+            <a href="${base}/capsule-manufacturing">Capsule manufacturing</a>
+            <a href="${base}/vitamin-manufacturing">Vitamin manufacturing</a>
+            <a href="${base}/stick-pack-manufacturing">Stick pack manufacturing</a>
+          </div>
+        </div>
+        <a href="${base}/facility">Facility</a>
+        <a href="${base}/certifications">Certifications</a>
+        <a href="${base}/about">About us</a>
+        <a href="${base}/faq">FAQs</a>
+        <a href="${base}/contact">Contact</a>
+      </nav>
+    </div>
+  `;
+}
+
+function renderSiteFooter(){
+  const role = (window.ANDemo && window.ANDemo.getRole) ? window.ANDemo.getRole() : 'visitor';
+  const base = `../${role}/#`;
+  document.getElementById('siteFooter').innerHTML = `
+    <div class="ftwrap">
+      <div class="footer-grid">
+        <div>
+          <img class="footer-logo-img" src="../logo-white.png" alt="">
+          <p>A US-based contract supplement manufacturer helping wellness brands launch, scale, and stay on shelf. cGMP certified. FDA registered. Built for partnership.</p>
+        </div>
+        <div class="footer-col">
+          <h5>Services</h5>
+          <ul>
+            <li><a href="${base}/services">Contract manufacturing</a></li>
+            <li><a href="${base}/services">Private label</a></li>
+            <li><a href="${base}/services">Capsule manufacturing</a></li>
+            <li><a href="${base}/services">Vitamin manufacturing</a></li>
+            <li><a href="${base}/services">Stick pack manufacturing</a></li>
+            <li><a href="${base}/services">All services</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <h5>Company</h5>
+          <ul>
+            <li><a href="${base}/about">About us</a></li>
+            <li><a href="${base}/facility">Facility</a></li>
+            <li><a href="${base}/certifications">Certifications</a></li>
+            <li><a href="${base}/services">R&amp;D &amp; innovation</a></li>
+            <li><a href="${base}/faq">FAQs</a></li>
+            <li><a href="${base}/contact">Contact</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <h5>Get in touch</h5>
+          <ul>
+            <li><a href="tel:+18887205888">+1 (888) 720-5888</a></li>
+            <li><a href="mailto:support@allynutra.com">support@allynutra.com</a></li>
+            <li>631 Ridgely St, STE 1<br>Dover, DE 19904</li>
+          </ul>
+        </div>
+      </div>
+      <div class="footer-bottom">
+        <span>&copy; 2026 Ally Nutra LLC. All rights reserved.</span>
+        <span>Privacy &middot; Terms &middot; Sitemap</span>
+      </div>
+    </div>
+  `;
+}
+
+render();
+document.addEventListener('DOMContentLoaded', () => {
+  renderSiteHeader();
+  renderSiteFooter();
+});
+</script>
+<!-- [FEAT-622 / #4081] Webtraxs, for a visitor with JavaScript off. Same reasoning
+     and same accepted gap as the Tag Manager frame at the top of <body>. -->
+<noscript><img src="https://www.webtraxs.com/webtraxs.php?id=wt-267b2152-3f0c-4ba8-8b57-9412f4cf226e&amp;st=img" alt="" /></noscript>
+</body>
+</html>

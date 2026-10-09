@@ -1,0 +1,36 @@
+:root{
+  /* --ally-navy, --primary, --ally-orange, --ring, --background, --paper:
+     the H/S/L below are NOT whole numbers. Whole-degree/percent HSL never round-trips exactly
+     to 8-bit RGB — the previous whole-number triplets rendered #1D395D/#F0A728/#FDFDFC/#EDEBE8
+     while their comments (and every design.md / palette-lint allowlist reference) claim
+     #1E3A5F/#F0A829/#FCFCFC/#ECEAE6. Hex is canonical (same ruling as PR #18 in
+     public/admin/index.html); these decimals are the exact inverse HSL for that hex, not a
+     stylistic choice — don't "clean up" back to integers without re-deriving the target hex. */
+  --ally-navy: 214.15 52% 24.51%;        /* #1E3A5F */
+  --primary: 214.15 52% 24.51%;
+  --ally-light-navy: 215 55% 40%;  /* #2E5D9E */
+  --ally-orange: 38.29 86.9% 55.1%;       /* #F0A829 */
+  --ally-orange-ink: 39.49 79.59% 28.82%; /* #845C0F — AA text-on-light variant of --ally-orange.
+                                             Brand amber measures 1.98:1 against --background;
+                                             this darker, same-hue variant is at least 4.96:1
+                                             on card, background, and paper surfaces. */
+  --foreground: 240 6% 10%;        /* #18181B */
+  --muted-foreground: 240 4% 42%;  /* #67676F — AA on background, card, and muted */
+  --muted: 240 5% 96%;             /* #F4F4F5 */
+  --secondary: 240 5% 96%;
+  --border: 240 6% 90%;            /* #E4E4E7 */
+  --input: 240 6% 90%;
+  --destructive: 358 68% 57%;      /* #DC474C */
+  --card: 0 0% 100%;               /* #FFFFFF */
+  --background: 0 0% 98.82%;        /* #FCFCFC */
+  --paper: 40 13.64% 91.37%;             /* #ECEAE6 warm chrome */
+  --ring: 38.29 86.9% 55.1%;              /* amber — the one functional accent for focus */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --space-1: 4px; --space-2: 8px; --space-3: 12px; --space-4: 16px;
+  --space-6: 24px; --space-8: 32px; --space-12: 48px; --space-16: 64px;
+  --font-slab: 'Roboto Slab', Georgia, 'Times New Roman', serif;
+  --font-sans: 'Roboto', -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
+  --font-mono: 'JetBrains Mono', 'Courier New', ui-monospace, monospace;
+}

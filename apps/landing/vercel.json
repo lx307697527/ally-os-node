@@ -1,0 +1,304 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "buildCommand": "cd ../.. && npx turbo run build --filter=landing",
+  "installCommand": "cd ../.. && pnpm install --frozen-lockfile",
+  "ignoreCommand": "[ \"$VERCEL_ENV\" != \"production\" ] || npx turbo-ignore landing",
+  "framework": "vite",
+  "outputDirectory": "dist",
+  "redirects": [
+    {
+      "source": "/come-work-with-us",
+      "destination": "/work-with-us",
+      "permanent": true
+    },
+    {
+      "source": "/lp/manufacturing",
+      "destination": "/work-with-us",
+      "permanent": true
+    },
+    {
+      "source": "/about-us(/.*)?",
+      "destination": "/about",
+      "permanent": true
+    },
+    {
+      "source": "/contact-us(/)?",
+      "destination": "/contact",
+      "permanent": true
+    },
+    {
+      "source": "/faqs(/)?",
+      "destination": "/faq",
+      "permanent": true
+    },
+    {
+      "source": "/capsules-supplement-manufacturer(/)?",
+      "destination": "/capsule-manufacturing",
+      "permanent": true
+    },
+    {
+      "source": "/capsules-supplement-quote(/)?",
+      "destination": "/capsule-manufacturing",
+      "permanent": true
+    },
+    {
+      "source": "/contract-manufacturing/(.+)",
+      "destination": "/contract-manufacturing",
+      "permanent": true
+    },
+    {
+      "source": "/contract-supplement-manufacturing(/)?",
+      "destination": "/contract-manufacturing",
+      "permanent": true
+    },
+    {
+      "source": "/private-label/(.+)",
+      "destination": "/private-label",
+      "permanent": true
+    },
+    {
+      "source": "/private-label-supplements(/)?",
+      "destination": "/private-label",
+      "permanent": true
+    },
+    {
+      "source": "/packaging-private-label-supplements(/)?",
+      "destination": "/private-label",
+      "permanent": true
+    },
+    {
+      "source": "/custom-formulation-supplements(/)?",
+      "destination": "/services",
+      "permanent": true
+    },
+    {
+      "source": "/supplement-formula(/.*)?",
+      "destination": "/services",
+      "permanent": true
+    },
+    {
+      "source": "/products(/.*)?",
+      "destination": "/services",
+      "permanent": true
+    },
+    {
+      "source": "/capabilities(/.*)?",
+      "destination": "/services",
+      "permanent": true
+    },
+    {
+      "source": "/fulfillment(/)?",
+      "destination": "/services",
+      "permanent": true
+    },
+    {
+      "source": "/health-supplement-manufacturer(/)?",
+      "destination": "/services",
+      "permanent": true
+    },
+    {
+      "source": "/careers(/.*)?",
+      "destination": "/",
+      "permanent": true
+    },
+    {
+      "source": "/blog(/.*)?",
+      "destination": "/",
+      "permanent": true
+    },
+    {
+      "source": "/quote",
+      "destination": "/quote/",
+      "permanent": true
+    },
+    {
+      "source": "/get-quote(/)?",
+      "destination": "/quote/",
+      "permanent": true
+    },
+    {
+      "source": "/request-quote(/)?",
+      "destination": "/quote/",
+      "permanent": true
+    },
+    {
+      "source": "/quote-requested(/)?",
+      "destination": "/quote/",
+      "permanent": true
+    },
+    {
+      "source": "/schedule",
+      "destination": "/contact",
+      "permanent": true
+    },
+    {
+      "source": "/book(/.*)?",
+      "destination": "/contact",
+      "permanent": true
+    },
+    {
+      "source": "/paid-consultation(/)?",
+      "destination": "/contact",
+      "permanent": true
+    },
+    {
+      "source": "/auth(/)?",
+      "destination": "https://portal.allynutra.com/login",
+      "permanent": true
+    },
+    {
+      "source": "/dashboard(/)?",
+      "destination": "https://portal.allynutra.com/portal/dashboard",
+      "permanent": true
+    },
+    {
+      "source": "/documents(/)?",
+      "destination": "https://portal.allynutra.com/portal/dashboard",
+      "permanent": true
+    },
+    {
+      "source": "/orders(/.*)?",
+      "destination": "https://portal.allynutra.com/portal/orders",
+      "permanent": true
+    },
+    {
+      "source": "/order-progress(/)?",
+      "destination": "https://portal.allynutra.com/portal/orders",
+      "permanent": true
+    },
+    {
+      "source": "/billing(/)?",
+      "destination": "https://portal.allynutra.com/portal/billing",
+      "permanent": true
+    },
+    {
+      "source": "/pay(/.*)?",
+      "destination": "https://portal.allynutra.com/portal/billing",
+      "permanent": true
+    },
+    {
+      "source": "/settings(/)?",
+      "destination": "https://portal.allynutra.com/portal/settings",
+      "permanent": true
+    },
+    {
+      "source": "/portal/quotes(/.*)?",
+      "destination": "https://portal.allynutra.com/portal/quotes",
+      "permanent": true
+    },
+    {
+      "source": "/estimate(/.*)?",
+      "destination": "https://portal.allynutra.com/portal/quotes",
+      "permanent": true
+    },
+    {
+      "source": "/portal/faq(/)?",
+      "destination": "https://portal.allynutra.com/portal/help",
+      "permanent": true
+    },
+    {
+      "source": "/appointments(/)?",
+      "destination": "https://portal.allynutra.com/portal/appointments",
+      "permanent": true
+    },
+    {
+      "source": "/agreements(/)?",
+      "destination": "https://portal.allynutra.com/portal/agreements",
+      "permanent": true
+    },
+    {
+      "source": "/sign(/.*)?",
+      "destination": "https://portal.allynutra.com/portal/agreements",
+      "permanent": true
+    },
+    {
+      "source": "/reset-password(/)?",
+      "destination": "https://portal.allynutra.com/auth/forgot-password",
+      "permanent": true
+    },
+    {
+      "source": "/sms-optin(/)?",
+      "destination": "https://portal.allynutra.com/sms-optin",
+      "permanent": true
+    },
+    {
+      "source": "/admin",
+      "destination": "https://allyos.allynutra.com/",
+      "permanent": true
+    },
+    {
+      "source": "/admin/(.+)",
+      "destination": "https://allyos.allynutra.com/",
+      "permanent": true
+    }
+  ],
+  "rewrites": [
+    {
+      "source": "/visitor(/.*)?",
+      "destination": "/index.html"
+    },
+    {
+      "source": "/super-admin(/.*)?",
+      "destination": "/admin/index.html"
+    },
+    {
+      "source": "/employee(/.*)?",
+      "destination": "/admin/index.html"
+    },
+    {
+      "source": "/(.*)",
+      "destination": "/index.html"
+    }
+  ],
+  "headers": [
+    {
+      "source": "/(.*)",
+      "headers": [
+        {
+          "key": "X-Content-Type-Options",
+          "value": "nosniff"
+        },
+        {
+          "key": "X-Frame-Options",
+          "value": "DENY"
+        },
+        {
+          "key": "Referrer-Policy",
+          "value": "strict-origin-when-cross-origin"
+        },
+        {
+          "key": "Permissions-Policy",
+          "value": "accelerometer=(), autoplay=(), browsing-topics=(), camera=(), display-capture=(), encrypted-media=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), midi=(), payment=(), screen-wake-lock=(), usb=(), xr-spatial-tracking=()"
+        },
+        {
+          "key": "Strict-Transport-Security",
+          "value": "max-age=31536000; includeSubDomains"
+        }
+      ]
+    },
+    {
+      "source": "/quote(/.*)?",
+      "headers": [
+        {
+          "key": "Content-Security-Policy",
+          "value": "frame-ancestors 'self'"
+        }
+      ]
+    },
+    {
+      "source": "/(.*)",
+      "has": [
+        {
+          "type": "host",
+          "value": "dev\\.allynutra\\.com"
+        }
+      ],
+      "headers": [
+        {
+          "key": "X-Robots-Tag",
+          "value": "noindex, nofollow"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- [FEAT-672 / #4535] Every routed page, one <url> each: the keys of TITLES
+     in src/lib/pages.js, with `home` as the bare origin (canonicalUrl()'s rule).
+     "Edit the two together" is now ENFORCED, not convention: sitemap-sync.test.ts
+     diffs this file against canonicalUrl() and fails on drift.
+     /work-with-us is listed as the legacy page was (#3556 item 6), although no
+     site navigation links to it.
+     [FEAT-839] /work-with-us-b is deliberately ABSENT: it is the A/B test's page B,
+     noindex (NOINDEX_KEYS in pages.js), and must not compete with /work-with-us.
+     [#45 slice 1] /thank-you-booked was missing here although its canonical exists
+     ([FEAT-820 p2] landed without a sitemap edit) — added, per this file's own
+     stated rule; the sync test keeps it from drifting again. -->
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url><loc>https://www.allynutra.com/</loc></url>
+  <url><loc>https://www.allynutra.com/services</loc></url>
+  <url><loc>https://www.allynutra.com/contract-manufacturing</loc></url>
+  <url><loc>https://www.allynutra.com/private-label</loc></url>
+  <url><loc>https://www.allynutra.com/capsule-manufacturing</loc></url>
+  <url><loc>https://www.allynutra.com/vitamin-manufacturing</loc></url>
+  <url><loc>https://www.allynutra.com/stick-pack-manufacturing</loc></url>
+  <url><loc>https://www.allynutra.com/facility</loc></url>
+  <url><loc>https://www.allynutra.com/certifications</loc></url>
+  <url><loc>https://www.allynutra.com/about</loc></url>
+  <url><loc>https://www.allynutra.com/faq</loc></url>
+  <url><loc>https://www.allynutra.com/contact</loc></url>
+  <url><loc>https://www.allynutra.com/work-with-us</loc></url>
+  <url><loc>https://www.allynutra.com/thank-you-booked</loc></url>
+  <url><loc>https://www.allynutra.com/privacy-policy</loc></url>
+  <url><loc>https://www.allynutra.com/terms-of-service</loc></url>
+</urlset>

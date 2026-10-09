@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <!-- [BUG-837 / #6028] If iClosed's redirect after a booking ever lands on /thank-you-booked
+         with the booking id (and possibly what the visitor typed) in the address, this
+         runs FIRST: it keeps the booking id in memory and wipes every query parameter.
+         On any other page it returns at once. Synchronous and tiny; it fetches nothing.
+         [BUG-840] In practice bookings arrive through iClosed's message on /work-with-us
+         instead; this is the fallback. See apps/landing/public/shared/booking-redirect.js. -->
+    <script src="/shared/booking-redirect.js"></script>
+    <!-- [FEAT-859 / #5775] First / last touch + visitor id, saved before the app renders so
+         no client-side redirect can drop the landing address first. Synchronous and tiny;
+         it fetches nothing and touches no network — pure localStorage. See
+         apps/landing/public/shared/lead-attribution.js.
+
+         #45 slice 1: the old repo also loaded /shared/tracking.js here (the
+         consent-gated ad/GTM/pixel stack). It is deliberately NOT ported — visitor
+         tracking and consent belong to #49, which will rebuild them against the new
+         stack rather than carry the vendor loader over. -->
+    <script src="/shared/lead-attribution.js"></script>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Ally Nutra — Contract supplement manufacturing</title>
+    <!-- [FEAT-310] Owner decision (Zed, 2026-09-02): tablets are not offered, so
+         they are not listed here. This is the ONE customer-visible format list in
+         apps/landing that is NOT derived from src/data/offeredFormats.js — this file
+         is static HTML consumed by Vite as the entry document and cannot import it.
+         Reactivating tablets therefore means editing this line by hand as well; it
+         is the only such place, and it is listed in the PR body's reintroduction
+         path for exactly that reason. -->
+    <meta name="description" content="Ally Nutra is a cGMP-certified contract supplement manufacturer in Dover, Delaware — capsules, sachets, stick packs, resealable bags, and tubs, canisters and jars under one roof." />
+    <!-- Favicons live in public/ and are declared here by hand.
+
+         [BUG-455 / #4401] 96 and 192 exist because Google will not use an icon for a
+         SEARCH RESULT unless it is square with a side that is a multiple of 48. The
+         original pair (32 and 180) satisfied neither, so Google fell back to the
+         apple-touch-icon and rendered the old navy square — which is the icon the
+         request was filed about.
+
+         [BUG-701 / #4401] Adi's call on the small sizes (full lockup vs. capsule-only
+         mark) came back: full lockup at every size, including 48. So 32 and 180 are
+         GONE rather than kept alongside a fifth size — 48/96/192/512 are all the same
+         artwork, square and transparent, generated from the current brand logo. 48 is
+         also the smallest multiple of 48, so it doubles as the browser-tab icon; 512
+         covers PWA/Android-launcher-icon consumers this site does not have yet but is
+         cheap to also satisfy. apple-touch-icon now points at 192 rather than a
+         dedicated 180 file — iOS accepts a larger square and scales it down.
+
+         [BUG-732 / #5419] `/favicon.ico` is now a real file (public/favicon.ico: the 48
+         and 96 PNGs above, packed as an ICO). It used to answer `200 text/html` because
+         no file existed and Vercel resolves the filesystem before rewrites. -->
+    <link rel="icon" type="image/png" sizes="48x48" href="/favicon-48.png">
+    <link rel="icon" type="image/png" sizes="96x96" href="/favicon-96.png">
+    <link rel="icon" type="image/png" sizes="192x192" href="/favicon-192.png">
+    <link rel="icon" type="image/png" sizes="512x512" href="/favicon-512.png">
+    <link rel="apple-touch-icon" sizes="192x192" href="/favicon-192.png">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Roboto+Slab:wght@500;600&family=Roboto:wght@400;500;700&family=JetBrains+Mono:wght@500&display=swap" rel="stylesheet">
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>

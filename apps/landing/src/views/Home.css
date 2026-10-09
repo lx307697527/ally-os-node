@@ -1,0 +1,649 @@
+/* Homepage-only styles copied from nutrazed/ally-nutra-landing at e4415f8.
+   Everything is scoped under .home-page so no other AllyOS landing route changes. */
+
+.home-page .format-showcase-section .credential-strip {
+  margin-bottom: 44px;
+}
+
+.home-page .credential-strip {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 20px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.home-page .credential-strip a {
+  color: hsl(var(--muted-foreground));
+  border-bottom: 1px solid transparent;
+  transition: border-color 0.15s, color 0.15s;
+}
+
+.home-page .credential-strip a:hover {
+  color: hsl(var(--ally-navy));
+  border-bottom-color: hsl(var(--ally-navy) / 0.4);
+}
+
+.home-page .credential-strip a:not(:last-child) {
+  position: relative;
+  padding-right: 16px;
+}
+
+.home-page .credential-strip a:not(:last-child)::after {
+  content: '·';
+  position: absolute;
+  right: -9px;
+  color: hsl(var(--muted-foreground));
+}
+
+.home-page .format-track {
+  display: flex;
+  gap: 16px;
+  overflow-x: auto;
+  scroll-snap-type: x mandatory;
+  padding: 8px 4px;
+  scrollbar-width: none;
+  scroll-behavior: smooth;
+  max-width: 840px;
+  margin: 0 auto;
+  -webkit-mask-image: linear-gradient(90deg, transparent 0, #000 36px, #000 calc(100% - 36px), transparent 100%);
+  mask-image: linear-gradient(90deg, transparent 0, #000 36px, #000 calc(100% - 36px), transparent 100%);
+}
+
+.home-page .format-track::-webkit-scrollbar {
+  display: none;
+}
+
+.home-page .format-track:focus-visible {
+  outline: 2px solid hsl(var(--ring));
+  outline-offset: 4px;
+  border-radius: var(--radius-md);
+}
+
+.home-page .format-slide {
+  flex: 0 0 min(88%, 600px);
+  scroll-snap-align: center;
+}
+
+.home-page .format-slide img {
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  object-fit: contain;
+  display: block;
+  background: hsl(var(--card));
+  border-radius: var(--radius-lg);
+  border: 1px solid hsl(var(--border));
+  box-shadow: 0 6px 24px hsl(var(--ally-navy) / 0.08);
+}
+
+.home-page .format-nav {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+  margin-top: 14px;
+}
+
+.home-page .format-arrow {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  border: 1px solid hsl(var(--border));
+  background: hsl(var(--card));
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: hsl(var(--ally-navy));
+  cursor: pointer;
+  transition: background-color 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.home-page .format-arrow:hover {
+  background: hsl(var(--ally-navy));
+  border-color: hsl(var(--ally-navy));
+  color: #fff;
+}
+
+.home-page .format-arrow:focus-visible,
+.home-page .format-dot:focus-visible {
+  outline: 2px solid hsl(var(--ring));
+  outline-offset: 2px;
+}
+
+.home-page .format-dots {
+  display: flex;
+  gap: 8px;
+}
+
+.home-page .format-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  border: none;
+  padding: 0;
+  background: hsl(var(--ally-navy) / 0.2);
+  cursor: pointer;
+  transition: background-color 0.15s;
+}
+
+.home-page .format-dot:hover {
+  background: hsl(var(--ally-navy) / 0.45);
+}
+
+.home-page .format-dot[aria-current='true'] {
+  background: hsl(var(--ally-orange));
+}
+
+.home-page .format-active-info {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 8px 14px;
+  margin-top: 18px;
+}
+
+.home-page .format-active-name {
+  font-family: var(--font-slab);
+  font-weight: 600;
+  font-size: 15px;
+  color: hsl(var(--ally-navy));
+}
+
+.home-page .format-active-info .mono-chip {
+  color: hsl(var(--muted-foreground));
+}
+
+.home-page .format-active-link {
+  font-size: 13px;
+  font-weight: 600;
+  color: hsl(var(--ally-navy));
+  text-decoration: underline;
+  text-decoration-color: hsl(var(--ally-navy) / 0.35);
+  text-underline-offset: 3px;
+}
+
+.home-page .format-active-link:hover {
+  text-decoration-color: hsl(var(--ally-navy));
+}
+
+.home-page .vsl-frame {
+  max-width: 880px;
+  margin: 0 auto;
+}
+
+.home-page .vsl-video {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  display: block;
+  border-radius: var(--radius-lg);
+  border: 1px solid hsl(var(--border));
+  background: hsl(var(--ally-navy));
+  box-shadow: 0 12px 32px hsl(var(--ally-navy) / 0.12);
+}
+
+.home-page .vsl-video:focus-visible {
+  outline: 2px solid hsl(var(--ring));
+  outline-offset: 4px;
+}
+
+.home-page .vsl-caption {
+  display: block;
+  text-align: center;
+  margin-top: 10px;
+  color: hsl(var(--muted-foreground));
+}
+
+.home-page .cta-split {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: clamp(36px, 5vw, 64px);
+  align-items: center;
+}
+
+.home-page .cta-split .cta-card-link {
+  margin-top: 0;
+}
+
+/* Phone fallback line in the §9 CTA — text link, deliberately not a button:
+   the two actions above are the aligned pair; this is the "prefer to talk"
+   escape hatch, same treatment allynutra.com's CTA uses. */
+.home-page .cta-phone-line {
+  margin-top: 18px;
+  font-size: 15px;
+  color: hsl(var(--muted-foreground));
+}
+
+.home-page .cta-phone-link {
+  color: hsl(var(--ally-navy));
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.home-page .cta-phone-link:hover {
+  color: hsl(var(--ally-orange-ink));
+}
+
+.home-page .cta-split .cta-card {
+  max-height: 480px;
+}
+
+.home-page .cta-card-link {
+  display: inline-block;
+  max-width: 100%;
+  margin-top: 36px;
+  border-radius: var(--radius-lg);
+  transition: transform 0.18s ease, box-shadow 0.18s ease;
+}
+
+.home-page .cta-card-link:hover,
+.home-page .cta-card-link:focus-visible {
+  transform: translateY(-3px);
+  box-shadow: 0 14px 36px hsl(var(--ally-navy) / 0.16);
+}
+
+.home-page .cta-card-link:focus-visible {
+  outline: 2px solid hsl(var(--ring));
+  outline-offset: 4px;
+}
+
+.home-page .cta-card {
+  display: block;
+  width: 100%;
+  max-width: 400px;
+  height: auto;
+  border-radius: var(--radius-lg);
+  border: 1px solid hsl(var(--border));
+  box-shadow: 0 6px 24px hsl(var(--ally-navy) / 0.08);
+}
+
+/* [owner directive 2026-09-28] All five format cards in ONE row: the 4-column
+   rule left the FEAT-721 Tubs / Canisters / Jars card wrapping alone onto a
+   second row. ~225px per card at the 1200px container; the grid row's
+   align-items:stretch keeps the five cards one height. The two-column tier (≤900px)
+   and single column (≤520px) below are unchanged. */
+.home-page .product-grid {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 18px;
+}
+
+.home-page .flip-card {
+  background: transparent;
+  border: none;
+  overflow: visible;
+  perspective: 1600px;
+}
+
+/* [owner directive 2026-09-28, layout pass] The flip-era geometry is retired
+   for the card chain: no explicit measured height (the probe is gone — see
+   ProductCardsGrid.jsx), and the faces are no longer absolutely stacked.
+   Instead the grid row's align-items: stretch equalizes the five cards, and
+   the height flows down the chain: .product-card (grid child, stretches) →
+   .card-inner (fills the card) → .card-face.card-front (fills the inner) →
+   .product-body (flex:1) → .product-spec's margin-top:auto lands the spec +
+   kinds footer on the shared bottom edge. Content above the footer flows to
+   its natural size, so shorter cards no longer show a band of dead space. */
+.home-page .card-inner {
+  position: relative;
+  width: 100%;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  transform-style: preserve-3d;
+  -webkit-transform-style: preserve-3d;
+  transition: transform 0.5s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.home-page .flip-card.flipped .card-inner {
+  transform: rotateY(180deg);
+}
+
+.home-page .card-face {
+  position: relative;
+  width: 100%;
+  height: auto;
+  flex: 1;
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.home-page .card-front {
+  background: #fff;
+  border: 1px solid hsl(var(--border));
+  padding: 0;
+  text-align: left;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.home-page .card-front:hover {
+  border-color: hsl(var(--ally-orange) / 0.5);
+}
+
+/* [BUG-699] A card with no kinds to open is a plain <div> face, not a button:
+   no pointer cursor and no amber hover border, so it does not look clickable.
+   line-height: normal matches what the <button> faces get from the UA sheet, so
+   the format/spec lines set identically on both kinds of card. */
+.home-page .card-front.card-front-static {
+  cursor: default;
+  line-height: normal;
+}
+
+.home-page .card-front.card-front-static:hover {
+  border-color: hsl(var(--border));
+}
+
+.home-page .card-front-photo {
+  position: relative;
+  aspect-ratio: 4 / 3;
+  width: 100%;
+  overflow: hidden;
+  flex-shrink: 0;
+  background: hsl(var(--muted));
+  padding: 14%;
+  box-sizing: border-box;
+}
+
+.home-page .card-front-photo img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+  filter: saturate(0.68) contrast(1.05) brightness(1.02);
+  transform: scale(var(--card-photo-scale, 1));
+}
+
+.home-page .card-front-photo::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: hsl(var(--ally-navy));
+  mix-blend-mode: soft-light;
+  opacity: 0.24;
+  pointer-events: none;
+}
+
+/* Square product renders (photoSquare): finished images on pure white. The
+   renders are square PNGs on a white canvas, so the SAME 4/3 frame every card
+   photo gets (see the base rule above) letterboxes them invisibly — white on
+   white — while object-fit:contain renders each product at the frame's full
+   height, which makes the five formats read as one consistent visual size
+   (the 1/1 full-bleed frame this replaces let each render's own canvas
+   proportions decide how big the product looked).
+   [owner directive 2026-09-28, layout pass] aspect 1/1 → 4/3 with light
+   padding (was 0/full-bleed), per the owner's instruction to fit the frame
+   and reduce the cards' vertical bulk. Still no mat, no filter, no tint —
+   these rules out-specify the base block's gray/filter/overlay. */
+.home-page .card-front-photo.square {
+  aspect-ratio: 4 / 3;
+  padding: 7%;
+  background: hsl(var(--card));
+}
+
+.home-page .card-front-photo.square img {
+  filter: none;
+  transform: none;
+}
+
+.home-page .card-front-photo.square::after {
+  display: none;
+}
+
+.home-page .card-front .product-body {
+  flex: 1;
+  /* [owner directive 2026-09-28, layout pass] Tighter top padding (15px → 6px,
+     overriding global .product-body) so the format chip + title sit close
+     under the photo and read as its caption. Bottom padding kept roomy: the
+     spec/kinds footer sits above it on the shared bottom edge. */
+  padding: 6px 16px 15px;
+}
+
+/* [BUG-748 / #5304] Text colours for a WHITE card. global.css colours
+   `.product-body h3`, `.product-desc` and `.product-spec` white, from 84c118f89's
+   navy cards; FEAT-590 then turned the Home card face white
+   (`.home-page .card-front { background: #fff }`) without overriding them, so
+   the title, description and spec line were white on white on the live site.
+   Navy title and muted body match the rest of `.home-page`; the spec rule and
+   its top border use the page's own border token. The orange format chip was
+   already readable and is untouched. */
+.home-page .card-front .product-body h3 {
+  color: hsl(var(--ally-navy));
+}
+
+.home-page .card-front .product-desc {
+  color: hsl(var(--muted-foreground));
+}
+
+.home-page .card-front .product-spec {
+  color: hsl(var(--muted-foreground));
+  border-top-color: hsl(var(--border));
+}
+
+/* Caption cluster tightening (same directive): the chip's 8px bottom margin
+   (global .product-format) pushed the title a full line away from the photo.
+   4px keeps chip and title reading as one caption block. Letter-spacing
+   .12em → .08em (Home cards only): at 12px mono the longest chip, "TUBS /
+   CANISTERS / JARS", needs ~199px with .12em tracking and wraps to two lines
+   in the ~193px card, dropping that one card's title 16px below its
+   neighbours'; at .08em it fits one line and all five titles align. Family,
+   size, and colour unchanged. */
+.home-page .card-front .product-format {
+  margin-bottom: 4px;
+  letter-spacing: 0.08em;
+}
+
+.home-page .flip-affordance {
+  display: block;
+  margin-top: 10px;
+  color: hsl(var(--ally-orange-ink));
+  text-align: right;
+}
+
+.home-page .card-back {
+  background: hsl(var(--ally-navy));
+  color: #fff;
+  transform: rotateY(180deg);
+  justify-content: center;
+}
+
+.home-page .card-back-body {
+  padding: 26px 24px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  height: 100%;
+}
+
+.home-page .card-back-body h3 {
+  color: #fff;
+  font-family: var(--font-slab);
+  font-weight: 500;
+  font-size: 17px;
+  margin: 0;
+}
+
+.home-page .card-back-intro {
+  font-size: 12px;
+  line-height: 1.55;
+  color: hsl(0 0% 100% / 0.72);
+  margin: 0;
+}
+
+.home-page .card-kinds {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  flex-grow: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: hsl(0 0% 100% / 0.35) transparent;
+}
+
+.home-page .card-kinds::-webkit-scrollbar {
+  width: 4px;
+}
+
+.home-page .card-kinds::-webkit-scrollbar-thumb {
+  background: hsl(0 0% 100% / 0.35);
+  border-radius: 2px;
+}
+
+.home-page .card-kind {
+  padding: 10px 0;
+  border-top: 1px solid hsl(0 0% 100% / 0.14);
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.home-page .card-kind:first-child {
+  border-top: none;
+  padding-top: 0;
+}
+
+.home-page .card-kind-topline {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  row-gap: 2px;
+}
+
+.home-page .card-kind-name {
+  font-family: var(--font-slab);
+  font-weight: 500;
+  font-size: 14px;
+  color: #fff;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.home-page .card-kind-spec {
+  color: hsl(var(--ally-orange));
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  text-align: right;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.home-page .card-kind-note {
+  font-size: 11px;
+  line-height: 1.45;
+  color: hsl(0 0% 100% / 0.72);
+}
+
+.home-page .card-back-flipzone {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  background: transparent;
+  border: none;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  cursor: pointer;
+}
+
+.home-page .card-back-flipzone:focus-visible {
+  outline: 2px solid hsl(var(--ring));
+  outline-offset: -6px;
+}
+
+@media (max-width: 900px) {
+  .home-page .cta-split {
+    grid-template-columns: 1fr;
+    gap: 0;
+  }
+
+  .home-page .cta-split .cta-copy {
+    text-align: center;
+  }
+
+  .home-page .cta-split .hero-ctas,
+  .home-page .cta-split h2 {
+    margin-left: auto;
+    margin-right: auto;
+  }
+
+  .home-page .cta-split .hero-ctas {
+    justify-content: center;
+  }
+
+  .home-page .cta-split .cta-card-link {
+    margin-top: 28px;
+  }
+
+  .home-page .product-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media (max-width: 520px) {
+  .home-page .product-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .home-page .format-track {
+    scroll-behavior: auto;
+  }
+
+  .home-page .format-arrow,
+  .home-page .format-dot,
+  .home-page .card-inner {
+    transition: none;
+  }
+
+  .home-page .flip-card.flipped .card-inner {
+    transform: none;
+  }
+
+  .home-page .card-face {
+    transition: opacity 0.15s ease;
+    backface-visibility: visible;
+    -webkit-backface-visibility: visible;
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  .home-page .card-front {
+    transform: none;
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  .home-page .card-back {
+    transform: none;
+  }
+
+  .home-page .flip-card.flipped .card-front {
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  .home-page .flip-card.flipped .card-back {
+    opacity: 1;
+    pointer-events: auto;
+  }
+}

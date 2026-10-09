@@ -21,3 +21,6 @@ coverage/
 .claude/state/current-task.*.json
 !.claude/state/current-task.template.json
 __pycache__/
+
+# 营销站静态报价页的运行时配置：构建时由 gen-quote-runtime-config.mjs 从环境生成
+apps/landing/public/quote/runtime-config.js
