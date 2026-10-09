@@ -65,6 +65,7 @@ describe.skipIf(!databaseUrl)("auth: two-factor (#24, integration)", () => {
       signedGetUrl: () => Promise.reject(new Error("storage not used in this suite")),
       signedPutUrl: () => Promise.reject(new Error("storage not used in this suite")),
       delete: () => Promise.reject(new Error("storage not used in this suite")),
+      head: () => Promise.reject(new Error("storage not used in this suite")),
     },
     authzStore: createAuthzStore(db),
   

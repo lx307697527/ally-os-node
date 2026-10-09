@@ -146,6 +146,7 @@ describe.skipIf(!databaseUrl)("approvals route (#221, integration)", () => {
       signedGetUrl: () => Promise.reject(new Error("storage not used in this suite")),
       signedPutUrl: () => Promise.reject(new Error("storage not used in this suite")),
       delete: () => Promise.reject(new Error("storage not used in this suite")),
+      head: () => Promise.reject(new Error("storage not used in this suite")),
     },
     authzStore: createAuthzStore(db),
     notifyUsers: (userIds: string[]) => {

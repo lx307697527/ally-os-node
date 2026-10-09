@@ -83,6 +83,7 @@ describe.skipIf(!databaseUrl)("task endpoints (#113 slice 1, integration)", () =
       signedGetUrl: () => Promise.reject(new Error("storage not used in this suite")),
       signedPutUrl: () => Promise.reject(new Error("storage not used in this suite")),
       delete: () => Promise.reject(new Error("storage not used in this suite")),
+      head: () => Promise.reject(new Error("storage not used in this suite")),
     },
     authzStore: {
       getRoles: () => Promise.resolve([]),

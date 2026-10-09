@@ -74,6 +74,7 @@ describe.skipIf(!databaseUrl)("payment endpoints (#192 slice 2, integration)", (
       signedGetUrl: () => Promise.reject(new Error("storage not used in this suite")),
       signedPutUrl: () => Promise.reject(new Error("storage not used in this suite")),
       delete: () => Promise.reject(new Error("storage not used in this suite")),
+      head: () => Promise.reject(new Error("storage not used in this suite")),
     },
     authzStore: {
       getRoles: (userId) =>

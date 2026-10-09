@@ -80,6 +80,7 @@ describe.skipIf(!databaseUrl)("deleted records route (#29 slice 2, integration)"
       signedGetUrl: () => Promise.reject(new Error("storage not used in this suite")),
       signedPutUrl: () => Promise.reject(new Error("storage not used in this suite")),
       delete: () => Promise.reject(new Error("storage not used in this suite")),
+      head: () => Promise.reject(new Error("storage not used in this suite")),
     },
     // 真实 authzStore：audit.read 门走角色加载（stub 恒空 = 谁都 403）
     authzStore: createAuthzStore(db),
