@@ -1,4 +1,10 @@
-import { DeleteObjectCommand, GetObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import {
+  DeleteObjectCommand,
+  GetObjectCommand,
+  HeadObjectCommand,
+  PutObjectCommand,
+  S3Client,
+} from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 
 // 只依赖 S3 协议：AWS S3、MinIO、阿里云 OSS、腾讯云 COS 都能用同一份代码，
@@ -9,6 +15,13 @@ export interface Storage {
   signedPutUrl(key: string, contentType: string, expiresInSeconds?: number): Promise<string>;
   /** 删除对象（#110 附件切片）：生命周期清理用，调用方自担「对象已不在」的 404 */
   delete(key: string): Promise<void>;
+  /**
+   * 对象是否存在与多大（#31 文件内核）：预签名直传的 complete 端点用它把
+   * 「客户端声明的字节数」换成「S3 实测的字节数」。对象不存在返回 null；
+   * 其他失败（网络、权限）原样抛——「查不到」和「没上传」是两回事，把
+   * 基础设施故障吞成 null 会让 complete 把没落桶的文件记成已就位。
+   */
+  head(key: string): Promise<{ sizeBytes: number } | null>;
 }
 
 export interface S3StorageOptions {
@@ -57,7 +70,27 @@ export function createS3Storage(opts: S3StorageOptions): Storage {
     async delete(key) {
       await client.send(new DeleteObjectCommand({ Bucket: opts.bucket, Key: assertSafeKey(key) }));
     },
+    async head(key) {
+      try {
+        const out = await client.send(
+          new HeadObjectCommand({ Bucket: opts.bucket, Key: assertSafeKey(key) }),
+        );
+        return { sizeBytes: out.ContentLength ?? 0 };
+      } catch (err) {
+        if (isNotFound(err)) return null;
+        throw err;
+      }
+    },
   };
+}
+
+/** S3 客户端把 404 包成 MetadataKey 含 "NotFound" / name 含 "NotFound" 的错误 */
+function isNotFound(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  if (err.name.includes("NotFound")) return true;
+  const httpStatus = (err as { $metadata?: { httpStatusCode?: number } }).$metadata
+    ?.httpStatusCode;
+  return httpStatus === 404;
 }
 
 // 防止用户输入拼进对象 key 时出现路径穿越或空段
