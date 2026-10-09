@@ -110,6 +110,7 @@ export const RAIL_GROUPS: readonly RailGroup[] = [
       { to: "/system/deleted-records", label: "Deleted records", nav: "deleted-records", icon: "restore" },
       { to: "/system/approvals", label: "Approval lines", nav: "approval-lines", icon: "stages" },
       { to: "/system/numbering", label: "Numbering rules", nav: "numbering-rules", icon: "hash" },
+      { to: "/system/templates", label: "Content templates", nav: "content-templates", icon: "stencil" },
       { to: "/system/workflows", label: "Workflow templates", nav: "workflow-templates" },
       { to: "/system/rules", label: "Rules registry", nav: "rules-registry" },
       { to: "/system/automations", label: "Automation rules", nav: "automation-rules", icon: "bolt" },

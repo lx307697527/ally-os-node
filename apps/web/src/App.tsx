@@ -26,6 +26,7 @@ import { RulesRegistry } from "./shared/pages/RulesRegistry.tsx";
 import { TaskDetail } from "./shared/pages/TaskDetail.tsx";
 import { Tasks } from "./shared/pages/Tasks.tsx";
 import { TeamUsers } from "./shared/pages/TeamUsers.tsx";
+import { Templates } from "./shared/pages/Templates.tsx";
 import { TwoFactorSettings } from "./shared/pages/TwoFactorSettings.tsx";
 import { WorkflowTemplates } from "./shared/pages/WorkflowTemplates.tsx";
 import { ForgotPassword } from "./shared/pages/ForgotPassword.tsx";
@@ -172,6 +173,11 @@ export function App(): ReactElement {
           {/* 编号规则（#225）：配置工作室的编号配置面；服务端 numbering.configure
               门，改格式只影响之后发出的号——页面把这条说在前头。 */}
           <Route path="/system/numbering" element={<NumberingRules />} />
+          {/* 内容模板（#225 切片 3）：配置工作室的模板配置面；服务端 templates.configure
+              门，启用即接管内置文案、停用回退内置（没有删除——回到内置才是模板
+              删除的真实语义）；内容变更即新版本，回滚=旧内容落成新版本；缺失变量
+              按 {{name}} 原样发出，预览负责把它照出来——页面把这三条说在前头。 */}
+          <Route path="/system/templates" element={<Templates />} />
           {/* 流程模板（#220）：配置工作室的流程配置面；服务端 workflow.configure
               门，定义 JSON 编辑 + 实时流程图预览，四道保存门在服务端——预览画得
               出来不等于保存过得去。 */}

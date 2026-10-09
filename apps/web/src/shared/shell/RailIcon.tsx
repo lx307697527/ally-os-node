@@ -20,7 +20,7 @@
 // the labels beside it.
 import type { ReactElement, ReactNode } from "react";
 
-export type RailIconName = "overview" | "ledger" | "tasks" | "approvals" | "hash" | "stages" | "bolt" | "fields" | "restore" | "shield" | "pulse";
+export type RailIconName = "overview" | "ledger" | "tasks" | "approvals" | "hash" | "stages" | "bolt" | "fields" | "restore" | "shield" | "pulse" | "stencil";
 
 const GLYPHS: Record<RailIconName, ReactNode> = {
   // A gauge: the arc, its baseline and one needle — where things stand.
@@ -102,6 +102,16 @@ const GLYPHS: Record<RailIconName, ReactNode> = {
   // A pulse trace: the flat line that spikes when something breaks — error
   // telemetry, the system's heartbeat as it runs.
   pulse: <path d="M3.5 13.5h4l2.5-7 3.5 13 2.5-9.5 2.5 3.5h2" />,
+  // A stencil: the sheet behind the sheet — the master wording every message
+  // of its kind is struck from, lifted away to reveal the builtin again.
+  stencil: (
+    <>
+      <path d="M8.5 3.5h9.25a1.5 1.5 0 0 1 1.5 1.5v9.5" />
+      <rect x="4.75" y="7.25" width="14.5" height="13.25" rx="1.5" />
+      <path d="M8.25 12h7.5" />
+      <path d="M8.25 15.75h4.5" />
+    </>
+  ),
 };
 
 export function RailIcon({ name }: { name: RailIconName }): ReactElement {
