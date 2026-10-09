@@ -2,6 +2,7 @@ import {
   DeleteObjectCommand,
   GetObjectCommand,
   HeadObjectCommand,
+  ListObjectsV2Command,
   PutObjectCommand,
   S3Client,
 } from "@aws-sdk/client-s3";
@@ -101,4 +102,72 @@ export function assertSafeKey(key: string): string {
     throw new Error("storage key contains an invalid path segment");
   }
   return key;
+}
+
+/**
+ * 对象面的读取与枚举(ops 工具用:#31 迁移脚本的数量对账与 hash 抽样)。
+ * 刻意不并进 Storage:应用侧不需要 list(长时效 URL 不进列表的同一理由,
+ * 枚举面更不该出现在业务路由可及的接口上),而给 Storage 加可选方法会逼着
+ * 全仓内联假实现陪跑——单独一个接口,业务代码零波及。
+ */
+export interface StorageReader {
+  /** 读对象字节;对象不在回 null,基础设施故障原样抛(与 head 同裁) */
+  get(key: string): Promise<Uint8Array | null>;
+  /** 枚举前缀下全部对象的 key(不含「目录」占位),按 S3 字典序分页拉全 */
+  list(prefix: string): AsyncIterable<string>;
+}
+
+export function createS3StorageReader(opts: S3StorageOptions): StorageReader {
+  const client = new S3Client({
+    region: opts.region,
+    ...(opts.endpoint ? { endpoint: opts.endpoint } : {}),
+    forcePathStyle: opts.forcePathStyle ?? false,
+    ...(opts.accessKeyId && opts.secretAccessKey
+      ? { credentials: { accessKeyId: opts.accessKeyId, secretAccessKey: opts.secretAccessKey } }
+      : {}),
+  });
+
+  return {
+    async get(key) {
+      try {
+        const out = await client.send(
+          new GetObjectCommand({ Bucket: opts.bucket, Key: assertSafeKey(key) }),
+        );
+        if (out.Body === undefined) throw new Error("s3 get returned no body");
+        return await out.Body.transformToByteArray();
+      } catch (err) {
+        if (isNotFound(err)) return null;
+        throw err;
+      }
+    },
+    async *list(prefix) {
+      validateStoragePrefix(prefix);
+      let token: string | undefined;
+      do {
+        const out = await client.send(
+          new ListObjectsV2Command({
+            Bucket: opts.bucket,
+            Prefix: prefix,
+            MaxKeys: 1000,
+            ...(token === undefined ? {} : { ContinuationToken: token }),
+          }),
+        );
+        for (const obj of out.Contents ?? []) {
+          if (obj.Key !== undefined) yield obj.Key;
+        }
+        token = out.IsTruncated === true ? out.NextContinuationToken : undefined;
+      } while (token !== undefined);
+    },
+  };
+}
+
+/** list 的前缀闸:必须是有范围的枚举(空串=全桶,脚本永远按桶前缀查,禁掉
+ * 防误用),允许尾部斜杠(「目录」形态),不许绝对路径与穿越段 */
+export function validateStoragePrefix(prefix: string): string {
+  if (prefix.length === 0) throw new Error("storage prefix must be non-empty");
+  if (prefix.startsWith("/")) throw new Error("storage prefix must be relative");
+  if (prefix.split("/").some((seg) => seg === "." || seg === "..")) {
+    throw new Error("storage prefix must not traverse");
+  }
+  return prefix;
 }
