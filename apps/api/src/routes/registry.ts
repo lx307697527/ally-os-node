@@ -148,6 +148,18 @@ export const API_ROUTES: readonly RouteDecl[] = [
   { method: "GET", path: "/api/numbering-rules", auth: { kind: "permission", permission: "numbering.configure" } },
   { method: "GET", path: "/api/numbering-rules/subjects", auth: { kind: "permission", permission: "numbering.configure" } },
   { method: "PATCH", path: "/api/numbering-rules/:id", auth: { kind: "permission", permission: "numbering.configure" } },
+  // 内容模板（#225 切片 2）：配置工作室的模板配置面（邮件先行，短信随其基建
+  // 进场），templates.configure 权限点门（owner/admin 默认持有）——改一封全员
+  // 会收到的信 = 改全公司的通信面。模板的**消费**没有 HTTP 面：认证邮件的
+  // 解析是进程内调用（templates/service.ts 的 resolveAuthEmail），发不发、发给
+  // 谁由触发自己的业务门裁决。与 PDF 品牌配置（/api/pdf-template-config，
+  // invoices.manage）分立：财务的脸面与全员通信的措辞面各挂各的门
+  { method: "GET", path: "/api/templates", auth: { kind: "permission", permission: "templates.configure" } },
+  { method: "POST", path: "/api/templates", auth: { kind: "permission", permission: "templates.configure" } },
+  { method: "GET", path: "/api/templates/:id", auth: { kind: "permission", permission: "templates.configure" } },
+  { method: "PATCH", path: "/api/templates/:id", auth: { kind: "permission", permission: "templates.configure" } },
+  { method: "POST", path: "/api/templates/:id/rollback", auth: { kind: "permission", permission: "templates.configure" } },
+  { method: "POST", path: "/api/templates/preview", auth: { kind: "permission", permission: "templates.configure" } },
   // 配置版本台账（#226）：subjects 列表登录即可（只有族名与展示名）；史/差异/
   // 回滚按族动态裁决 = 各族配置面的同一权限点（config-versions/registry.ts 注册
   // 时声明，路由内检查——回滚 = 改那族的配置，不能比配置面宽松），403 面在

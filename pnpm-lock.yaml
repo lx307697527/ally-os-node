@@ -59,6 +59,9 @@ importers:
       '@ally/storage':
         specifier: workspace:*
         version: link:../../packages/storage
+      '@ally/templates':
+        specifier: workspace:*
+        version: link:../../packages/templates
       '@gorules/zen-engine':
         specifier: ^2.1.2
         version: 2.1.2(@emnapi/core@1.11.3)(@emnapi/runtime@1.11.3)
@@ -280,6 +283,12 @@ importers:
       '@aws-sdk/s3-request-presigner':
         specifier: ^3.1143.0
         version: 3.1143.0
+
+  packages/templates:
+    dependencies:
+      zod:
+        specifier: ^4.6.5
+        version: 4.6.5
 
   packages/ui:
     dependencies:

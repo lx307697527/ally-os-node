@@ -43,7 +43,7 @@ export interface AuthzContext {
 }
 
 /** 权限点清单；随业务模块切片增加，新增必须先进这个注册表 */
-export const PERMISSIONS = ["roles.assign", "users.manage", "label_design", "audit.read", "workflow.configure", "approval.configure", "custom_fields.configure", "automations.configure", "numbering.configure", "rules.configure", "invoices.manage", "feedback.manage"] as const;
+export const PERMISSIONS = ["roles.assign", "users.manage", "label_design", "audit.read", "workflow.configure", "approval.configure", "custom_fields.configure", "automations.configure", "numbering.configure", "rules.configure", "templates.configure", "invoices.manage", "feedback.manage"] as const;
 
 export type Permission = (typeof PERMISSIONS)[number];
 
@@ -89,6 +89,14 @@ export const permissionSchema = z.enum(PERMISSIONS);
  *   格式 = 改所有之后发出的单据号（发票/报价/PO），与流程/审批/字段的管理者
  *   同一批人；发号不在任何权限点后面——分配是属主域创建单据事务里的进程内调用
  *   （numbering/service.ts），有没有号随单据的可见性门走。
+ * - templates.configure：老板与管理员（#225 切片 2）。内容模板（邮件先行，
+ *   短信随其基建进场）属配置工作室——改一封全员会收到的信的措辞，与流程/
+ *   审批/字段的管理者同一批人（§12）。与 PDF 品牌配置分立：那是财务的脸面
+ *   （#128 既定裁决，挂在 invoices.manage 后面），这里是全员通信的措辞面，
+ *   admin 是配置工作室管理者却不含 invoices.manage——两个门各管各的面。
+ *   模板的**消费**（谁收到什么信）不在任何权限点后面——发不发、发给谁由
+ *   触发它自己的业务门裁决（邀请走 users.manage 的建号面、重置走匿名反枚举
+ *   端点），配置权与触发权分离。
  * - rules.configure：老板与管理员（#233）。规则注册表的配置工作室面（读史/回滚/
  *   台账），管理者与流程/审批同批（§12 管理员「维护规则注册表中的管理员项」）。
  *   规则的**改值**不在此权限点后面——每条规则按裁决各有「谁能改」（行上的角色
@@ -111,8 +119,8 @@ export const permissionSchema = z.enum(PERMISSIONS);
  *   队列面落地时若把 ops_assistant 纳入处理人，再扩默认集，不现在预授。
  */
 export const ROLE_PERMISSIONS: Readonly<Record<Role, readonly Permission[]>> = {
-  owner: ["roles.assign", "users.manage", "audit.read", "workflow.configure", "approval.configure", "custom_fields.configure", "automations.configure", "numbering.configure", "rules.configure", "invoices.manage", "feedback.manage"],
-  admin: ["roles.assign", "users.manage", "audit.read", "workflow.configure", "approval.configure", "custom_fields.configure", "automations.configure", "numbering.configure", "rules.configure", "feedback.manage"],
+  owner: ["roles.assign", "users.manage", "audit.read", "workflow.configure", "approval.configure", "custom_fields.configure", "automations.configure", "numbering.configure", "rules.configure", "templates.configure", "invoices.manage", "feedback.manage"],
+  admin: ["roles.assign", "users.manage", "audit.read", "workflow.configure", "approval.configure", "custom_fields.configure", "automations.configure", "numbering.configure", "rules.configure", "templates.configure", "feedback.manage"],
   sales_lead: [],
   sales: [],
   customer_service: [],
