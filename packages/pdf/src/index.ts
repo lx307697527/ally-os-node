@@ -10,7 +10,7 @@ export {
   invoiceStatusBanners,
   DEFAULT_PDF_TEMPLATE,
   pdfTemplateConfigSchema,
-} from "./render.tsx";
+} from "./render.ts";
 
 export type { InvoicePdfModel, InvoicePdfLine, InvoicePdfBillTo } from "./model.ts";
 export type { PdfTemplateConfig, PdfCompany, PdfPaymentInstructions } from "./template.ts";

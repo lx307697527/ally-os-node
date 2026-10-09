@@ -1,7 +1,8 @@
-import { renderToBuffer } from "@react-pdf/renderer";
+import { Document, renderToBuffer } from "@react-pdf/renderer";
+import { createElement } from "react";
 import { stablePdfBytes } from "./deterministic.ts";
-import { InvoicePdfDocument } from "./invoice.tsx";
-import { invoicePdfModelSchema, type InvoicePdfModel } from "./model.ts";
+import { InvoicePdfPage } from "./invoice.ts";
+import { invoicePdfModelSchema, invoiceTypeLabel, type InvoicePdfModel } from "./model.ts";
 import { pdfTemplateConfigSchema, type PdfTemplateConfig } from "./template.ts";
 
 /**
@@ -21,8 +22,18 @@ export async function renderInvoicePdf(
 ): Promise<Uint8Array> {
   const checkedModel = invoicePdfModelSchema.parse(model);
   const checkedTemplate = pdfTemplateConfigSchema.parse(template);
+  // renderToBuffer 的元素树根必须是 Document；单据元数据（title/creator/producer）
+  // 属渲染入口——stablePdfBytes 的锚定替换也盯在这里。
   const buffer = await renderToBuffer(
-    <InvoicePdfDocument model={checkedModel} template={checkedTemplate} />,
+    createElement(
+      Document,
+      {
+        title: `${invoiceTypeLabel(checkedModel.invoiceType)} ${checkedModel.number}`,
+        creator: "Ally OS",
+        producer: "Ally OS PDF service",
+      },
+      createElement(InvoicePdfPage, { model: checkedModel, template: checkedTemplate }),
+    ),
   );
   return stablePdfBytes(new Uint8Array(buffer));
 }
