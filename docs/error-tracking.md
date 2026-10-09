@@ -12,8 +12,8 @@
 
 | 切片 | 内容 | 状态 |
 | --- | --- | --- |
-| 内核（切片 1） | error_events / error_spikes 表 · 公开上报端点 · onError 捕获 · 读面（列表 + 指纹汇总）· 激增告警任务 · 保留策略 | ✅ 本切片 |
-| 管理页 | /admin/error-logs 的 web 面（消费读面 API） | 待做（随可见性需求，同 #27 拦截可见面的裁法） |
+| 内核（切片 1） | error_events / error_spikes 表 · 公开上报端点 · onError 捕获 · 读面（列表 + 指纹汇总）· 激增告警任务 · 保留策略 | ✅ #323（2026-10-09） |
+| 管理页 | /admin/error-logs 的 web 面（消费读面 API） | ✅ 本切片（`/system/error-events`） |
 | 验收演练 | 「错误激增时 Slack 能收到告警（测试环境演练一次）」 | 待部署后演练（worker 需配 SLACK_WEBHOOK_URL） |
 
 ## 数据面
@@ -59,6 +59,25 @@
 - `GET /api/error-events/summary`：按指纹分组的汇总（窗口默认 7 天、上限 30），
   count 降序 + 最近样本 message——分诊第一屏「最近哪种错误最多」，点进指纹
   再翻明细。管理页（web 面）随可见性切片消费这两个端点。
+
+## 管理页（/system/error-events，#28 切片 2）
+
+- System 区的「Error events」页，消费上面两个端点；`audit.read` 同门，
+  无权限的账号在页面里得到明确答复。同 #27 拦截可见面的裁法：**台账是遥测
+  不是工作队列，页面没有处置动词**——上报方已把行写好，页面对「什么坏了、
+  坏在哪、多频繁、从何时」负责，不对修复负责（测试有负断言钉住这条）。
+- 形态与 rate-limits 页同构：指纹汇总条（窗口 7 天、次数降序、样本 message
+  自描述）+ 明细台账（最新在前、offset 分页 + 精确 total）。指纹是 64 位
+  十六进制，表格里用前 12 位做行把手（完整值在 title 与过滤态里）；点汇总
+  行的指纹 = 台账按指纹过滤，再点一次解除。source 过滤（web/api）是 ghost
+  tab；每次改过滤把分页归零、台账诚实塌回加载行——旧行回答的是另一个问题，
+  翻页才保留旧页。
+- 失败面逐个说：403（无 audit.read）与不可达各有说辞；汇总单独失败只降级
+  汇总位，台账照常渲染。stack 默认折叠（details），点开看全文——分诊第一眼
+  要的是 message 与发生位置，不是 8KB 的栈文本。
+- 行 schema 的 source 是开集（表列不枚举，worker/portal 进场不改数据库）：
+  web 侧行 schema 读作 string，未来来源的行照常渲染；过滤参数才收窄到
+  当前端点接受的 web/api。
 
 ## 激增告警（worker 任务 error-spike-alert，每 5 分钟）
 

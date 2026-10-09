@@ -16,6 +16,7 @@ import { Approvals } from "./shared/pages/Approvals.tsx";
 import { Automations } from "./shared/pages/Automations.tsx";
 import { CustomFields } from "./shared/pages/CustomFields.tsx";
 import { DeletedRecords } from "./shared/pages/DeletedRecords.tsx";
+import { ErrorEvents } from "./shared/pages/ErrorEvents.tsx";
 import { InvoiceDetail } from "./shared/pages/InvoiceDetail.tsx";
 import { Invoices } from "./shared/pages/Invoices.tsx";
 import { NotificationSettings } from "./shared/pages/NotificationSettings.tsx";
@@ -158,6 +159,12 @@ export function App(): ReactElement {
               日志同一批读者）。台账是遥测不是闸门——429 的权威在计数器，
               页面只回答「谁在撞、撞什么、撞多狠」，没有任何放行动词。 */}
           <Route path="/system/rate-limits" element={<RateLimits />} />
+          {/* 错误事件（#28 切片 2）：前后端错误「同一个地方查看」的查看面——
+              老 /admin/error-logs 的后继；服务端 audit.read 同门（与审计日志、
+              限流台账同一批读者）。台账是遥测不是工作队列：上报方已把行写好，
+              页面只回答「什么坏了、坏在哪、多频繁、从何时」——没有任何处置
+              动词；汇总按指纹分诊，点指纹钻台账。 */}
+          <Route path="/system/error-events" element={<ErrorEvents />} />
           {/* 删除记录（#29 切片 2）：软删台账的查看与恢复；服务端 audit.read 同门
               （与审计日志同一批读者），恢复不改写历史——台账行原地补 restored_*，
               页面把这条说在前头。 */}
