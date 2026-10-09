@@ -67,7 +67,7 @@ jobs:
     runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && vars.CI_RUNNER || 'ubuntu-latest' }}
     strategy:
       matrix:
-        target: [server, web]
+        target: [server, web, landing]
     steps:
       - uses: actions/checkout@v5
       - uses: docker/setup-buildx-action@v3

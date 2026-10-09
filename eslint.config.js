@@ -6,7 +6,7 @@ import tseslint from "typescript-eslint";
 // 类型感知的严格规则：能抓出漏写 await、不安全的 any、永远为真的条件等，
 // 这些是单跑 tsc 抓不到、AI 生成代码又常犯的问题。
 export default tseslint.config(
-  { ignores: ["**/dist/**", "**/node_modules/**", "**/coverage/**", "packages/db/migrations/**"] },
+  { ignores: ["**/dist/**", "**/node_modules/**", "**/coverage/**", "packages/db/migrations/**", "apps/landing/**"] },
   js.configs.recommended,
   ...tseslint.configs.strictTypeChecked,
   ...tseslint.configs.stylisticTypeChecked,

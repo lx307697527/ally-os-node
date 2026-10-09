@@ -1,0 +1,18 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    // The landing app is a deliberate ZERO-TypeScript port (the old app's own
+    // README calls it "this repo's only zero-TypeScript app"): 16 views of
+    // guarded sales copy in .jsx, carried over verbatim. tsc parses the JSX so
+    // the .ts test files can import the JS modules (allowJs gives tsc's
+    // inference for them), but the JS itself is not type-checked — checkJs
+    // would turn the verbatim port into a rewrite.
+    "allowJs": true,
+    "checkJs": false,
+    "jsx": "react-jsx",
+    "noEmit": true,
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "types": ["node"]
+  },
+  "include": ["src"]
+}

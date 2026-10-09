@@ -47,3 +47,19 @@ FROM nginxinc/nginx-unprivileged:1.29-alpine AS web
 COPY apps/web/nginx.conf /etc/nginx/conf.d/default.conf
 COPY --from=web-build /app/apps/web/dist /usr/share/nginx/html
 EXPOSE 8080
+
+# ---------- 营销站：静态构建，交给 nginx（重定向表在 vercel.json → nginx.conf）----------
+FROM base AS landing-build
+COPY pnpm-lock.yaml pnpm-workspace.yaml package.json ./
+COPY apps/landing/package.json apps/landing/
+# postinstall needs these at install time (same as the server stage)
+COPY .python-version ./
+COPY scripts/postinstall.mjs scripts/install_git_hooks.py scripts/
+RUN --mount=type=cache,id=pnpm,target=/pnpm/store     pnpm install --frozen-lockfile --filter "@ally/landing..."
+COPY apps/landing apps/landing
+RUN pnpm --filter @ally/landing build
+
+FROM nginxinc/nginx-unprivileged:1.29-alpine AS landing
+COPY apps/landing/nginx.conf /etc/nginx/conf.d/default.conf
+COPY --from=landing-build /app/apps/landing/dist /usr/share/nginx/html
+EXPOSE 8080
